@@ -20,11 +20,22 @@ type workbenchView struct {
 	Selected        *blockView
 	SelectedLinks   []inspectorLink
 	Palette         []paletteItem
+	Sheet           sheetGeometry
 	Chart           chartView
 	Error           string
 	Updated         string
 	BlockCount      int
 	ConnectionCount int
+}
+
+// sheetGeometry hands the domain's sheet constants to the client so the
+// viewport, the grid, and the snap step cannot drift from the server.
+type sheetGeometry struct {
+	Width       int
+	Height      int
+	Grid        int
+	BlockWidth  int
+	BlockHeight int
 }
 
 type blockView struct {
@@ -92,12 +103,19 @@ func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage s
 		Updated:         relativeTime(snapshot.Flow.UpdatedAt),
 		BlockCount:      len(snapshot.Blocks),
 		ConnectionCount: len(snapshot.Connections),
+		Sheet: sheetGeometry{
+			Width:       studio.SheetWidth,
+			Height:      studio.SheetHeight,
+			Grid:        studio.GridPitch,
+			BlockWidth:  studio.BlockWidth,
+			BlockHeight: studio.BlockHeight,
+		},
 	}
 	for _, definition := range studio.BlockLibrary() {
 		view.Palette = append(view.Palette, paletteItem{
 			BlockDefinition: definition,
-			X:               30,
-			Y:               90,
+			X:               60,
+			Y:               80,
 		})
 	}
 
@@ -152,10 +170,10 @@ func blockByID(blocks []studio.Block, id int64) studio.Block {
 }
 
 func edgePath(source, target studio.Point) string {
-	startX := float64(source.X + 172)
-	startY := float64(source.Y + 42)
+	startX := float64(source.X + studio.BlockWidth)
+	startY := float64(source.Y + studio.BlockHeight/2)
 	endX := float64(target.X)
-	endY := float64(target.Y + 42)
+	endY := float64(target.Y + studio.BlockHeight/2)
 	distance := math.Abs(endX - startX)
 	bend := math.Max(54, distance*0.45)
 	return fmt.Sprintf("M %.1f %.1f C %.1f %.1f, %.1f %.1f, %.1f %.1f",

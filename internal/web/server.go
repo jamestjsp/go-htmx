@@ -38,10 +38,14 @@ func New(studioService *studio.Studio) (*Server, error) {
 	mux.HandleFunc("GET /flows/{flowID}/workbench", server.workbench)
 	mux.HandleFunc("POST /flows/{flowID}/blocks", server.addBlock)
 	mux.HandleFunc("PATCH /blocks/{blockID}/position", server.moveBlock)
+	mux.HandleFunc("PATCH /flows/{flowID}/blocks/positions", server.moveBlocks)
 	mux.HandleFunc("PUT /blocks/{blockID}", server.updateBlock)
 	mux.HandleFunc("DELETE /blocks/{blockID}", server.deleteBlock)
+	mux.HandleFunc("DELETE /flows/{flowID}/blocks", server.deleteBlocks)
+	mux.HandleFunc("POST /flows/{flowID}/blocks/duplicate", server.duplicateBlocks)
 	mux.HandleFunc("POST /flows/{flowID}/connections", server.connect)
 	mux.HandleFunc("DELETE /connections/{connectionID}", server.disconnect)
+	mux.HandleFunc("DELETE /blocks/{blockID}/connections", server.disconnectBlock)
 	mux.HandleFunc("POST /flows/{flowID}/simulations", server.runSimulation)
 	server.handler = securityHeaders(mux)
 	return server, nil
@@ -125,6 +129,44 @@ func (s *Server) moveBlock(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// moveBlocks repositions a selection in one request. The id, x and y form
+// values are parallel arrays; sending N separate requests instead would be
+// both slower and non-atomic, so a partial arrangement could survive.
+func (s *Server) moveBlocks(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid positions.", http.StatusBadRequest)
+		return
+	}
+	ids, xs, ys := r.PostForm["id"], r.PostForm["x"], r.PostForm["y"]
+	if len(ids) == 0 || len(ids) != len(xs) || len(ids) != len(ys) {
+		http.Error(w, "Every block needs an id, an x and a y.", http.StatusBadRequest)
+		return
+	}
+	moves := make([]studio.BlockMove, 0, len(ids))
+	for i := range ids {
+		blockID, errID := strconv.ParseInt(ids[i], 10, 64)
+		x, errX := strconv.Atoi(xs[i])
+		y, errY := strconv.Atoi(ys[i])
+		if errID != nil || errX != nil || errY != nil {
+			http.Error(w, "Invalid position.", http.StatusBadRequest)
+			return
+		}
+		moves = append(moves, studio.BlockMove{
+			BlockID:  blockID,
+			Position: studio.Point{X: x, Y: y},
+		})
+	}
+	if err := s.studio.MoveBlocks(r.Context(), flowID, moves); err != nil {
+		http.Error(w, studio.ValidationMessage(err), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) updateBlock(w http.ResponseWriter, r *http.Request) {
 	blockID, ok := pathID(w, r, "blockID")
 	if !ok {
@@ -164,6 +206,71 @@ func (s *Server) deleteBlock(w http.ResponseWriter, r *http.Request) {
 	s.renderWorkbench(w, snapshot, 0, "")
 }
 
+// deleteBlocks removes a selection. Ids arrive as repeated query values,
+// which is what a DELETE carries.
+func (s *Server) deleteBlocks(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	blockIDs, ok := s.formIDs(w, r, flowID)
+	if !ok {
+		return
+	}
+	snapshot, err := s.studio.DeleteBlocks(r.Context(), flowID, blockIDs)
+	if err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	s.renderWorkbench(w, snapshot, 0, "")
+}
+
+func (s *Server) duplicateBlocks(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	blockIDs, ok := s.formIDs(w, r, flowID)
+	if !ok {
+		return
+	}
+	snapshot, err := s.studio.DuplicateBlocks(r.Context(), flowID, blockIDs)
+	if err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	s.renderWorkbench(w, snapshot, 0, "")
+}
+
+// formIDs reads the repeated `id` values shared by the batch endpoints.
+func (s *Server) formIDs(w http.ResponseWriter, r *http.Request, flowID int64) ([]int64, bool) {
+	raw := r.Form["id"]
+	if len(raw) == 0 {
+		s.renderFailure(w, r, flowID, 0, &studio.ValidationError{
+			Message: "select at least one block first",
+		})
+		return nil, false
+	}
+	blockIDs := make([]int64, 0, len(raw))
+	for _, value := range raw {
+		blockID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || blockID <= 0 {
+			http.Error(w, "Invalid identifier.", http.StatusBadRequest)
+			return nil, false
+		}
+		blockIDs = append(blockIDs, blockID)
+	}
+	return blockIDs, true
+}
+
 func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	flowID, ok := pathID(w, r, "flowID")
 	if !ok {
@@ -198,6 +305,19 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderWorkbench(w, snapshot, selectedID(r), "")
+}
+
+func (s *Server) disconnectBlock(w http.ResponseWriter, r *http.Request) {
+	blockID, ok := pathID(w, r, "blockID")
+	if !ok {
+		return
+	}
+	snapshot, err := s.studio.DisconnectBlock(r.Context(), blockID)
+	if err != nil {
+		s.renderFailure(w, r, 0, blockID, err)
+		return
+	}
+	s.renderWorkbench(w, snapshot, blockID, "")
 }
 
 func (s *Server) runSimulation(w http.ResponseWriter, r *http.Request) {

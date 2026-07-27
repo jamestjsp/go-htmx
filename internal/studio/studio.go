@@ -93,6 +93,47 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 	return snapshot, blockID, err
 }
 
+// BlockMove is one block's new home on the sheet.
+type BlockMove struct {
+	BlockID  int64
+	Position Point
+}
+
+// MoveBlocks repositions a whole selection. Dragging several blocks is one
+// user action, so it is one transaction: either the arrangement moves or
+// none of it does. A block outside flowID is rejected without moving
+// anything, which keeps a crafted request from reaching another flowsheet.
+func (s *Studio) MoveBlocks(ctx context.Context, flowID int64, moves []BlockMove) error {
+	if len(moves) == 0 {
+		return invalid("select at least one block to move")
+	}
+	if len(moves) > maxBlocksPerRequest {
+		return invalid("move at most %d blocks at once", maxBlocksPerRequest)
+	}
+	return s.inTx(ctx, func(tx *sql.Tx) error {
+		for _, move := range moves {
+			position := clampPosition(move.Position)
+			result, err := tx.ExecContext(ctx,
+				"UPDATE blocks SET x = ?, y = ? WHERE id = ? AND flow_id = ?",
+				position.X, position.Y, move.BlockID, flowID,
+			)
+			if err != nil {
+				return fmt.Errorf("move blocks: %w", err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if affected == 0 {
+				return ErrNotFound
+			}
+		}
+		_, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
+			s.now().UTC().Format(time.RFC3339Nano), flowID)
+		return err
+	})
+}
+
 func (s *Studio) MoveBlock(ctx context.Context, blockID int64, position Point) error {
 	position = clampPosition(position)
 	return s.inTx(ctx, func(tx *sql.Tx) error {
@@ -187,6 +228,158 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 	return s.snapshot(ctx, flowID)
 }
 
+// DeleteBlocks removes a whole selection, and every signal wired to it, in
+// one transaction. Deleting block by block would leave a half-dismantled
+// flowsheet visible if any step failed.
+func (s *Studio) DeleteBlocks(ctx context.Context, flowID int64, blockIDs []int64) (Snapshot, error) {
+	if len(blockIDs) == 0 {
+		return Snapshot{}, invalid("select at least one block to delete")
+	}
+	if len(blockIDs) > maxBlocksPerRequest {
+		return Snapshot{}, invalid("delete at most %d blocks at once", maxBlocksPerRequest)
+	}
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		names := make([]string, 0, len(blockIDs))
+		for _, blockID := range blockIDs {
+			block, err := blockByID(ctx, tx, blockID)
+			if err != nil {
+				return err
+			}
+			if block.FlowID != flowID {
+				return ErrNotFound
+			}
+			names = append(names, block.Name)
+		}
+		for _, blockID := range blockIDs {
+			if _, err := tx.ExecContext(ctx,
+				"DELETE FROM blocks WHERE id = ? AND flow_id = ?", blockID, flowID,
+			); err != nil {
+				return fmt.Errorf("delete blocks: %w", err)
+			}
+		}
+		now := s.now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
+			return err
+		}
+		message := "Deleted " + names[0]
+		if len(names) > 1 {
+			message = fmt.Sprintf("Deleted %d blocks", len(names))
+		}
+		return insertEvent(ctx, tx, flowID, now, message)
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshot(ctx, flowID)
+}
+
+// DuplicateBlocks copies a selection one grid step down and right.
+//
+// Wires between the originals are deliberately not copied. A duplicated
+// sub-diagram that silently rewired itself is harder to reason about than
+// one the user connects on purpose, and it is the behaviour the shortcut
+// sheet documents.
+func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []int64) (Snapshot, error) {
+	if len(blockIDs) == 0 {
+		return Snapshot{}, invalid("select at least one block to duplicate")
+	}
+	if len(blockIDs) > maxBlocksPerRequest {
+		return Snapshot{}, invalid("duplicate at most %d blocks at once", maxBlocksPerRequest)
+	}
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		copied := 0
+		for _, blockID := range blockIDs {
+			block, err := blockByID(ctx, tx, blockID)
+			if err != nil {
+				return err
+			}
+			if block.FlowID != flowID {
+				return ErrNotFound
+			}
+			placed, err := openPosition(ctx, tx, flowID, clampPosition(Point{
+				X: block.Position.X + GridPitch,
+				Y: block.Position.Y + GridPitch,
+			}))
+			if err != nil {
+				return err
+			}
+			name, err := availableBlockName(ctx, tx, flowID, block.Name)
+			if err != nil {
+				return err
+			}
+			encoded, err := encodeParameters(block.Parameters)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO blocks(
+					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+				)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				flowID, block.Kind, name, placed.X, placed.Y,
+				block.Parameters.Amplitude, block.Parameters.Gain,
+				block.Parameters.TimeConstant, encoded,
+			); err != nil {
+				return fmt.Errorf("duplicate block: %w", err)
+			}
+			copied++
+		}
+		now := s.now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
+			return err
+		}
+		message := fmt.Sprintf("Duplicated %d blocks", copied)
+		if copied == 1 {
+			message = "Duplicated 1 block"
+		}
+		return insertEvent(ctx, tx, flowID, now, message)
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshot(ctx, flowID)
+}
+
+// availableBlockName finds a free "<name> copy" variant, so duplicates stay
+// distinguishable in the inspector and the trend legend.
+func availableBlockName(ctx context.Context, tx *sql.Tx, flowID int64, base string) (string, error) {
+	taken := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM blocks WHERE flow_id = ?", flowID)
+	if err != nil {
+		return "", fmt.Errorf("load block names: %w", err)
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return "", fmt.Errorf("scan block name: %w", err)
+		}
+		taken[name] = true
+	}
+	if err := rows.Close(); err != nil {
+		return "", fmt.Errorf("close block names: %w", err)
+	}
+	for attempt := 1; attempt <= maxBlocksPerRequest+1; attempt++ {
+		candidate := base + " copy"
+		if attempt > 1 {
+			candidate = fmt.Sprintf("%s copy %d", base, attempt)
+		}
+		if len(candidate) > 48 {
+			candidate = candidate[len(candidate)-48:]
+		}
+		if !taken[candidate] {
+			return candidate, nil
+		}
+	}
+	return "", invalid("too many copies of %q", base)
+}
+
 func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) (Snapshot, error) {
 	if sourceID == targetID {
 		return Snapshot{}, invalid("a block cannot connect to itself")
@@ -264,6 +457,44 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 	return s.snapshot(ctx, flowID)
 }
 
+// DisconnectBlock removes every signal into or out of one block, so a block
+// can be isolated without hunting its wires one at a time in the inspector.
+func (s *Studio) DisconnectBlock(ctx context.Context, blockID int64) (Snapshot, error) {
+	var flowID int64
+	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		block, err := blockByID(ctx, tx, blockID)
+		if err != nil {
+			return err
+		}
+		flowID = block.FlowID
+		result, err := tx.ExecContext(ctx,
+			"DELETE FROM connections WHERE source_id = ? OR target_id = ?", blockID, blockID)
+		if err != nil {
+			return fmt.Errorf("disconnect block: %w", err)
+		}
+		removed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if removed == 0 {
+			return nil
+		}
+		now := s.now().UTC().Format(time.RFC3339Nano)
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
+			return err
+		}
+		return insertEvent(ctx, tx, flowID, now,
+			fmt.Sprintf("Disconnected %s", block.Name))
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.snapshot(ctx, flowID)
+}
+
 func (s *Studio) Disconnect(ctx context.Context, connectionID int64) (Snapshot, error) {
 	var flowID int64
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -319,7 +550,7 @@ func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) 
 
 	available := func(candidate Point) bool {
 		for _, point := range occupied {
-			if abs(candidate.X-point.X) < 172 && abs(candidate.Y-point.Y) < 84 {
+			if abs(candidate.X-point.X) < BlockWidth && abs(candidate.Y-point.Y) < BlockHeight {
 				return false
 			}
 		}
@@ -328,9 +559,18 @@ func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) 
 	if available(desired) {
 		return desired, nil
 	}
-	for _, y := range []int{90, 220, 350, 470} {
-		for _, x := range []int{30, 210, 390, 570, 750, 930} {
-			candidate := Point{X: x, Y: y}
+	// Walk a lattice with room for a wire run between neighbours, in reading
+	// order from the origin, so a cascade of new blocks stays where the user
+	// is looking rather than scattering across the sheet.
+	const (
+		originX = 60
+		originY = 80
+		stepX   = BlockWidth + 68
+		stepY   = BlockHeight + 36
+	)
+	for y := originY; y <= SheetHeight-BlockHeight; y += stepY {
+		for x := originX; x <= SheetWidth-BlockWidth; x += stepX {
+			candidate := clampPosition(Point{X: x, Y: y})
 			if available(candidate) {
 				return candidate, nil
 			}
