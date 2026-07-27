@@ -34,13 +34,56 @@ All CSS, application JavaScript, and HTML templates are embedded in the Go binar
 ## Try the workbench
 
 1. Run the seeded model and inspect the temperature response and settling metric.
-2. Add a block from the library. The server finds an open position for it.
-3. Click an orange output port and then a gray input port to create a signal.
+2. Right-click empty canvas and add a block; it lands where you clicked.
+3. Drag from an orange output port to a gray input port to wire a signal.
 4. Click a block to edit its name or numerical parameter in the inspector.
-5. Drag a block and refresh the page to confirm its position persisted.
-6. Remove a signal from the inspector or delete its selected block.
+5. Drag a block. It snaps to the grid and shows guides when it lines up with a neighbour.
+6. Drag a box around several blocks and move them together.
+7. Collapse the side rails and drag the dock down to give the sheet the whole window.
 
-Press `Esc` to cancel a pending signal wire and `Cmd+Enter` or `Ctrl+Enter` to run the model.
+Press `?` for the full shortcut sheet.
+
+## Workbench interaction
+
+The window is a fixed application shell: the page itself never scrolls, and
+the canvas is the only region that grows. Both side rails collapse to a
+46px icon strip — the collapsed library still adds blocks — and the
+simulation dock at the bottom drags between a header-only state and 70% of
+the window. Those choices persist across reloads.
+
+The sheet is a 6000×4000 world on a 20px grid, viewed through a pan/zoom
+viewport at 25%–400%.
+
+| Gesture | Action |
+| --- | --- |
+| Wheel | Pan |
+| `Cmd`/`Ctrl` + wheel, or pinch | Zoom about the pointer |
+| Space + drag, or middle-drag | Pan |
+| Drag empty canvas | Select blocks with a marquee (`Shift` extends) |
+| Drag a block | Move it, snapped to the grid; moves the whole selection |
+| `Alt` + drag | Suspend alignment magnetism (still snaps to the grid) |
+| Drag port to port | Wire a signal |
+| Click output, then input | Wire without dragging |
+| Right-click | Context menu on a block or on the canvas |
+
+| Keys | Action |
+| --- | --- |
+| `Delete` / `Backspace` | Delete the selection |
+| Arrows / `Shift` + arrows | Nudge one / five grid steps |
+| `Cmd`/`Ctrl` + `A` | Select every block |
+| `Cmd`/`Ctrl` + `D` | Duplicate (wiring between blocks is not copied) |
+| `Cmd`/`Ctrl` + `=` / `−` / `0` | Zoom in / out / reset |
+| `Shift` + `1` | Fit the flowsheet to the window |
+| `Esc` | Cancel wiring, or clear the selection |
+| `Cmd`/`Ctrl` + `Enter` | Run the model |
+| `?` | Shortcut sheet |
+
+The status bar is a live readout rail: cursor position in sheet
+coordinates, zoom, grid pitch, selection count, block and signal counts,
+and solver state.
+
+`docs/workbench-ergonomics.md` records the interaction model, the state
+that lives on the client, and the constraints behind these choices.
 
 ## Stack and request flow
 
@@ -61,7 +104,9 @@ flowchart LR
     HTTP -- "server-rendered components" --> Browser
 ```
 
-HTMX performs every server mutation and swaps the returned `#workbench` fragment. A small framework-free JavaScript file handles only interactions that must stay in the browser: pointer dragging, provisional signal lines, port gestures, and keyboard shortcuts. Drag completion still persists through `htmx.ajax`.
+HTMX performs every server mutation and swaps the returned `#workbench` fragment. A small framework-free JavaScript file handles only interactions that must stay in the browser: the pan/zoom viewport, pointer dragging and grid snapping, marquee selection, provisional signal lines, port gestures, context menus, and keyboard shortcuts. Every mutation still persists through `htmx.ajax`.
+
+Because the swap replaces the whole fragment, all client-held state — viewport, selection, rail and dock sizing — is re-applied after each swap and stored in `localStorage` rather than in the flow record. Multi-selection is deliberately client-side, so the server keeps its single `selected` parameter for the inspector and a marquee costs no round trips.
 
 The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, cycle detection, persistence, graph compilation, simulation, and stale-result rules.
 
@@ -108,6 +153,7 @@ Model edits invalidate the displayed result, while layout-only moves do not. His
 cmd/processlab/           executable and graceful HTTP shutdown
 internal/studio/          domain, SQLite repository, compiler, simulation
 internal/web/             handlers, view models, embedded templates and assets
+docs/                     block library and workbench interaction notes
 .ergo/plans.jsonl         dependency-ordered implementation history
 ```
 
@@ -120,6 +166,8 @@ go test -race ./...
 go build ./cmd/processlab
 ```
 
-The persistent tests cover SQLite round trips and legacy migration, collision-free block placement, connection constraints, cycle rejection, analytic control-block responses, FFT peak detection, HTML fragment behavior, embedded assets, and multi-field HTTP editing flows.
+The persistent tests cover SQLite round trips and legacy migration, grid snapping and the sheet bounds, collision-free block placement, connection constraints, cycle rejection, analytic control-block responses, FFT peak detection, HTML fragment behavior, embedded assets, multi-field HTTP editing flows, and the batch move, delete, and duplicate endpoints including rejection of ids from another flow.
 
-The browser verification exercised add, select, edit, drag, connect, simulate, delete, refresh persistence, desktop rendering, and the no-overflow 768-pixel responsive layout.
+Interaction behavior cannot be covered by Go tests. It was verified by driving real pointer and key gestures against headless Chrome over CDP — 88 checks across viewport, snapping, selection, keyboard, context menus, and wiring — at 25%, 100%, and 400% zoom, plus rendering at 1440×900, 1280×720, 860px, and 620px.
+
+Note that templates and static assets are `go:embed`-ed into the binary, so a change to `app.js` or `app.css` needs a rebuild before the server serves it.
