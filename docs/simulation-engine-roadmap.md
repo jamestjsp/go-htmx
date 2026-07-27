@@ -75,10 +75,18 @@ at ±0.5 are right in every construction:
 
 Inside the limit it returns the unity model, which is the correct local
 behaviour. `C = 0`, `D = 0` appears only at a *saturated* operating point,
-where zero local gain is the mathematically correct answer, not a defect. The
-step size is `h = sqrt(eps) * max(|u0|, 1)` ≈ 1.5e-8
-(`local_approx.go:60,72,110`), far too small to straddle a limit, so no
-construction produces a wrong Jacobian.
+where zero local gain is the mathematically correct answer, not a defect.
+`finiteDifferenceLocalModel` takes a central difference with
+`h = sqrt(eps) * max(|u0|, 1)` ≈ 1.5e-8 (`local_approx.go:66` for `sqrtEps`,
+`:113-114` for the input-side step), which is far too small to straddle a
+limit from any operating point that is not already on one.
+
+The one place the central difference does straddle the kink is an operating
+point sitting exactly on it: at `u0 = 0.5` against a limit of 0.5 the two
+probes land on opposite sides and `D` comes back as **0.5** — the midpoint of
+the one-sided derivatives. That is a defensible answer rather than a wrong
+one, since it lies in the Clarke subdifferential, and it does not change the
+conclusion below.
 
 The reason the compiler must not call it is simpler and has nothing to do
 with the library's accuracy: **a linearized saturation is not a saturation at
@@ -180,8 +188,9 @@ systems at that `Dt`, compose with `ConnectByName`, keep `Lsim`. Structurally
 this is the smallest change: one extra argument, nothing else moves.
 
 **Rejected.** It moves every existing sheet from the left column of the table
-above to the right one — at `dt = 0.1`, from 8.882e-16 to 2.629e-02 on a
-two-lag chain — and would break the 1e-10 assertions in `simulate_test.go`.
+above to the right one — at `dt = 0.1`, from 8.882e-16 to 2.629e-02 on the
+τ = 1, τ = 0.5 chain — and would break the 1e-10 assertions in
+`simulate_test.go`.
 Note that it charges this to *every* block boundary, not just the ones a
 nonlinear block sits on, so a long chain compounds it. It also buys nothing
 it was chosen for: a Saturation has no LTI realization at any `Dt`, so the
@@ -241,9 +250,10 @@ Delete `Sat` and the survivors `{Step, Gain, Sum, Scope}` are one
 weakly-connected component. But `Sat` draws its input from that component and
 returns its output to it, so the segment/step graph is
 `segment -> Sat -> segment` — a two-cycle produced from an acyclic block
-graph, with no execution order to compute. On 200,000 random acyclic block
-graphs with random step-block subsets, this rule produced a cyclic segment
-graph **18.3% of the time**. It is not an edge case.
+graph, with no execution order to compute. Enumerating *every* DAG shape on
+2 to 6 blocks crossed with every step-block subset, this rule produces a
+cyclic segment graph on **26.0% of the 2,097,152 cases at six blocks**, first
+failing at three. It is not an edge case.
 
 **The rule that works** assigns each block a step depth and cuts on that:
 
@@ -256,13 +266,30 @@ depth(b) = max over incoming edges a -> b of
 A segment is the set of non-step blocks sharing one depth. Step blocks are
 ordered by their own depth.
 
-This is acyclic by construction. Depth never decreases along an edge, and
-crossing a step block strictly increases it, so an edge can only leave a
-segment for a step block at the same or greater depth, and can only leave a
-step block for a segment at strictly greater depth. A cycle would have to
-return to a lower depth, which no edge does. The same 200,000 random graphs
-produced **zero** cyclic segment graphs under this rule, with at most five
-segments on any sheet.
+**This is acyclic for any block DAG, and it has a proof rather than an
+appeal to sampling.** Give the segment at depth `k` the rank `k`, and give a
+step block `b` the rank `d(b) + ½`. Every edge of the block graph that
+crosses between two partition vertices strictly increases rank:
+
+| Edge `a -> b` | Depth relation | Rank relation |
+| --- | --- | --- |
+| segment to segment (both non-step) | `d(b) ≥ d(a)`, and `d(b) ≠ d(a)` or they would be the same segment | `d(b) > d(a)` |
+| segment to step block | `d(b) ≥ d(a)` | `d(b) + ½ > d(a)` |
+| step block to segment | `d(b) ≥ d(a) + 1` | `d(b) > d(a) + ½` |
+| step block to step block | `d(b) ≥ d(a) + 1` | `d(b) + ½ > d(a) + ½` |
+
+A cycle would have to return to a rank it already left, so there are none.
+The exhaustive enumeration agrees: **zero** cyclic segment graphs across
+every DAG shape on 2 to 6 blocks and every step-block subset.
+
+Note the first row. **Segment-to-segment edges are real**, and they are the
+class the connected-component rule could not produce: one input pushes a
+block to a higher depth while another input stays behind at a lower one. They
+occur in 44.1% of the six-block cases and first appear at three blocks
+(`A -> S`, `S -> C`, `A -> C` with `S` a step block puts `A` at depth 0 and
+`C` at depth 1, with `A -> C` spanning them). An earlier draft of this
+document enumerated only the two step-block rows above and got the boundary
+channels wrong as a result — see the compilation steps below.
 
 It also preserves the property the whole recommendation rests on: with no
 step blocks every block has depth 0, so there is exactly one segment
@@ -291,12 +318,28 @@ Compilation:
    with `Saturation` a step block at depth 0. Each segment is acyclic because
    the whole graph is, so each compiles through `ConnectByName` exactly as
    the whole sheet does today.
-3. A segment's inputs are the source channels inside it plus one channel per
-   edge entering it from a step block. Its outputs are the sink outputs
-   inside it plus one output per edge leaving it to a step block. These
-   synthetic boundary channels need names that cannot collide with the
-   block-id-derived names `inputSignalName` and `outputSignalName` already
-   mint.
+3. Cut the boundary channels. **The rule is about leaving the segment, not
+   about step blocks**: a segment's ports are its edges to and from anything
+   outside it, whichever kind of vertex sits on the other end.
+
+   - **Inputs:** the source channels inside it, plus one channel per edge
+     `a -> b` with `b` in the segment and `a` outside it — `a` being a step
+     block *or a block in another segment*.
+   - **Outputs:** the sink outputs inside it, plus one output per block in
+     the segment that has at least one edge leaving it — again to a step
+     block or to another segment.
+
+   Writing this in terms of step blocks alone drops every segment-to-segment
+   edge, which is wrong on 44.1% of six-block sheets. On the Sum-branch
+   counterexample it would compile `segment@1` with one input for a two-input
+   `Sum`, because the `Gain -> Sum` edge is neither a source channel nor an
+   edge from a step block.
+
+   The existing naming needs no extension. `inputSignalName` already keys on
+   the target block and the connection, so a variadic block's two boundary
+   inputs get distinct names, and `outputSignalName` keys on the source
+   block, so one output serves a fan-out. Reusing them is what makes the
+   boundary channels collision-free.
 4. ZOH-discretize each segment at the base step. `Simulate` refuses
    continuous systems (`controlsys: wrong time domain for operation`), so
    `DiscretizeZOH(baseStep)` is a required step, not an optimisation. Do it
@@ -305,14 +348,22 @@ Compilation:
 Each sample `k` at time `t_k`, for depth 0, 1, 2, … in order:
 
 1. Evaluate every source `waveform` at `t_k`. Unchanged.
-2. Run the segment at this depth: assemble its one-column input from the
-   source values and the step-block outputs already computed this sample,
-   call `Simulate` with the segment's carried state, read its outputs, keep
-   `XFinal` — remembering that a stateless segment returns a nil `XFinal`.
+2. Run the segment at this depth: assemble its one-column input by reading,
+   for each boundary input channel, the value its feeding block already
+   produced this sample — a step block's closure output, or **another
+   segment's output** — together with the source values. Call `Simulate` with
+   the segment's carried state, read its outputs, keep `XFinal`, remembering
+   that a stateless segment returns a nil `XFinal`.
 3. Run every step block at this depth. They cannot feed each other, because
    an edge between two step blocks raises the depth of the target, so their
    order within a depth is free.
 4. Record the sink outputs.
+
+Both feeding cases in step 2 are always available: a step block feeding a
+depth-`k` segment sits at depth `k-1` or lower and ran in a previous pass of
+step 3, and a segment feeding it sits at a strictly lower depth and ran in a
+previous pass of step 2. Execution *order* was never the problem — only the
+channel enumeration was.
 
 Remove the Saturation and every block sits at depth 0, so there is one
 segment and no step blocks: the driver falls back to a single batch `Lsim`
@@ -321,7 +372,9 @@ over the whole grid — today's call, today's allocations, today's numbers.
 **What the user pays, and must be told.** The signal entering the Saturation
 is held over each step; the second segment sees a piecewise-constant input
 that the true continuous signal is not. That is the right-hand column of the
-table above — 2.629e-02 for a two-lag chain at `dt = 0.1`. It is not a defect
+table above — 2.629e-02 for the τ = 1, τ = 0.5 chain at `dt = 0.1`, and the
+paragraph beside that table on why the plant matters as much as the sample
+time applies to this citation too. It is not a defect
 to be fixed; it is the inherent cost of fixed-step hybrid simulation, and it
 is only charged where the user placed a nonlinear block.
 
@@ -486,7 +539,7 @@ so nothing was written to it.
 | Task | Depends on | Deliverable |
 | --- | --- | --- |
 | T1 Add the `step` hook and `isStepBlock` to the catalog | — | Two fields and one predicate in `catalog.go`; the exactly-one-of and not-a-source rules checked over `blockDefinitions`; no kind sets `step` yet |
-| T2 Partition `compileFlow` into step-depth segments | T1 | Depth computed in the existing topological pass; segments are depth classes, not connected components. Property test on random acyclic graphs asserting the segment/step graph is always acyclic, with the Sum-branch counterexample as a named case. With no step blocks it holds exactly one segment and every existing test passes untouched |
+| T2 Partition `compileFlow` into step-depth segments | T1 | Depth computed in the existing topological pass; segments are depth classes, not connected components. Boundary channels enumerated by *leaving the segment*, so segment-to-segment edges are carried — the Sum-branch counterexample is the regression test, asserting `segment@1` compiles with two inputs. Exhaustive test over every DAG shape up to six blocks asserting the segment graph is acyclic. With no step blocks it holds exactly one segment and every existing test passes untouched |
 | T3 Per-step driver behind the single-segment fast path | T2 | Segments `DiscretizeZOH(baseStep)`-ed once at compile time, then stepped through `Simulate` carrying `XFinal` (nil for stateless segments); single-segment sheets keep the batch `Lsim` call. Test asserts the two paths agree bit-for-bit on a single-segment sheet (measured max diff 0.000e+00) |
 | T4 Report simulation fidelity in the run record and dock | T3 | Segment count *and* whether every source is piecewise constant. A Sine sheet must not be shown as exact — it already carries 3.642e-02 at `dt = 0.1`. Blocks T5 because shipping a nonlinear block without the disclosure puts users on a different accuracy regime silently |
 | T5 Saturation block | T4 | First step block. Numeric check against the analytic response of a saturating first-order loop; refusal test that nothing linearizes |
@@ -510,8 +563,12 @@ so nothing was written to it.
   Jacobians. A linearized saturation is not a saturation, and swapping one for
   the other is what the no-silent-linearization rule forbids.
 - **Segments are step-depth classes, not connected components.** The
-  connected-component rule produces a cyclic segment graph on 18.3% of random
-  acyclic sheets, including a Saturation on one branch of a Sum.
+  connected-component rule produces a cyclic segment graph on 26.0% of all
+  six-block sheets, including a Saturation on one branch of a Sum.
+- **A segment's boundary channels are its edges leaving the segment**, not
+  its edges touching a step block. Segment-to-segment edges exist on 44.1% of
+  six-block sheets, and enumerating only the step-block edges silently
+  compiles a variadic block with too few inputs.
 - **"Exact" means exact for piecewise-constant sources.** A Sine sheet is
   already stair-stepped by `Lsim` and is not on the exact path today. Do not
   write interface copy that promises otherwise.
