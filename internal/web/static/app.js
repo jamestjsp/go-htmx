@@ -810,6 +810,27 @@
     return node instanceof HTMLElement && node.closest('input, textarea, select, [contenteditable="true"]')
   }
 
+  // Something nearer the keyboard than a global shortcut has the key: a
+  // text field the user is typing into, or an open context menu.
+  //
+  // The menu half fixes a defect older than menu.js. The menu navigates
+  // itself with the arrow keys, and the nudge binding below also fires on
+  // them; the nudge saves the new positions, the save swaps the workbench,
+  // and the swap closes the menu. Arrow navigation therefore only ever
+  // worked on a menu raised over empty sheet, which clears the selection
+  // first and so leaves the nudge with nothing to move.
+  //
+  // A guard here rather than stopPropagation in menu.js. Every listener
+  // involved is on document, so stopping propagation would have to be
+  // stopImmediatePropagation, which only reaches listeners registered
+  // after menu.js's — it would silence these bindings by an accident of
+  // script order, and silence them wholesale rather than saying which ones
+  // and why. The guard is also read the same way for every region that
+  // registers a menu, not just the canvas.
+  function keyboardIsClaimed(event) {
+    return typingInAField(event) || ProcessLab.menu.ownsKey(event)
+  }
+
   document.addEventListener('wheel', (event) => {
     if (!event.target.closest('#flow-canvas')) return
     event.preventDefault()
@@ -831,13 +852,13 @@
   })
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === ' ' && !typingInAField(event) && !spaceHeld) {
+    if (event.key === ' ' && !keyboardIsClaimed(event) && !spaceHeld) {
       spaceHeld = true
       setPanCursor()
       if (event.target.closest('#flow-canvas')) event.preventDefault()
       return
     }
-    if (typingInAField(event)) return
+    if (keyboardIsClaimed(event)) return
     if ((event.metaKey || event.ctrlKey) && (event.key === '=' || event.key === '+')) {
       event.preventDefault()
       zoomByStep(1.2)
@@ -863,7 +884,7 @@
   // =================================================================
   // Keyboard.
   //
-  // Every binding below is guarded by typingInAField first. Without it,
+  // Every binding below is guarded by keyboardIsClaimed first. Without it,
   // typing a block name would delete the selection on Backspace and
   // duplicate it on "d", which is the most destructive thing this file
   // could get wrong.
@@ -906,9 +927,25 @@
     if (!shortcutSheet) return
     shortcutSheet.remove()
     shortcutSheet = null
-    if (shortcutOpener && document.contains(shortcutOpener)) shortcutOpener.focus()
-    else if (canvas()) canvas().focus()
+    // "?" is usually pressed with nothing focused, so the opener is <body>,
+    // which document.contains() happily accepts — focusing it is the same
+    // as focusing nothing. Only a real element counts as somewhere to
+    // return to; otherwise the sheet hands the keyboard to the canvas.
+    const hasOpener = shortcutOpener && shortcutOpener !== document.body && document.contains(shortcutOpener)
+    if (hasOpener) shortcutOpener.focus()
+    else focusCanvas()
     shortcutOpener = null
+  }
+
+  // The canvas is a div, so focus() only lands once it is a focus target;
+  // without this the fallback above silently drops focus on <body>.
+  // tabindex="-1" for the same reason menu.js uses it: the canvas is
+  // clicked or returned to, never tabbed to.
+  function focusCanvas() {
+    const root = canvas()
+    if (!root) return
+    if (!root.hasAttribute('tabindex')) root.tabIndex = -1
+    root.focus()
   }
 
   function openShortcutSheet() {
@@ -1035,9 +1072,11 @@
     if (status()) status().textContent = 'Signal wires removed'
   }
 
+  // No restoreFocus: Escape returning focus to the region it was raised
+  // from is what the menu does by default, and for this region the host is
+  // the canvas itself.
   ProcessLab.menu.register({
     selector: '#flow-canvas',
-    restoreFocus: () => { if (canvas()) canvas().focus() },
     items: (event) => {
       const node = event.target.closest('.block-card')
       // Right-clicking outside the current selection re-targets it; inside
@@ -1091,7 +1130,7 @@
       return
     }
     // The guard comes before every binding, deliberately.
-    if (typingInAField(event)) return
+    if (keyboardIsClaimed(event)) return
     // The dock resizer owns the arrow keys while it has focus.
     if (event.target.closest('[data-dock-resizer], [role="separator"]')) return
     const { grid } = geometry()
@@ -1183,6 +1222,10 @@
     if (event.detail === 0 && event.target.closest('.block-body')) selectBlock(event.target.closest('.block-card'))
   })
   document.addEventListener('keydown', (event) => {
+    // No typingInAField here: Cmd+Enter is meant to run the model from
+    // inside the inspector too. The menu still gets its Escape to itself,
+    // so dismissing a menu raised mid-wire does not also drop the wire.
+    if (ProcessLab.menu.ownsKey(event)) return
     if (event.key === 'Escape') cancelConnection()
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault()

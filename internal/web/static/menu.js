@@ -13,12 +13,14 @@
   const regions = []
   let contextMenu = null
   let openRegion = null
+  let openHost = null
 
   // A region is { selector, items, restoreFocus? }:
   //   selector     — the menu opens for right-clicks inside a match.
   //   items(event, host) — the items for this right-click, built fresh
   //                  each time. Returning an empty list opens nothing.
-  //   restoreFocus() — optional, called after Escape dismisses the menu.
+  //   restoreFocus(host) — optional. Escape hands focus back to the host
+  //                  itself unless a region names a better landing place.
   function register(region) {
     regions.push(region)
   }
@@ -28,6 +30,24 @@
     contextMenu.remove()
     contextMenu = null
     openRegion = null
+    openHost = null
+  }
+
+  // Escape returns focus to the region the menu was raised from, so the
+  // keyboard is not stranded on <body>. Region hosts are ordinary
+  // containers — #flow-canvas is a div — and a div only accepts focus once
+  // it is a focus target, so make it one on the way. tabindex="-1" rather
+  // than "0": the canvas is reached by clicking it or by leaving a menu or
+  // the shortcut sheet, never by tabbing to it, and a positive value would
+  // insert a stop in the tab order between the toolbar and the dock.
+  function restoreFocusTo(region, host) {
+    if (region && region.restoreFocus) {
+      region.restoreFocus(host)
+      return
+    }
+    if (!host || !host.isConnected) return
+    if (!host.hasAttribute('tabindex')) host.tabIndex = -1
+    host.focus()
   }
 
   // Both candidates contain the event target, so one always contains the
@@ -104,6 +124,7 @@
     if (!items.length) return
     contextMenu = buildMenu(items, event.clientX, event.clientY)
     openRegion = match.region
+    openHost = match.host
     const first = contextMenu.querySelector('button')
     if (first) first.focus()
   }
@@ -114,15 +135,32 @@
   }, true)
   document.addEventListener('htmx:beforeSwap', closeContextMenu)
   document.addEventListener('wheel', closeContextMenu, { passive: true })
+  // An open menu owns the keyboard, the same way a focused text field
+  // does: while one is up, a global shortcut elsewhere must not also act on
+  // the key. Callers ask ownsKey() before running theirs.
+  //
+  // The question is asked about the event rather than about the menu alone
+  // because the Escape that closes a menu must answer "yes" for the rest of
+  // its dispatch — otherwise every handler downstream of this one sees a
+  // menu that is already gone and treats the dismissal as a second Escape,
+  // clearing the selection and cancelling any wire in progress.
+  let claimedKey = null
+
+  function ownsKey(event) {
+    return Boolean(contextMenu) || claimedKey === event
+  }
+
   document.addEventListener('keydown', (event) => {
     if (!contextMenu) return
+    claimedKey = event
     const buttons = Array.from(contextMenu.querySelectorAll('button'))
     const index = buttons.indexOf(document.activeElement)
     if (event.key === 'Escape') {
       event.preventDefault()
       const region = openRegion
+      const host = openHost
       closeContextMenu()
-      if (region && region.restoreFocus) region.restoreFocus()
+      restoreFocusTo(region, host)
     } else if (event.key === 'ArrowDown') {
       event.preventDefault()
       buttons[(index + 1) % buttons.length].focus()
@@ -133,5 +171,5 @@
   })
 
   const namespace = window.ProcessLab || (window.ProcessLab = {})
-  namespace.menu = { register }
+  namespace.menu = { register, ownsKey }
 })()
