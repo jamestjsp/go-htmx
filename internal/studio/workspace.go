@@ -109,21 +109,26 @@ func (s *Studio) projects(ctx context.Context) ([]Project, error) {
 	return projects, nil
 }
 
-// projectFlows lists one project's tab strip. NeedsRun compares the two
-// RFC3339Nano timestamps as raw text, exactly as `snapshot` does when it picks
-// the run behind the chart; converting either side to a datetime here is how
-// the amber dot and the dock would start to disagree.
+// flowSelect is the single definition of a flowsheet row for every list the
+// interface draws — the tab strip and the register both read it, so the amber
+// dot in one cannot contradict the amber dot in the other. NeedsRun compares
+// the two RFC3339Nano timestamps as raw text, exactly as `snapshot` does when
+// it picks the run behind the chart; converting either side to a datetime here
+// is how the dot and the dock would start to disagree.
+const flowSelect = `
+	SELECT
+		flows.id, flows.project_id, flows.name,
+		flows.created_at, flows.updated_at, flows.model_updated_at,
+		NOT EXISTS (
+			SELECT 1 FROM simulation_runs
+			WHERE simulation_runs.flow_id = flows.id
+				AND simulation_runs.created_at >= flows.model_updated_at
+		) AS needs_run
+	FROM flows`
+
+// projectFlows lists one project's tab strip.
 func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT
-			flows.id, flows.project_id, flows.name,
-			flows.created_at, flows.updated_at, flows.model_updated_at,
-			NOT EXISTS (
-				SELECT 1 FROM simulation_runs
-				WHERE simulation_runs.flow_id = flows.id
-					AND simulation_runs.created_at >= flows.model_updated_at
-			) AS needs_run
-		FROM flows
+	rows, err := s.db.QueryContext(ctx, flowSelect+`
 		WHERE flows.project_id = ?
 		ORDER BY flows.position, flows.id`,
 		projectID,
@@ -131,6 +136,10 @@ func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, err
 	if err != nil {
 		return nil, fmt.Errorf("list project flows: %w", err)
 	}
+	return scanFlows(rows)
+}
+
+func scanFlows(rows *sql.Rows) ([]Flow, error) {
 	defer rows.Close()
 	var flows []Flow
 	for rows.Next() {
@@ -140,7 +149,7 @@ func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, err
 			&flow.ID, &flow.ProjectID, &flow.Name, &created, &updated, &modelUpdated,
 			&flow.NeedsRun,
 		); err != nil {
-			return nil, fmt.Errorf("scan project flow: %w", err)
+			return nil, fmt.Errorf("scan flow: %w", err)
 		}
 		flow.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		flow.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
@@ -148,7 +157,81 @@ func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, err
 		flows = append(flows, flow)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read project flows: %w", err)
+		return nil, fmt.Errorf("read flows: %w", err)
 	}
 	return flows, nil
+}
+
+// Register is the projects home. Every project arrives with the flowsheets its
+// row expands to reveal, so expansion costs no request, and the sheet count is
+// the length of that same list rather than a separate tally that could
+// disagree with what the row shows.
+type Register struct {
+	Projects []RegisterEntry
+}
+
+// RegisterEntry is one project's row in the register.
+type RegisterEntry struct {
+	Project Project
+	// Flows is the project's tab strip, in the order the workbench shows it,
+	// so a chip in the register links straight to the sheet it names.
+	Flows []Flow
+	// EditedAt is the last time anything in the project moved: its own name,
+	// or any of its flowsheets. A block edit touches only the flowsheet, so a
+	// row reporting the project's own timestamp would sit still while the
+	// user worked.
+	EditedAt time.Time
+}
+
+// FlowCount is how many flowsheets the project holds.
+func (e RegisterEntry) FlowCount() int {
+	return len(e.Flows)
+}
+
+// Register reads the projects home in two queries whatever the number of
+// projects: one for the projects, one for every flowsheet grouped by project.
+// An empty database is an empty register, not an error.
+func (s *Studio) Register(ctx context.Context) (Register, error) {
+	projects, err := s.projects(ctx)
+	if err != nil {
+		return Register{}, err
+	}
+	grouped, err := s.flowsByProject(ctx)
+	if err != nil {
+		return Register{}, err
+	}
+	register := Register{Projects: make([]RegisterEntry, 0, len(projects))}
+	for _, project := range projects {
+		entry := RegisterEntry{
+			Project:  project,
+			Flows:    grouped[project.ID],
+			EditedAt: project.UpdatedAt,
+		}
+		for _, flow := range entry.Flows {
+			if flow.UpdatedAt.After(entry.EditedAt) {
+				entry.EditedAt = flow.UpdatedAt
+			}
+		}
+		register.Projects = append(register.Projects, entry)
+	}
+	return register, nil
+}
+
+// flowsByProject reads every project's tab strip in one query, so the register
+// asks the database once rather than once per project.
+func (s *Studio) flowsByProject(ctx context.Context) (map[int64][]Flow, error) {
+	rows, err := s.db.QueryContext(ctx, flowSelect+`
+		ORDER BY flows.project_id, flows.position, flows.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list flows: %w", err)
+	}
+	flows, err := scanFlows(rows)
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[int64][]Flow)
+	for _, flow := range flows {
+		grouped[flow.ProjectID] = append(grouped[flow.ProjectID], flow)
+	}
+	return grouped, nil
 }
