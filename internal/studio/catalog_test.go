@@ -64,6 +64,53 @@ func TestTransferFunctionUpdateParsesAndValidatesCoefficients(t *testing.T) {
 	}
 }
 
+// Transfer-function properness is a cross-field rule — it compares numerator
+// and denominator length, so it cannot live on either field's own bound. It
+// belongs to BlockTransfer's validate hook, and validateParameters is the one
+// place both validateBlockUpdate (the editor path) and compileFlow (the
+// compile path) call to reach it. This test proves the move to per-definition
+// hooks kept both callers refusing the same improper model, not just one.
+func TestImproperTransferFunctionRefusedByBothEditorAndCompilePaths(t *testing.T) {
+	numerator, denominator := "1, 2, 3", "1, 2"
+	const wantMessage = "transfer function must be proper"
+
+	block := Block{Kind: BlockTransfer, Name: "Plant", Parameters: defaultParameters(BlockTransfer)}
+	_, err := validateBlockUpdate(block, BlockUpdate{
+		Name: "Plant",
+		Parameters: map[string]string{
+			"numerator":   numerator,
+			"denominator": denominator,
+		},
+	})
+	if err == nil || err.Error() != wantMessage {
+		t.Fatalf("validateBlockUpdate error = %v, want %q", err, wantMessage)
+	}
+
+	improperNumerator, parseErr := parseCoefficients(numerator)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	improperDenominator, parseErr := parseCoefficients(denominator)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Input", Parameters: Parameters{Value: 1}},
+		{ID: 2, Kind: BlockTransfer, Name: "Plant", Parameters: Parameters{
+			Numerator: improperNumerator, Denominator: improperDenominator,
+		}},
+		{ID: 3, Kind: BlockScope, Name: "Output"},
+	}
+	connections := []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2},
+		{ID: 2, SourceID: 2, TargetID: 3},
+	}
+	if _, err := compileFlow(blocks, connections); err == nil ||
+		err.Error() != "Plant: "+wantMessage {
+		t.Fatalf("compileFlow error = %v, want %q", err, "Plant: "+wantMessage)
+	}
+}
+
 // updateWithOverride starts from a kind's own defaults, rendered through
 // EditorFields the way the UI would echo them back, then swaps in one bad
 // value. Every other field stays valid, so the returned error can only have

@@ -31,6 +31,23 @@ type ParameterField struct {
 	Help        string
 }
 
+// fieldBound is a numeric parameter's enforced range: the one place that
+// states it. numberField derives the editor's Min/Max strings from it and
+// parameterDefinition.validateBound enforces it from the same two numbers,
+// so an input the editor's attributes accept can never be one the server
+// then rejects (or vice versa).
+type fieldBound struct {
+	// label is the noun bounded()'s error names. It is not always the
+	// field's editor Label — e.g. the PID's "proportional" field is
+	// captioned "Proportional Kp" in the editor, but its violation reads
+	// "proportional gain must be...". Kept as its own value rather than
+	// derived from Label, since the two are independently user-visible
+	// strings that happen to coincide for most fields but not all.
+	label    string
+	min, max float64
+	value    func(Parameters) float64
+}
+
 type parameterDefinition struct {
 	Name        string
 	Label       string
@@ -46,13 +63,42 @@ type parameterDefinition struct {
 	// definition switches on Name again.
 	set  func(*Parameters, string) error
 	text func(Parameters) string
+	// bound is nil for fields with no simple numeric range: text fields,
+	// coefficient lists, and the Padé order, whose integer range is a
+	// cross-field rule enforced by the block's own validate hook instead.
+	bound *fieldBound
+}
+
+// validateBound enforces the field's own numeric range, if it has one.
+// Fields without a bound (text, coefficients, Padé order) have nothing to
+// check here — their rules live in the block's validate hook.
+func (field parameterDefinition) validateBound(parameters Parameters) error {
+	if field.bound == nil {
+		return nil
+	}
+	return bounded(field.bound.label, field.bound.value(parameters), field.bound.min, field.bound.max)
 }
 
 type blockDefinition struct {
 	BlockDefinition
 	Defaults   Parameters
 	Parameters []parameterDefinition
+	// validate carries the rules that are not one field's own bound:
+	// transfer-function properness and order limits, the sign alphabet and
+	// length, the Padé integer range. nil for kinds with no such rule.
+	validate func(Parameters) error
+	// summary renders the block's one-line canvas caption. nil is never
+	// valid for a registered kind — every entry in blockOrder sets one.
+	summary func(Parameters) string
 }
+
+// minApproximation and maxApproximation bound the transport delay's Padé
+// order: the one place that states the range, read by both the editor's
+// Min/Max attributes and the validate hook that enforces it.
+const (
+	minApproximation = 1
+	maxApproximation = 10
+)
 
 var blockOrder = []BlockKind{
 	BlockSource,
@@ -78,9 +124,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Amplitude: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Final value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
-			numberField("initial_value", "Initial value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
-			numberField("step_time", "Step time", "0.05", "0", "120", "sec", func(p *Parameters) *float64 { return &p.StepTime }),
+			numberField("amplitude", "Final value", "final value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
+			numberField("step_time", "Step time", "step time", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
+		},
+		summary: func(parameters Parameters) string {
+			if parameters.StepTime == 0 {
+				return fmt.Sprintf("%.3g step", parameters.Amplitude)
+			}
+			return fmt.Sprintf("%.3g at %.3g s", parameters.Amplitude, parameters.StepTime)
 		},
 	},
 	BlockConstant: {
@@ -91,7 +143,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Value: 1},
 		Parameters: []parameterDefinition{
-			numberField("value", "Value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Value }),
+			numberField("value", "Value", "value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Value }),
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g constant", parameters.Value)
 		},
 	},
 	BlockSine: {
@@ -102,10 +157,13 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Amplitude: 1, Frequency: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Amplitude", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
-			numberField("bias", "Bias", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Bias }),
-			numberField("frequency", "Frequency", "0.05", "0", "1000", "rad/s", func(p *Parameters) *float64 { return &p.Frequency }),
-			numberField("phase", "Phase", "0.05", "-1000", "1000", "rad", func(p *Parameters) *float64 { return &p.Phase }),
+			numberField("amplitude", "Amplitude", "amplitude", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("bias", "Bias", "bias", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Bias }),
+			numberField("frequency", "Frequency", "frequency", "0.05", 0, 1000, "rad/s", func(p *Parameters) *float64 { return &p.Frequency }),
+			numberField("phase", "Phase", "phase", "0.05", -1000, 1000, "rad", func(p *Parameters) *float64 { return &p.Phase }),
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g sin(%.3gt)", parameters.Amplitude, parameters.Frequency)
 		},
 	},
 	BlockGain: {
@@ -116,7 +174,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Gain: 1},
 		Parameters: []parameterDefinition{
-			numberField("gain", "Gain", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Gain }),
+			numberField("gain", "Gain", "gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Gain }),
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("K = %.3g", parameters.Gain)
 		},
 	},
 	BlockSum: {
@@ -135,6 +196,20 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			},
 			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
+		validate: func(parameters Parameters) error {
+			if len(parameters.Signs) == 0 || len(parameters.Signs) > 16 {
+				return invalid("input signs must contain 1 to 16 plus or minus signs")
+			}
+			for _, sign := range parameters.Signs {
+				if sign != '+' && sign != '-' {
+					return invalid("input signs may contain only + and -")
+				}
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return "signs " + parameters.Signs
+		},
 	},
 	BlockLag: {
 		BlockDefinition: BlockDefinition{
@@ -144,7 +219,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{TimeConstant: 1},
 		Parameters: []parameterDefinition{
-			numberField("time_constant", "Time constant", "0.05", "0.001", "1000", "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
+			numberField("time_constant", "Time constant", "time constant", "0.05", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("τ = %.3g s", parameters.TimeConstant)
 		},
 	},
 	BlockIntegrator: {
@@ -153,6 +231,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
 			HasInput: true, HasOutput: true,
 		},
+		summary: func(Parameters) string { return "1 / s" },
 	},
 	BlockTransfer: {
 		BlockDefinition: BlockDefinition{
@@ -165,6 +244,24 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			coefficientField("numerator", "Numerator coefficients", "1, 3", func(p *Parameters) *[]float64 { return &p.Numerator }),
 			coefficientField("denominator", "Denominator coefficients", "1, 2, 1", func(p *Parameters) *[]float64 { return &p.Denominator }),
 		},
+		validate: func(parameters Parameters) error {
+			if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
+				return invalid("transfer function coefficients are required")
+			}
+			if len(parameters.Numerator) > 9 || len(parameters.Denominator) > 9 {
+				return invalid("transfer functions are limited to eighth order")
+			}
+			if len(parameters.Numerator) > len(parameters.Denominator) {
+				return invalid("transfer function must be proper")
+			}
+			if parameters.Denominator[0] == 0 {
+				return invalid("denominator leading coefficient must be nonzero")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return polynomialText(parameters.Numerator) + " / " + polynomialText(parameters.Denominator)
+		},
 	},
 	BlockPID: {
 		BlockDefinition: BlockDefinition{
@@ -174,10 +271,14 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Proportional: 1, Integral: 0.5, FilterTime: 0.1},
 		Parameters: []parameterDefinition{
-			numberField("proportional", "Proportional Kp", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
-			numberField("integral", "Integral Ki", "0.05", "-10000", "10000", "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
-			numberField("derivative", "Derivative Kd", "0.05", "-10000", "10000", "sec", func(p *Parameters) *float64 { return &p.Derivative }),
-			numberField("filter_time", "Derivative filter Tf", "0.01", "0.001", "1000", "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
+				parameters.Proportional, parameters.Integral, parameters.Derivative)
 		},
 	},
 	BlockDelay: {
@@ -188,10 +289,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Delay: 1, Approximation: 3},
 		Parameters: []parameterDefinition{
-			numberField("delay", "Delay", "0.05", "0", "120", "sec", func(p *Parameters) *float64 { return &p.Delay }),
+			numberField("delay", "Delay", "delay", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.Delay }),
 			{
 				Name: "approximation", Label: "Padé order", Type: "number",
-				Step: "1", Min: "1", Max: "10", Unit: "order",
+				Step: "1", Min: strconv.Itoa(minApproximation), Max: strconv.Itoa(maxApproximation), Unit: "order",
 				set: func(parameters *Parameters, raw string) error {
 					value, err := strconv.Atoi(strings.TrimSpace(raw))
 					if err != nil {
@@ -203,6 +304,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 			},
 		},
+		validate: func(parameters Parameters) error {
+			if parameters.Approximation < minApproximation || parameters.Approximation > maxApproximation {
+				return invalid("Padé order must be between %d and %d", minApproximation, maxApproximation)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g s · Padé %d", parameters.Delay, parameters.Approximation)
+		},
 	},
 	BlockScope: {
 		BlockDefinition: BlockDefinition{
@@ -210,6 +320,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Plot a signal", Glyph: "⌁", Tag: "OUTPUT",
 			HasInput: true,
 		},
+		summary: func(Parameters) string { return "trend output" },
 	},
 	BlockSpectrum: {
 		BlockDefinition: BlockDefinition{
@@ -217,15 +328,21 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Hann-windowed FFT", Glyph: "FFT", Tag: "DSP SINK",
 			HasInput: true,
 		},
+		summary: func(Parameters) string { return "frequency output" },
 	},
 }
 
 // numberField builds a scalar float field from a selector picking its home
 // in Parameters, so the block definition stays the only place that names it.
-func numberField(name, label, step, min, max, unit string, field func(*Parameters) *float64) parameterDefinition {
+// min and max are the field's one range authority: the editor's Min/Max
+// attributes and validateBound's enforcement both derive from these two
+// numbers, so the range cannot state itself two different ways. boundsLabel
+// is kept distinct from label because the two are independently user-visible
+// strings — see fieldBound's comment.
+func numberField(name, label, boundsLabel, step string, min, max float64, unit string, field func(*Parameters) *float64) parameterDefinition {
 	return parameterDefinition{
 		Name: name, Label: label, Type: "number",
-		Step: step, Min: min, Max: max, Unit: unit,
+		Step: step, Min: formatFloat(min), Max: formatFloat(max), Unit: unit,
 		set: func(parameters *Parameters, raw string) error {
 			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 			if err != nil {
@@ -235,9 +352,21 @@ func numberField(name, label, step, min, max, unit string, field func(*Parameter
 			return nil
 		},
 		text: func(parameters Parameters) string {
-			return strconv.FormatFloat(*field(&parameters), 'g', -1, 64)
+			return formatFloat(*field(&parameters))
+		},
+		bound: &fieldBound{
+			label: boundsLabel, min: min, max: max,
+			value: func(parameters Parameters) float64 { return *field(&parameters) },
 		},
 	}
+}
+
+// formatFloat renders a float64 the same way whether it backs a live
+// parameter value or a field's static bound, so an editor's Min/Max
+// attribute and its current value always agree on how a number like -10000
+// or 0.001 prints.
+func formatFloat(value float64) string {
+	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 // coefficientField is numberField's counterpart for the polynomial
@@ -301,38 +430,11 @@ func (b Block) EditorFields() []ParameterField {
 }
 
 func (b Block) Summary() string {
-	switch b.Kind {
-	case BlockSource:
-		if b.Parameters.StepTime == 0 {
-			return fmt.Sprintf("%.3g step", b.Parameters.Amplitude)
-		}
-		return fmt.Sprintf("%.3g at %.3g s", b.Parameters.Amplitude, b.Parameters.StepTime)
-	case BlockConstant:
-		return fmt.Sprintf("%.3g constant", b.Parameters.Value)
-	case BlockSine:
-		return fmt.Sprintf("%.3g sin(%.3gt)", b.Parameters.Amplitude, b.Parameters.Frequency)
-	case BlockGain:
-		return fmt.Sprintf("K = %.3g", b.Parameters.Gain)
-	case BlockSum:
-		return "signs " + b.Parameters.Signs
-	case BlockLag:
-		return fmt.Sprintf("τ = %.3g s", b.Parameters.TimeConstant)
-	case BlockIntegrator:
-		return "1 / s"
-	case BlockTransfer:
-		return polynomialText(b.Parameters.Numerator) + " / " + polynomialText(b.Parameters.Denominator)
-	case BlockPID:
-		return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
-			b.Parameters.Proportional, b.Parameters.Integral, b.Parameters.Derivative)
-	case BlockDelay:
-		return fmt.Sprintf("%.3g s · Padé %d", b.Parameters.Delay, b.Parameters.Approximation)
-	case BlockScope:
-		return "trend output"
-	case BlockSpectrum:
-		return "frequency output"
-	default:
+	definition, ok := blockDefinitions[b.Kind]
+	if !ok || definition.summary == nil {
 		return ""
 	}
+	return definition.summary(b.Parameters)
 }
 
 func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
@@ -366,77 +468,24 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 	return block, nil
 }
 
+// validateParameters is the one entry point both the editor path
+// (validateBlockUpdate) and the compile path (simulate.go's compileFlow) call
+// to enforce a block's rules: each field's own bound first, in the order the
+// definition lists them, then the block's cross-field validate hook.
 func validateParameters(kind BlockKind, parameters Parameters) error {
-	switch kind {
-	case BlockSource:
-		if err := bounded("final value", parameters.Amplitude, -10000, 10000); err != nil {
+	definition, ok := blockDefinitions[kind]
+	if !ok {
+		return nil
+	}
+	for _, field := range definition.Parameters {
+		if err := field.validateBound(parameters); err != nil {
 			return err
-		}
-		if err := bounded("initial value", parameters.InitialValue, -10000, 10000); err != nil {
-			return err
-		}
-		return bounded("step time", parameters.StepTime, 0, 120)
-	case BlockConstant:
-		return bounded("value", parameters.Value, -10000, 10000)
-	case BlockSine:
-		for label, value := range map[string]float64{
-			"amplitude": parameters.Amplitude,
-			"bias":      parameters.Bias,
-			"phase":     parameters.Phase,
-		} {
-			if err := bounded(label, value, -10000, 10000); err != nil {
-				return err
-			}
-		}
-		return bounded("frequency", parameters.Frequency, 0, 1000)
-	case BlockGain:
-		return bounded("gain", parameters.Gain, -10000, 10000)
-	case BlockSum:
-		if len(parameters.Signs) == 0 || len(parameters.Signs) > 16 {
-			return invalid("input signs must contain 1 to 16 plus or minus signs")
-		}
-		for _, sign := range parameters.Signs {
-			if sign != '+' && sign != '-' {
-				return invalid("input signs may contain only + and -")
-			}
-		}
-	case BlockLag:
-		return bounded("time constant", parameters.TimeConstant, 0.001, 1000)
-	case BlockTransfer:
-		if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
-			return invalid("transfer function coefficients are required")
-		}
-		if len(parameters.Numerator) > 9 || len(parameters.Denominator) > 9 {
-			return invalid("transfer functions are limited to eighth order")
-		}
-		if len(parameters.Numerator) > len(parameters.Denominator) {
-			return invalid("transfer function must be proper")
-		}
-		if parameters.Denominator[0] == 0 {
-			return invalid("denominator leading coefficient must be nonzero")
-		}
-	case BlockPID:
-		for label, value := range map[string]float64{
-			"proportional gain": parameters.Proportional,
-			"integral gain":     parameters.Integral,
-			"derivative gain":   parameters.Derivative,
-		} {
-			if err := bounded(label, value, -10000, 10000); err != nil {
-				return err
-			}
-		}
-		if err := bounded("derivative filter", parameters.FilterTime, 0.001, 1000); err != nil {
-			return err
-		}
-	case BlockDelay:
-		if err := bounded("delay", parameters.Delay, 0, 120); err != nil {
-			return err
-		}
-		if parameters.Approximation < 1 || parameters.Approximation > 10 {
-			return invalid("Padé order must be between 1 and 10")
 		}
 	}
-	return nil
+	if definition.validate == nil {
+		return nil
+	}
+	return definition.validate(parameters)
 }
 
 func bounded(label string, value, minimum, maximum float64) error {
