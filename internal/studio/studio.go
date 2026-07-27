@@ -58,11 +58,17 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 			return err
 		}
 		name := fmt.Sprintf("%s %d", kind.Label(), count+1)
+		encoded, err := encodeParameters(parameters)
+		if err != nil {
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO blocks(flow_id, kind, name, x, y, amplitude, gain, time_constant)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO blocks(
+				flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+			)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			flowID, kind, name, placed.X, placed.Y,
-			parameters.Amplitude, parameters.Gain, parameters.TimeConstant,
+			parameters.Amplitude, parameters.Gain, parameters.TimeConstant, encoded,
 		)
 		if err != nil {
 			return fmt.Errorf("add block: %w", err)
@@ -126,11 +132,16 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 			return err
 		}
 		flowID = block.FlowID
+		encoded, err := encodeParameters(block.Parameters)
+		if err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx, `
-			UPDATE blocks SET name = ?, amplitude = ?, gain = ?, time_constant = ?
+			UPDATE blocks
+			SET name = ?, amplitude = ?, gain = ?, time_constant = ?, parameters_json = ?
 			WHERE id = ?`,
 			block.Name, block.Parameters.Amplitude, block.Parameters.Gain,
-			block.Parameters.TimeConstant, block.ID,
+			block.Parameters.TimeConstant, encoded, block.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("update block: %w", err)

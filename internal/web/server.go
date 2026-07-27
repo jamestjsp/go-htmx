@@ -134,18 +134,15 @@ func (s *Server) updateBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, blockID, err)
 		return
 	}
-	parameter, err := strconv.ParseFloat(r.FormValue("parameter"), 64)
-	if r.FormValue("parameter") == "" {
-		parameter = 0
-		err = nil
-	}
-	if err != nil {
-		s.renderFailure(w, r, 0, blockID, &studio.ValidationError{Message: "parameter must be a number"})
-		return
+	parameters := make(map[string]string, len(r.PostForm))
+	for name, values := range r.PostForm {
+		if name != "name" && len(values) != 0 {
+			parameters[name] = values[0]
+		}
 	}
 	snapshot, err := s.studio.UpdateBlock(r.Context(), blockID, studio.BlockUpdate{
-		Name:      r.FormValue("name"),
-		Parameter: parameter,
+		Name:       r.FormValue("name"),
+		Parameters: parameters,
 	})
 	if err != nil {
 		s.renderFailure(w, r, 0, blockID, err)

@@ -67,17 +67,26 @@ The Go handlers state user intent and call one cohesive service operation. They 
 
 ## Supported blocks
 
-| Block | Behavior | Input rule |
-| --- | --- | --- |
-| Source | Produces a step with configurable amplitude | No input |
-| Gain | Multiplies its input by `K` | Exactly one |
-| First-order lag | `dx/dt = (u - x) / τ` | Exactly one |
-| Sum | Adds every connected signal | One or more |
-| Scope | Marks a signal as a plotted output | Exactly one |
+| Library | Block | Behavior | Input rule |
+| --- | --- | --- | --- |
+| Sources | Step | Configurable initial value, final value, and step time | No input |
+| Sources | Constant | Constant signal | No input |
+| Sources | Sine Wave | Biased sinusoid with amplitude, angular frequency, and phase | No input |
+| Math | Gain | Multiplies its input by `K` | Exactly one |
+| Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One or more |
+| Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
+| Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
+| Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
+| Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
+| Continuous | Transport Delay | Continuous delay represented by a selectable Padé order | Exactly one |
+| Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
+| Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
-Flows may branch and merge. Cycles are rejected because this demo compiles an acyclic signal graph. Every Source scales the same external unit-step input, which keeps arbitrary user-created linear flows representable as one continuous-time state-space model.
+Flows may branch and merge. Cycles are rejected because this version compiles an acyclic signal graph. Every source owns a separate external input channel, so Step, Constant, and Sine Wave blocks remain independent when a model branches or merges.
 
-Lag blocks become states. During topological compilation, every algebraic block is represented as coefficients of the state vector and external input. The compiler assembles `A`, `B`, `C`, and `D` matrices, constructs a `controlsys.System`, and calls `controlsys.Lsim` on the requested time grid.
+Each math or continuous block becomes a locally named `controlsys.System`. `controlsys.ConnectByName` composes those realizations into one state-space model, and `controlsys.Lsim` evaluates it on the requested time grid. Spectrum Analyzer sinks then apply Gonum's Hann window and real FFT to their selected response.
+
+The linear boundary is deliberate. State-Space is deferred until the editor supports matrices and MIMO ports. Unit Delay and discrete filters require an explicit mixed-sample-time policy. Product, Saturation, Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this compiler does not silently linearize them.
 
 The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.
 
@@ -86,12 +95,12 @@ The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the G
 The database stores:
 
 - flows and separate layout/model update timestamps;
-- blocks, positions, and typed numerical parameters;
+- blocks, positions, and version-tolerant JSON parameters;
 - signal connections with foreign keys and uniqueness constraints;
 - recent activity events;
 - complete simulation runs as JSON time series.
 
-Model edits invalidate the displayed result, while layout-only moves do not. Historical runs remain in SQLite. Schema startup includes a migration for databases created before model timestamps were introduced.
+Model edits invalidate the displayed result, while layout-only moves do not. Historical runs remain in SQLite. Schema startup migrates databases created before model timestamps or JSON block parameters were introduced.
 
 ## Project structure
 
@@ -111,6 +120,6 @@ go test -race ./...
 go build ./cmd/processlab
 ```
 
-The persistent tests cover SQLite round trips, migration-sensitive result validity, collision-free block placement, connection constraints, cycle rejection, analytic simulation output, HTML fragment behavior, embedded assets, and HTTP editing flows.
+The persistent tests cover SQLite round trips and legacy migration, collision-free block placement, connection constraints, cycle rejection, analytic control-block responses, FFT peak detection, HTML fragment behavior, embedded assets, and multi-field HTTP editing flows.
 
 The browser verification exercised add, select, edit, drag, connect, simulate, delete, refresh persistence, desktop rendering, and the no-overflow 768-pixel responsive layout.

@@ -234,6 +234,7 @@ button {
 .palette-panel {
   padding: 22px 16px;
   border-right: 1px solid var(--line);
+  overflow-y: auto;
 }
 
 .panel-heading h2,
@@ -324,6 +325,15 @@ button {
   margin-top: 2px;
   color: #7c8582;
   font-size: 9px;
+}
+
+.palette-item .palette-category {
+  margin: 0 0 2px;
+  color: #989e9b;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
 }
 
 .add-glyph {
@@ -533,7 +543,11 @@ kbd {
   border-left-color: var(--orange);
 }
 
-.block-lag {
+.block-lag,
+.block-integrator,
+.block-transfer,
+.block-pid,
+.block-delay {
   border-left-color: var(--blue);
 }
 
@@ -801,6 +815,13 @@ kbd {
   background: #fbfaf6;
 }
 
+.visualization-stack {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
 .trend-panel {
   min-width: 0;
   border: 1px solid #dfddd6;
@@ -840,6 +861,14 @@ kbd {
   width: 100%;
   height: 228px;
   display: block;
+}
+
+.spectrum-chart {
+  height: 190px;
+}
+
+.spectrum-path {
+  stroke-width: 1.75;
 }
 
 .chart-grid {
@@ -1027,6 +1056,14 @@ kbd {
   padding: 0 8px;
   color: #8a9290;
   font-size: 8px;
+}
+
+.property-form .field-help {
+  display: block;
+  margin-top: 4px;
+  color: #89928f;
+  font-size: 8px;
+  line-height: 1.4;
 }
 
 .property-readout {

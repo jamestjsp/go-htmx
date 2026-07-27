@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS blocks (
 	y INTEGER NOT NULL,
 	amplitude REAL NOT NULL DEFAULT 0,
 	gain REAL NOT NULL DEFAULT 0,
-	time_constant REAL NOT NULL DEFAULT 0
+	time_constant REAL NOT NULL DEFAULT 0,
+	parameters_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS connections (
 	id INTEGER PRIMARY KEY,
@@ -75,6 +76,10 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureParametersJSON(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	studio := &Studio{db: db, now: time.Now}
 	if err := studio.seed(ctx); err != nil {
@@ -82,6 +87,38 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		return nil, err
 	}
 	return studio, nil
+}
+
+func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(blocks)")
+	if err != nil {
+		return fmt.Errorf("inspect blocks schema: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var index, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&index, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan blocks schema: %w", err)
+		}
+		if name == "parameters_json" {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close blocks schema: %w", err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		"ALTER TABLE blocks ADD COLUMN parameters_json TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return fmt.Errorf("add block parameters: %w", err)
+	}
+	return nil
 }
 
 func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
@@ -167,11 +204,17 @@ func (s *Studio) seed(ctx context.Context) error {
 
 		ids := make([]int64, len(seeds))
 		for i, seed := range seeds {
+			encoded, err := encodeParameters(seed.p)
+			if err != nil {
+				return err
+			}
 			result, err := tx.ExecContext(ctx, `
-				INSERT INTO blocks(flow_id, kind, name, x, y, amplitude, gain, time_constant)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+				INSERT INTO blocks(
+					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+				)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				flowID, seed.kind, seed.name, seed.x, seed.y,
-				seed.p.Amplitude, seed.p.Gain, seed.p.TimeConstant,
+				seed.p.Amplitude, seed.p.Gain, seed.p.TimeConstant, encoded,
 			)
 			if err != nil {
 				return fmt.Errorf("seed block %q: %w", seed.name, err)
@@ -235,20 +278,27 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	snapshot.Flow.ModelUpdatedAt, _ = time.Parse(time.RFC3339Nano, modelUpdated)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant
+		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
 		FROM blocks WHERE flow_id = ? ORDER BY id`, flowID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load blocks: %w", err)
 	}
 	for rows.Next() {
 		var block Block
+		var legacy Parameters
+		var encoded string
 		if err := rows.Scan(
 			&block.ID, &block.FlowID, &block.Kind, &block.Name,
 			&block.Position.X, &block.Position.Y,
-			&block.Parameters.Amplitude, &block.Parameters.Gain, &block.Parameters.TimeConstant,
+			&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
 		); err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("scan block: %w", err)
+		}
+		block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+		if err != nil {
+			rows.Close()
+			return Snapshot{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
 		}
 		snapshot.Blocks = append(snapshot.Blocks, block)
 	}
@@ -327,13 +377,15 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 
 func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	var block Block
+	var legacy Parameters
+	var encoded string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant
+		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
 		FROM blocks WHERE id = ?`, id,
 	).Scan(
 		&block.ID, &block.FlowID, &block.Kind, &block.Name,
 		&block.Position.X, &block.Position.Y,
-		&block.Parameters.Amplitude, &block.Parameters.Gain, &block.Parameters.TimeConstant,
+		&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Block{}, ErrNotFound
@@ -341,5 +393,36 @@ func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	if err != nil {
 		return Block{}, fmt.Errorf("load block: %w", err)
 	}
+	block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+	if err != nil {
+		return Block{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
+	}
 	return block, nil
+}
+
+func encodeParameters(parameters Parameters) (string, error) {
+	encoded, err := json.Marshal(parameters)
+	if err != nil {
+		return "", fmt.Errorf("encode block parameters: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func decodeParameters(kind BlockKind, encoded string, legacy Parameters) (Parameters, error) {
+	parameters := defaultParameters(kind)
+	if encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
+			return Parameters{}, err
+		}
+		return parameters, nil
+	}
+	switch kind {
+	case BlockSource:
+		parameters.Amplitude = legacy.Amplitude
+	case BlockGain:
+		parameters.Gain = legacy.Gain
+	case BlockLag:
+		parameters.TimeConstant = legacy.TimeConstant
+	}
+	return parameters, nil
 }

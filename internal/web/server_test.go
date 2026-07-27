@@ -64,8 +64,8 @@ func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
 	block := afterAdd.Blocks[len(afterAdd.Blocks)-1]
 
 	update := request(t, server, http.MethodPut, "/blocks/"+strconv.FormatInt(block.ID, 10), url.Values{
-		"name":      {"Heat exchanger"},
-		"parameter": {"3.5"},
+		"name":          {"Heat exchanger"},
+		"time_constant": {"3.5"},
 	})
 	if update.Code != http.StatusOK || !strings.Contains(update.Body.String(), "Heat exchanger") {
 		t.Fatalf("update status = %d, body = %s", update.Code, update.Body.String())
@@ -85,6 +85,121 @@ func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
 	for _, candidate := range afterMove.Blocks {
 		if candidate.ID == block.ID && candidate.Position != (studio.Point{X: 410, Y: 190}) {
 			t.Fatalf("position = %#v", candidate.Position)
+		}
+	}
+}
+
+func TestCatalogPaletteAndTransferFunctionEditor(t *testing.T) {
+	server, service := openTestServer(t)
+	page := request(t, server, http.MethodGet, "/", nil)
+	for _, expected := range []string{
+		"Constant", "Sine Wave", "Integrator", "Transfer Function",
+		"PID Controller", "Transport Delay", "Spectrum Analyzer",
+	} {
+		if !strings.Contains(page.Body.String(), expected) {
+			t.Errorf("palette does not contain %q", expected)
+		}
+	}
+
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := request(t, server, http.MethodPost, "/flows/1/blocks", url.Values{
+		"kind": {"transfer"},
+		"x":    {"170"},
+		"y":    {"280"},
+	})
+	if add.Code != http.StatusOK {
+		t.Fatalf("add status = %d, body = %s", add.Code, add.Body.String())
+	}
+	afterAdd, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterAdd.Blocks) != len(snapshot.Blocks)+1 {
+		t.Fatalf("block count = %d", len(afterAdd.Blocks))
+	}
+	block := afterAdd.Blocks[len(afterAdd.Blocks)-1]
+	body := add.Body.String()
+	for _, expected := range []string{
+		`name="numerator"`, `value="1"`,
+		`name="denominator"`, `value="1, 1"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("editor does not contain %q", expected)
+		}
+	}
+
+	update := request(t, server, http.MethodPut, "/blocks/"+strconv.FormatInt(block.ID, 10), url.Values{
+		"name":        {"Plant"},
+		"numerator":   {"2, 1"},
+		"denominator": {"1, 3, 2"},
+	})
+	if update.Code != http.StatusOK || !strings.Contains(update.Body.String(), "[2, 1] / [1, 3, 2]") {
+		t.Fatalf("update status = %d, body = %s", update.Code, update.Body.String())
+	}
+}
+
+func TestSpectrumAnalyzerThroughHTMXFlow(t *testing.T) {
+	server, service := openTestServer(t)
+	addSine := request(t, server, http.MethodPost, "/flows/1/blocks", url.Values{
+		"kind": {"sine"},
+		"x":    {"30"},
+		"y":    {"470"},
+	})
+	if addSine.Code != http.StatusOK {
+		t.Fatalf("add sine status = %d, body = %s", addSine.Code, addSine.Body.String())
+	}
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sine := snapshot.Blocks[len(snapshot.Blocks)-1]
+	update := request(t, server, http.MethodPut, "/blocks/"+strconv.FormatInt(sine.ID, 10), url.Values{
+		"name":      {"Two hertz"},
+		"amplitude": {"1.25"},
+		"bias":      {"0"},
+		"frequency": {"12.566370614359172"},
+		"phase":     {"0"},
+	})
+	if update.Code != http.StatusOK {
+		t.Fatalf("update sine status = %d, body = %s", update.Code, update.Body.String())
+	}
+
+	addSpectrum := request(t, server, http.MethodPost, "/flows/1/blocks", url.Values{
+		"kind": {"spectrum"},
+		"x":    {"750"},
+		"y":    {"470"},
+	})
+	if addSpectrum.Code != http.StatusOK {
+		t.Fatalf("add spectrum status = %d, body = %s", addSpectrum.Code, addSpectrum.Body.String())
+	}
+	snapshot, err = service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spectrum := snapshot.Blocks[len(snapshot.Blocks)-1]
+	connect := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id": {strconv.FormatInt(sine.ID, 10)},
+		"target_id": {strconv.FormatInt(spectrum.ID, 10)},
+	})
+	if connect.Code != http.StatusOK {
+		t.Fatalf("connect status = %d, body = %s", connect.Code, connect.Body.String())
+	}
+
+	run := request(t, server, http.MethodPost, "/flows/1/simulations", url.Values{
+		"duration":    {"3.99"},
+		"sample_time": {"0.01"},
+	})
+	if run.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", run.Code, run.Body.String())
+	}
+	for _, expected := range []string{
+		"frequency spectrum", "Peak 2 Hz", "controlsys + Gonum FFT",
+	} {
+		if !strings.Contains(run.Body.String(), expected) {
+			t.Errorf("spectrum result does not contain %q", expected)
 		}
 	}
 }

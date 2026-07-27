@@ -42,7 +42,11 @@
           <input type="hidden" name="y" value="{{.Y}}">
           <button class="palette-item palette-{{.Kind}}" type="submit">
             <span class="palette-glyph">{{.Glyph}}</span>
-            <span><strong>{{.Label}}</strong><small>{{.Description}}</small></span>
+            <span>
+              <small class="palette-category">{{.Category}}</small>
+              <strong>{{.Label}}</strong>
+              <small>{{.Description}}</small>
+            </span>
             <span class="add-glyph">+</span>
           </button>
         </form>
@@ -90,19 +94,17 @@
 
           {{range .Blocks}}
           <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
-            {{if .Kind.HasInput}}
+            {{if .Definition.HasInput}}
             <button type="button" class="port port-input" data-input-port="{{.ID}}" aria-label="Connect to {{.Name}}"></button>
             {{end}}
             <button
               class="block-body"
               type="button">
-              <span class="block-kind">
-                {{if eq .Kind "source"}}STEP{{else if eq .Kind "gain"}}GAIN{{else if eq .Kind "lag"}}DYNAMIC{{else if eq .Kind "sum"}}MATH{{else}}OUTPUT{{end}}
-              </span>
+              <span class="block-kind">{{.Definition.Tag}}</span>
               <strong>{{.Name}}</strong>
               <small>{{.ParameterText}}</small>
             </button>
-            {{if .Kind.HasOutput}}
+            {{if .Definition.HasOutput}}
             <button type="button" class="port port-output" data-output-port="{{.ID}}" data-output-name="{{.Name}}" aria-label="Connect from {{.Name}}"></button>
             {{end}}
           </article>
@@ -135,6 +137,8 @@
 
         {{if .Chart.Present}}
         <div class="results-body">
+          <div class="visualization-stack">
+          {{if .Chart.Paths}}
           <div class="trend-panel">
             <div class="trend-legend">
               {{range .Chart.Paths}}<span><i style="background:{{.Color}}"></i>{{.Name}}</span>{{end}}
@@ -155,6 +159,23 @@
               <text x="760" y="218" class="axis-title">seconds</text>
             </svg>
           </div>
+          {{end}}
+          {{range .Chart.Spectra}}
+          <div class="trend-panel spectrum-panel">
+            <div class="trend-legend">
+              <span><i style="background:#2a8f83"></i>{{.Name}}</span>
+              <small>Peak {{.PeakFrequency}} · amplitude {{.PeakMagnitude}}</small>
+            </div>
+            <svg class="trend-chart spectrum-chart" viewBox="0 0 780 190" role="img" aria-label="{{.Name}} frequency spectrum">
+              <line x1="48" x2="762" y1="160" y2="160" class="chart-grid"></line>
+              <line x1="48" x2="48" y1="18" y2="160" class="chart-grid"></line>
+              <text x="48" y="180" class="chart-label x-label">0</text>
+              <text x="762" y="180" class="chart-label x-label">{{.MaxFrequency}}</text>
+              <path d="{{.D}}" fill="none" stroke="#2a8f83" class="trend-path spectrum-path"></path>
+            </svg>
+          </div>
+          {{end}}
+          </div>
           <div class="metric-panel">
             {{range .Chart.Metrics}}
             <article class="metric-card">
@@ -167,8 +188,8 @@
             </article>
             {{end}}
             <div class="solver-badge">
-              <span>STATE SPACE</span>
-              <b>controlsys</b>
+              <span>NUMERICAL ENGINE</span>
+              <b>controlsys + Gonum FFT</b>
               <small>{{.Chart.SampleTime}} s sample</small>
             </div>
           </div>
@@ -188,7 +209,7 @@
       <div class="inspector-heading">
         <div>
           <span class="eyebrow">Inspector</span>
-          <h2>{{.Selected.Kind.Label}}</h2>
+          <h2>{{.Selected.Definition.Label}}</h2>
         </div>
         <span class="object-id">#{{.Selected.ID}}</span>
       </div>
@@ -197,16 +218,23 @@
           <span>Block name</span>
           <input type="text" name="name" value="{{.Selected.Name}}" maxlength="48" required>
         </label>
-        {{if .Selected.ParameterLabel}}
+        {{range .Selected.Fields}}
         <label>
-          <span>{{.Selected.ParameterLabel}}</span>
+          <span>{{.Label}}</span>
           <div class="unit-input">
-            <input type="number" name="parameter" value="{{.Selected.ParameterValue}}" step="0.05" required>
-            <small>{{if eq .Selected.Kind "lag"}}sec{{else}}scalar{{end}}</small>
+            <input
+              type="{{.Type}}"
+              name="{{.Name}}"
+              value="{{.Value}}"
+              {{if .Step}}step="{{.Step}}"{{end}}
+              {{if .Min}}min="{{.Min}}"{{end}}
+              {{if .Max}}max="{{.Max}}"{{end}}
+              {{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
+              required>
+            {{if .Unit}}<small>{{.Unit}}</small>{{end}}
           </div>
+          {{if .Help}}<small class="field-help">{{.Help}}</small>{{end}}
         </label>
-        {{else}}
-        <input type="hidden" name="parameter" value="0">
         {{end}}
         <div class="property-readout">
           <div><span>Type</span><b>{{.Selected.Kind}}</b></div>

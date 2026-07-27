@@ -29,6 +29,8 @@ type workbenchView struct {
 
 type blockView struct {
 	studio.Block
+	Definition    studio.BlockDefinition
+	Fields        []studio.ParameterField
 	Selected      bool
 	ParameterText string
 }
@@ -47,12 +49,9 @@ type inspectorLink struct {
 }
 
 type paletteItem struct {
-	Kind        studio.BlockKind
-	Label       string
-	Description string
-	Glyph       string
-	X           int
-	Y           int
+	studio.BlockDefinition
+	X int
+	Y int
 }
 
 type chartView struct {
@@ -64,6 +63,7 @@ type chartView struct {
 	SampleTime string
 	CreatedAt  string
 	Metrics    []studio.Metric
+	Spectra    []spectrumView
 }
 
 type chartPath struct {
@@ -77,6 +77,14 @@ type chartGrid struct {
 	Label    string
 }
 
+type spectrumView struct {
+	Name          string
+	D             string
+	PeakFrequency string
+	PeakMagnitude string
+	MaxFrequency  string
+}
+
 func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage string) workbenchView {
 	view := workbenchView{
 		Snapshot:        snapshot,
@@ -84,33 +92,24 @@ func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage s
 		Updated:         relativeTime(snapshot.Flow.UpdatedAt),
 		BlockCount:      len(snapshot.Blocks),
 		ConnectionCount: len(snapshot.Connections),
-		Palette: []paletteItem{
-			{studio.BlockSource, "Source", "Step input", "↗", 30, 90},
-			{studio.BlockGain, "Gain", "Scale a signal", "×", 30, 90},
-			{studio.BlockLag, "Lag", "First-order dynamics", "τ", 30, 90},
-			{studio.BlockSum, "Sum", "Merge signals", "Σ", 30, 90},
-			{studio.BlockScope, "Scope", "Plot an output", "⌁", 30, 90},
-		},
+	}
+	for _, definition := range studio.BlockLibrary() {
+		view.Palette = append(view.Palette, paletteItem{
+			BlockDefinition: definition,
+			X:               30,
+			Y:               90,
+		})
 	}
 
 	blockNames := make(map[int64]string, len(snapshot.Blocks))
 	for _, block := range snapshot.Blocks {
 		blockNames[block.ID] = block.Name
 		item := blockView{
-			Block:    block,
-			Selected: block.ID == selectedID,
-		}
-		switch block.Kind {
-		case studio.BlockSource:
-			item.ParameterText = fmt.Sprintf("%.2g step", block.Parameters.Amplitude)
-		case studio.BlockGain:
-			item.ParameterText = fmt.Sprintf("K = %.3g", block.Parameters.Gain)
-		case studio.BlockLag:
-			item.ParameterText = fmt.Sprintf("τ = %.3g s", block.Parameters.TimeConstant)
-		case studio.BlockSum:
-			item.ParameterText = "multi-input"
-		case studio.BlockScope:
-			item.ParameterText = "trend output"
+			Block:         block,
+			Definition:    block.Kind.Definition(),
+			Fields:        block.EditorFields(),
+			Selected:      block.ID == selectedID,
+			ParameterText: block.Summary(),
 		}
 		view.Blocks = append(view.Blocks, item)
 		if item.Selected {
@@ -164,7 +163,7 @@ func edgePath(source, target studio.Point) string {
 }
 
 func newChartView(run *studio.Simulation) chartView {
-	if run == nil || len(run.Times) == 0 || len(run.Series) == 0 {
+	if run == nil || len(run.Times) == 0 || len(run.Series) == 0 && len(run.Spectra) == 0 {
 		return chartView{}
 	}
 	const (
@@ -175,23 +174,6 @@ func newChartView(run *studio.Simulation) chartView {
 		top    = 18.0
 		bottom = 32.0
 	)
-	minY, maxY := 0.0, 0.0
-	for _, series := range run.Series {
-		for _, value := range series.Values {
-			minY = math.Min(minY, value)
-			maxY = math.Max(maxY, value)
-		}
-	}
-	if maxY-minY < 1e-9 {
-		maxY++
-		minY--
-	}
-	padding := (maxY - minY) * 0.12
-	maxY += padding
-	minY -= padding
-	plotWidth := width - left - right
-	plotHeight := height - top - bottom
-	duration := run.Times[len(run.Times)-1]
 	colors := []string{"#e17845", "#2a8f83", "#c9a13b", "#5277a8"}
 
 	view := chartView{
@@ -201,36 +183,97 @@ func newChartView(run *studio.Simulation) chartView {
 		CreatedAt:  run.CreatedAt.Local().Format("15:04:05"),
 		Metrics:    run.Metrics,
 	}
-	for index, series := range run.Series {
-		var path strings.Builder
-		for sample, value := range series.Values {
-			x := left + (run.Times[sample]/duration)*plotWidth
-			y := top + (maxY-value)/(maxY-minY)*plotHeight
-			if sample == 0 {
-				fmt.Fprintf(&path, "M %.2f %.2f", x, y)
-			} else {
-				fmt.Fprintf(&path, " L %.2f %.2f", x, y)
+	if len(run.Series) > 0 {
+		minY, maxY := 0.0, 0.0
+		for _, series := range run.Series {
+			for _, value := range series.Values {
+				minY = math.Min(minY, value)
+				maxY = math.Max(maxY, value)
 			}
 		}
-		view.Paths = append(view.Paths, chartPath{
-			Name: series.Name, D: path.String(), Color: colors[index%len(colors)],
-		})
+		if maxY-minY < 1e-9 {
+			maxY++
+			minY--
+		}
+		padding := (maxY - minY) * 0.12
+		maxY += padding
+		minY -= padding
+		plotWidth := width - left - right
+		plotHeight := height - top - bottom
+		duration := run.Times[len(run.Times)-1]
+		for index, series := range run.Series {
+			var path strings.Builder
+			for sample, value := range series.Values {
+				x := left + (run.Times[sample]/duration)*plotWidth
+				y := top + (maxY-value)/(maxY-minY)*plotHeight
+				if sample == 0 {
+					fmt.Fprintf(&path, "M %.2f %.2f", x, y)
+				} else {
+					fmt.Fprintf(&path, " L %.2f %.2f", x, y)
+				}
+			}
+			view.Paths = append(view.Paths, chartPath{
+				Name: series.Name, D: path.String(), Color: colors[index%len(colors)],
+			})
+		}
+		for i := range 5 {
+			fraction := float64(i) / 4
+			value := maxY - fraction*(maxY-minY)
+			view.YGrid = append(view.YGrid, chartGrid{
+				Position: top + fraction*plotHeight,
+				Label:    fmt.Sprintf("%.2g", value),
+			})
+		}
+		for i := range 5 {
+			fraction := float64(i) / 4
+			view.XGrid = append(view.XGrid, chartGrid{
+				Position: left + fraction*plotWidth,
+				Label:    fmt.Sprintf("%.1f", fraction*duration),
+			})
+		}
 	}
-	for i := range 5 {
-		fraction := float64(i) / 4
-		value := maxY - fraction*(maxY-minY)
-		view.YGrid = append(view.YGrid, chartGrid{
-			Position: top + fraction*plotHeight,
-			Label:    fmt.Sprintf("%.2g", value),
-		})
+	for _, spectrum := range run.Spectra {
+		view.Spectra = append(view.Spectra, newSpectrumView(spectrum))
 	}
-	for i := range 5 {
-		fraction := float64(i) / 4
-		view.XGrid = append(view.XGrid, chartGrid{
-			Position: left + fraction*plotWidth,
-			Label:    fmt.Sprintf("%.1f", fraction*duration),
-		})
+	return view
+}
+
+func newSpectrumView(spectrum studio.Spectrum) spectrumView {
+	const (
+		left   = 48.0
+		right  = 18.0
+		top    = 18.0
+		bottom = 30.0
+		width  = 780.0
+		height = 190.0
+	)
+	view := spectrumView{
+		Name:          spectrum.Name,
+		PeakFrequency: fmt.Sprintf("%.3g Hz", spectrum.PeakFrequency),
+		PeakMagnitude: fmt.Sprintf("%.3g", spectrum.PeakMagnitude),
 	}
+	if len(spectrum.Frequencies) == 0 || len(spectrum.Magnitudes) == 0 {
+		return view
+	}
+	maxFrequency := spectrum.Frequencies[len(spectrum.Frequencies)-1]
+	maxMagnitude := spectrum.PeakMagnitude
+	if maxFrequency <= 0 || maxMagnitude <= 0 {
+		return view
+	}
+	view.MaxFrequency = fmt.Sprintf("%.3g Hz", maxFrequency)
+	plotWidth := width - left - right
+	plotHeight := height - top - bottom
+	var path strings.Builder
+	for i, frequency := range spectrum.Frequencies {
+		x := left + frequency/maxFrequency*plotWidth
+		y := top + (1-spectrum.Magnitudes[i]/maxMagnitude)*plotHeight
+		if i == 0 {
+			fmt.Fprintf(&path, "M %.2f %.2f", x, y)
+		} else {
+			fmt.Fprintf(&path, " L %.2f %.2f", x, y)
+		}
+	}
+	view.D = path.String()
 	return view
 }
 

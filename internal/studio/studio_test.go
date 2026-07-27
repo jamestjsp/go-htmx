@@ -47,7 +47,10 @@ func TestBlockChangesRoundTripThroughSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := first.UpdateBlock(ctx, blockID, BlockUpdate{
-		Name: "Separator vessel", Parameter: 6.5,
+		Name: "Separator vessel",
+		Parameters: map[string]string{
+			"time_constant": "6.5",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +88,10 @@ func TestUpdateRejectsInvalidParameters(t *testing.T) {
 	lag := findKind(t, snapshot.Blocks, BlockLag)
 
 	_, err = studio.UpdateBlock(context.Background(), lag.ID, BlockUpdate{
-		Name: lag.Name, Parameter: 0,
+		Name: lag.Name,
+		Parameters: map[string]string{
+			"time_constant": "0",
+		},
 	})
 	var validation *ValidationError
 	if !errors.As(err, &validation) {
