@@ -184,6 +184,13 @@ type Snapshot struct {
 	LastRun     *Simulation
 }
 
+type Workspace struct {
+	Projects []Project
+	Project  Project
+	Flows    []Flow
+	Snapshot Snapshot
+}
+
 type BlockUpdate struct {
 	Name       string
 	Parameters map[string]string
