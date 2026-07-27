@@ -4,3 +4,4 @@
 *.db-wal
 .ergo/lock
 .DS_Store
+.superpowers/
