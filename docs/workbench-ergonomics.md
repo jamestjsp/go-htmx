@@ -179,10 +179,12 @@ block kind on the server appears with no client change.
 
 ## Shell
 
-`.workbench` is a 100dvh grid; the page itself never scrolls. Only the
-palette list, inspector body, and dock body scroll internally. Collapsing a
-rail leaves a 46px icon strip rather than hiding it, so the palette's glyph
-buttons still add blocks.
+On desktop, `.workbench` is a 100dvh grid and the page does not scroll. At
+860px and below, the layout deliberately stacks and the page scrolls so all
+controls remain reachable without horizontal overflow. The palette list,
+inspector body, and dock body scroll internally on desktop. Collapsing a rail
+leaves a 46px icon strip rather than hiding it, so the palette's glyph buttons
+still add blocks.
 
 ## Client-held state
 

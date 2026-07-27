@@ -31,6 +31,37 @@ go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
 
 All CSS, application JavaScript, and HTML templates are embedded in the Go binary. Only HTMX itself is loaded from the pinned CDN URL.
 
+## Projects, flowsheets, and persistence
+
+Process Lab organizes top-level flowsheets inside projects. The project and
+flowsheet menus in the header create and switch between them:
+
+1. Open the project menu and choose **New project**. A project starts with an
+   empty flowsheet named `Untitled flowsheet`.
+2. Edit the active flowsheet name in the header. The name is saved after you
+   stop typing.
+3. Open the flowsheet menu and choose **New flowsheet** to add another empty
+   flowsheet to the active project.
+4. Use either menu to switch between saved projects and flowsheets.
+
+Every edit is saved to the SQLite file passed with `-db`; there is no separate
+save command. Stop the server with `Ctrl+C`, then run it again with the same
+database path to reopen the workspace:
+
+```bash
+go run ./cmd/processlab -db ./demo.db
+```
+
+Opening `/` redirects to the current project and flowsheet. Their canonical URL
+also remains valid across restarts, for example `/projects/2/flows/5`. Use a
+stable `-db` path when starting the server from different working directories.
+
+Databases from versions without projects are migrated at startup. Existing
+flowsheets are retained inside a default `Process Lab project`.
+
+Projects currently contain independent top-level flowsheets. Hierarchical
+subflowsheet or subsystem blocks inside a flowsheet are not yet supported.
+
 ## Try the workbench
 
 1. Run the seeded model and inspect the temperature response and settling metric.
@@ -45,11 +76,12 @@ Press `?` for the full shortcut sheet.
 
 ## Workbench interaction
 
-The window is a fixed application shell: the page itself never scrolls, and
-the canvas is the only region that grows. Both side rails collapse to a
-46px icon strip — the collapsed library still adds blocks — and the
-simulation dock at the bottom drags between a header-only state and 70% of
-the window. Those choices persist across reloads.
+On desktop, the window is a fixed application shell: the canvas is the only
+region that grows. At 860px and below, the interface stacks and the page
+scrolls so every control remains reachable without horizontal overflow. Both
+side rails collapse to a 46px icon strip — the collapsed library still adds
+blocks — and the simulation dock at the bottom drags between a header-only
+state and 70% of the window. Those choices persist across reloads.
 
 The sheet is a 6000×4000 world on a 20px grid, viewed through a pan/zoom
 viewport at 25%–400%.
@@ -92,7 +124,7 @@ flowchart LR
     Browser["Browser<br/>HTMX + small gesture layer"]
     HTTP["Go HTTP handlers<br/>HTML fragments"]
     Studio["Studio service<br/>domain operations"]
-    SQLite[("SQLite<br/>flows, events, runs")]
+    SQLite[("SQLite<br/>projects, flows, events, runs")]
     Compiler["Flow compiler<br/>graph to state space"]
     Controlsys["controlsys v1.2.0<br/>Lsim"]
 
@@ -139,13 +171,17 @@ The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the G
 
 The database stores:
 
+- projects and their top-level flowsheets;
 - flows and separate layout/model update timestamps;
 - blocks, positions, and version-tolerant JSON parameters;
 - signal connections with foreign keys and uniqueness constraints;
 - recent activity events;
 - complete simulation runs as JSON time series.
 
-Model edits invalidate the displayed result, while layout-only moves do not. Historical runs remain in SQLite. Schema startup migrates databases created before model timestamps or JSON block parameters were introduced.
+Model edits invalidate the displayed result, while layout-only moves and
+flowsheet renames do not. Historical runs remain in SQLite. Schema startup
+migrates databases created before projects, model timestamps, or JSON block
+parameters were introduced.
 
 ## Project structure
 
@@ -166,8 +202,19 @@ go test -race ./...
 go build ./cmd/processlab
 ```
 
-The persistent tests cover SQLite round trips and legacy migration, grid snapping and the sheet bounds, collision-free block placement, connection constraints, cycle rejection, analytic control-block responses, FFT peak detection, HTML fragment behavior, embedded assets, multi-field HTTP editing flows, and the batch move, delete, and duplicate endpoints including rejection of ids from another flow.
+The persistent tests cover project and flowsheet lifecycle operations, SQLite
+round trips and legacy migration, grid snapping and the sheet bounds,
+collision-free block placement, connection constraints, cycle rejection,
+analytic control-block responses, FFT peak detection, HTML fragment behavior,
+embedded assets, multi-field HTTP editing flows, and the batch move, delete,
+and duplicate endpoints including rejection of ids from another flow.
 
-Interaction behavior cannot be covered by Go tests. It was verified by driving real pointer and key gestures against headless Chrome over CDP — 88 checks across viewport, snapping, selection, keyboard, context menus, and wiring — at 25%, 100%, and 400% zoom, plus rendering at 1440×900, 1280×720, 860px, and 620px.
+Interaction behavior cannot be covered by Go tests. It was verified by driving
+real pointer and key gestures against headless Chrome over CDP — 88 checks
+across viewport, snapping, selection, keyboard, context menus, and wiring — at
+25%, 100%, and 400% zoom. Project and flowsheet creation, renaming, switching,
+reload, and server-restart persistence were also exercised in the integrated
+browser, with responsive rendering checked at 1440×900, 1280×720, 860px, and
+620px.
 
 Note that templates and static assets are `go:embed`-ed into the binary, so a change to `app.js` or `app.css` needs a rebuild before the server serves it.
