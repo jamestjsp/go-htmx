@@ -8,73 +8,37 @@
         <small>Dynamic systems workbench</small>
       </span>
     </a>
-    <div class="project-heading">
-      <div class="workspace-breadcrumb" aria-label="Project navigation">
-        <details class="workspace-menu">
-          <summary>
-            <span class="eyebrow">Project</span>
-            <strong>{{.Workspace.Project.Name}}</strong>
-            <span class="workspace-menu-chevron" aria-hidden="true">⌄</span>
-          </summary>
-          <div class="workspace-popover">
-            <span class="popover-label">Open project</span>
-            <nav aria-label="Projects">
-              {{range .Workspace.Projects}}
-              <a href="/projects/{{.ID}}"{{if eq .ID $.Workspace.Project.ID}} aria-current="page"{{end}}>{{.Name}}</a>
-              {{end}}
-            </nav>
-            <form class="workspace-create-form" hx-post="/projects" hx-swap="none">
-              <label for="new-project-name">New project</label>
-              <div>
-                <input id="new-project-name" name="name" maxlength="80" placeholder="Project name" required>
-                <button type="submit">Create</button>
-              </div>
-            </form>
-          </div>
-        </details>
-        <span class="workspace-separator" aria-hidden="true">/</span>
-        <details class="workspace-menu">
-          <summary>
-            <span class="eyebrow">Flowsheets</span>
-            <strong>{{len .Workspace.Flows}}</strong>
-            <span class="workspace-menu-chevron" aria-hidden="true">⌄</span>
-          </summary>
-          <div class="workspace-popover">
-            <span class="popover-label">Open flowsheet</span>
-            <nav aria-label="Flowsheets">
-              {{range .Workspace.Flows}}
-              <a href="/projects/{{.ProjectID}}/flows/{{.ID}}"{{if eq .ID $.Snapshot.Flow.ID}} aria-current="page"{{end}}>{{.Name}}</a>
-              {{end}}
-            </nav>
-            <form class="workspace-create-form" hx-post="/projects/{{.Workspace.Project.ID}}/flows" hx-swap="none">
-              <label for="new-flow-name">New flowsheet</label>
-              <div>
-                <input id="new-flow-name" name="name" maxlength="80" placeholder="Flowsheet name" required>
-                <button type="submit">Create</button>
-              </div>
-            </form>
-          </div>
-        </details>
-      </div>
-      <form class="flow-name-form">
-        {{if .Selected}}<input type="hidden" name="selected_id" value="{{.Selected.ID}}">{{end}}
-        <label>
-          <span class="eyebrow">Active flowsheet</span>
-          <input
-            name="name"
-            value="{{.Snapshot.Flow.Name}}"
-            maxlength="80"
-            aria-label="Flowsheet name"
-            required
-            hx-put="/flows/{{.Snapshot.Flow.ID}}/name"
-            hx-target="#workbench"
-            hx-swap="outerHTML"
-            hx-trigger="input changed delay:600ms, change"
-            hx-include=".flow-name-form"
-          >
-        </label>
-        <span class="autosave-label"><i></i> autosaved</span>
-      </form>
+    <!-- Where you are, and the two ways out of it: the register, and any
+         other project. The flowsheets of THIS project are the tab strip's
+         subject, not the topbar's — a second list of them here was a count
+         sitting directly above a strip that already names every sheet. -->
+    <div class="topbar-nav">
+      <a class="topbar-home" href="/">Projects</a>
+      <span class="topbar-sep" aria-hidden="true">/</span>
+      <details class="project-switcher">
+        <summary title="Switch project">
+          <span class="switcher-name">{{.Workspace.Project.Name}}</span>
+          <i class="switcher-chevron" aria-hidden="true">▾</i>
+        </summary>
+        <div class="switcher-panel">
+          <span class="popover-label">Open project</span>
+          <nav aria-label="Projects">
+            {{range .Workspace.Projects}}
+            <a href="/projects/{{.ID}}"{{if eq .ID $.Workspace.Project.ID}} aria-current="page"{{end}}><span>{{.Name}}</span></a>
+            {{end}}
+          </nav>
+          <!-- method and action as well as hx-post: with htmx the answer is an
+               HX-Redirect into the new project, and without it the browser
+               posts the form itself and follows the 303 to the same place. -->
+          <form class="switcher-create" method="post" action="/projects" hx-post="/projects" hx-swap="none">
+            <label for="new-project-name">New project</label>
+            <div>
+              <input id="new-project-name" name="name" maxlength="80" autocomplete="off" placeholder="Project name" required>
+              <button type="submit">Create</button>
+            </div>
+          </form>
+        </div>
+      </details>
     </div>
     <div class="shell-toggles" role="group" aria-label="Workspace panels">
       <button type="button" class="shell-toggle" data-rail-toggle="left" aria-controls="palette-rail" aria-expanded="true" title="Collapse the block library">

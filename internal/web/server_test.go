@@ -221,11 +221,70 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		"Feed setpoint",
 		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
-		`hx-put="/flows/1/name"`,
 		"htmx.org@2.0.10",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body does not contain %q", expected)
+		}
+	}
+}
+
+// TestTopbarOffersTheRegisterAndTheProjectSwitcher pins the header's whole
+// job: say where you are, lead home, and open any other project. Everything
+// else it used to carry now belongs to a screen that does it better — the
+// register lists projects, and the tab strip owns the sheets of this one.
+func TestTopbarOffersTheRegisterAndTheProjectSwitcher(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	second, err := service.CreateProject(ctx, "Compressor station")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := request(t, server, http.MethodGet, "/projects/1/flows/1", nil).Body.String()
+	end := strings.Index(body, `<div class="studio-grid">`)
+	if end < 0 {
+		t.Fatalf("no studio grid in the page: %s", body)
+	}
+	header := body[:end]
+
+	for _, expected := range []string{
+		`class="topbar-home" href="/"`,
+		`<details class="project-switcher">`,
+		`<a href="/projects/1" aria-current="page"><span>Process Lab project</span></a>`,
+		fmt.Sprintf(`<a href="/projects/%d"><span>Compressor station</span></a>`, second.Project.ID),
+		`action="/projects" hx-post="/projects"`,
+		"New project",
+		// The counts and the saved lamp are the header's other job, and this
+		// work does not touch them.
+		fmt.Sprintf("<b>%d</b> blocks", len(snapshot.Blocks)),
+		fmt.Sprintf("<b>%d</b> signals", len(snapshot.Connections)),
+		`class="saved-state"`,
+	} {
+		if !strings.Contains(header, expected) {
+			t.Errorf("topbar does not contain %q", expected)
+		}
+	}
+	// Exactly one project is marked open, and it is the one being edited.
+	if lit := strings.Count(header, `aria-current="page"`); lit != 1 {
+		t.Errorf("the switcher marks %d projects as open, want 1", lit)
+	}
+	// The header no longer names sheets. The flowsheet popover sat directly
+	// above a strip that lists every sheet, and the name field was a second
+	// source of truth for a name the strip now owns.
+	for _, gone := range []string{
+		`hx-put="/flows/1/name"`,
+		"Active flowsheet",
+		"autosaved",
+		"New flowsheet",
+	} {
+		if strings.Contains(header, gone) {
+			t.Errorf("the topbar still carries %q", gone)
 		}
 	}
 }
