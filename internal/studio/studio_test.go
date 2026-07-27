@@ -139,6 +139,57 @@ func TestConnectRejectsDuplicateInvalidPortsAndCycle(t *testing.T) {
 	}
 }
 
+func TestConnectAllowsVariadicSumButRejectsSecondWireOnArityOneBlock(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := snapshot.Flow.ID
+
+	_, sourceA, err := studio.AddBlock(ctx, flowID, BlockConstant, Point{X: 700, Y: 700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sourceB, err := studio.AddBlock(ctx, flowID, BlockConstant, Point{X: 700, Y: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sumID, err := studio.AddBlock(ctx, flowID, BlockSum, Point{X: 900, Y: 700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gainID, err := studio.AddBlock(ctx, flowID, BlockGain, Point{X: 900, Y: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := studio.Connect(ctx, flowID, sourceA, sumID); err != nil {
+		t.Fatalf("first wire into Sum: %v", err)
+	}
+	if _, err := studio.Connect(ctx, flowID, sourceB, sumID); err != nil {
+		t.Fatalf("second wire into variadic Sum: %v", err)
+	}
+
+	if _, err := studio.Connect(ctx, flowID, sourceA, gainID); err != nil {
+		t.Fatalf("first wire into Gain: %v", err)
+	}
+	snapshot, err = studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gain := findBlock(t, snapshot.Blocks, gainID)
+
+	_, err = studio.Connect(ctx, flowID, sourceB, gainID)
+	if err == nil {
+		t.Fatal("second wire into an arityOne block succeeded")
+	}
+	if want := gain.Name + " already has an input"; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestDeleteBlockCascadesConnections(t *testing.T) {
 	ctx := context.Background()
 	studio := openTestStudio(t, ":memory:")

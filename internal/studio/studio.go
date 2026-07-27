@@ -368,7 +368,10 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		if duplicate > 0 {
 			return invalid("those blocks are already connected")
 		}
-		if target.Kind != BlockSum {
+		// A variadic target (Sum) accepts any number of wires; every other
+		// kind accepts at most one, so a second wire here is rejected
+		// immediately rather than waiting for compileFlow to catch it.
+		if target.Kind.arity() != arityVariadic {
 			var incoming int
 			if err := tx.QueryRowContext(ctx,
 				"SELECT COUNT(*) FROM connections WHERE flow_id = ? AND target_id = ?",

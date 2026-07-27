@@ -188,27 +188,29 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 
 	for _, block := range blocks {
 		inputs := incoming[block.ID]
-		switch {
-		case block.Kind.isSource():
+		switch block.Kind.arity() {
+		case arityNone:
 			if len(inputs) != 0 {
 				return compiledFlow{}, invalid("%s cannot accept an input", block.Name)
 			}
-		case block.Kind == BlockSum:
+		case arityVariadic:
 			if len(inputs) == 0 {
 				return compiledFlow{}, invalid("%s needs at least one input", block.Name)
 			}
-			if len(block.Parameters.Signs) != 1 && len(block.Parameters.Signs) != len(inputs) {
-				return compiledFlow{}, invalid(
-					"%s has %d input signs for %d connections",
-					block.Name, len(block.Parameters.Signs), len(inputs),
-				)
-			}
-		default:
+		default: // arityOne
 			if len(inputs) == 0 {
 				return compiledFlow{}, invalid("%s is not connected", block.Name)
 			}
 			if len(inputs) > 1 {
 				return compiledFlow{}, invalid("%s accepts only one input", block.Name)
+			}
+		}
+		// checkInputs is a kind's own rule tying its parameters to the
+		// connected input count (Sum's signs must match), layered on top of
+		// the generic arity check above rather than folded into it.
+		if check := blockDefinitions[block.Kind].checkInputs; check != nil {
+			if err := check(block, len(inputs)); err != nil {
+				return compiledFlow{}, err
 			}
 		}
 	}
@@ -276,7 +278,7 @@ func realizeBlock(block Block, incoming []Connection) (*controlsys.System, error
 
 	if block.Kind.isSource() {
 		system.InputName = []string{sourceSignalName(block.ID)}
-	} else if block.Kind == BlockSum {
+	} else if block.Kind.arity() == arityVariadic {
 		system.InputName = make([]string, len(incoming))
 		for i, connection := range incoming {
 			system.InputName[i] = inputSignalName(block, connection)
@@ -305,7 +307,7 @@ func sourceSignalName(id int64) string {
 }
 
 func inputSignalName(block Block, connection Connection) string {
-	if block.Kind == BlockSum {
+	if block.Kind.arity() == arityVariadic {
 		return fmt.Sprintf("block_%d_input_from_%d", block.ID, connection.SourceID)
 	}
 	return fmt.Sprintf("block_%d_input", block.ID)

@@ -50,11 +50,11 @@ func (k BlockKind) Label() string {
 }
 
 func (k BlockKind) HasInput() bool {
-	return blockDefinitions[k].HasInput
+	return k.arity() != arityNone
 }
 
 func (k BlockKind) HasOutput() bool {
-	return blockDefinitions[k].HasOutput
+	return blockDefinitions[k].role != roleSink
 }
 
 type Parameters struct {

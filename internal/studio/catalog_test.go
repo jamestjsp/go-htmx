@@ -32,6 +32,42 @@ func TestBlockLibraryDefinitionsOwnDefaultsAndEditors(t *testing.T) {
 	}
 }
 
+func TestArityDerivesHasInputAndHasOutputForEveryKind(t *testing.T) {
+	for _, kind := range blockOrder {
+		definition := kind.Definition()
+		switch arity := kind.arity(); {
+		case kind.isSource():
+			if arity != arityNone {
+				t.Fatalf("%s arity = %v, want arityNone", kind, arity)
+			}
+			if definition.HasInput() {
+				t.Fatalf("%s.HasInput() = true, want false", kind)
+			}
+			if !definition.HasOutput() {
+				t.Fatalf("%s.HasOutput() = false, want true", kind)
+			}
+		case kind == BlockSum:
+			if arity != arityVariadic {
+				t.Fatalf("%s arity = %v, want arityVariadic", kind, arity)
+			}
+			if !definition.HasInput() || !definition.HasOutput() {
+				t.Fatalf("%s HasInput/HasOutput = %v/%v, want true/true",
+					kind, definition.HasInput(), definition.HasOutput())
+			}
+		default:
+			if arity != arityOne {
+				t.Fatalf("%s arity = %v, want arityOne", kind, arity)
+			}
+			if !definition.HasInput() {
+				t.Fatalf("%s.HasInput() = false, want true", kind)
+			}
+			if definition.HasOutput() != !kind.isSink() {
+				t.Fatalf("%s.HasOutput() = %v, want %v", kind, definition.HasOutput(), !kind.isSink())
+			}
+		}
+	}
+}
+
 func TestTransferFunctionUpdateParsesAndValidatesCoefficients(t *testing.T) {
 	block := Block{
 		Kind:       BlockTransfer,

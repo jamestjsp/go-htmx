@@ -17,9 +17,14 @@ type BlockDefinition struct {
 	Description string
 	Glyph       string
 	Tag         string
-	HasInput    bool
-	HasOutput   bool
 }
+
+// HasInput and HasOutput are the workbench template's and palette's window
+// into a block's structural role: which port glyphs to draw. Both delegate
+// to the same Kind-level derivation Connect and compileFlow enforce, so the
+// canvas can never draw a port that the wiring rules would then refuse.
+func (d BlockDefinition) HasInput() bool  { return d.Kind.HasInput() }
+func (d BlockDefinition) HasOutput() bool { return d.Kind.HasOutput() }
 
 type ParameterField struct {
 	Name        string
@@ -93,6 +98,13 @@ type blockDefinition struct {
 	// Sum, Lag, Integrator, Transfer, PID, and Delay all take one input and
 	// produce one output like any other interior block.
 	role blockRole
+	// variadic is true for the one kind whose input count is not fixed —
+	// Sum today, and any future block like Product or Mux that combines an
+	// arbitrary number of connected inputs. Every other non-source kind
+	// accepts exactly one; see arity, which folds this together with role
+	// into the none/one/variadic answer Connect and compileFlow both
+	// consult instead of separately special-casing Sum by name.
+	variadic bool
 	// realize builds the block's controlsys realization from its own
 	// parameters and the number of incoming connections. nil means the
 	// block has no dynamics of its own: every source and sink realizes as a
@@ -112,6 +124,13 @@ type blockDefinition struct {
 	// transfer-function properness and order limits, the sign alphabet and
 	// length, the Padé integer range. nil for kinds with no such rule.
 	validate func(Parameters) error
+	// checkInputs enforces a kind's own rule tying its parameters to the
+	// number of connected inputs, once compileFlow's arity walk has already
+	// confirmed the count itself satisfies the kind's arity. nil for every
+	// kind except Sum, whose signs must be length 1 (broadcasting to every
+	// input) or exactly the connected input count — Sum's own concern, not
+	// a generic arity rule every block shares.
+	checkInputs func(Block, int) error
 	// summary renders the block's one-line canvas caption. nil is never
 	// valid for a registered kind — every entry in blockOrder sets one.
 	summary func(Parameters) string
@@ -150,6 +169,37 @@ func (k BlockKind) isSink() bool   { return blockDefinitions[k].role == roleSink
 // comment on blockDefinition for why this is not folded into role.
 func (k BlockKind) isSpectrumSink() bool { return blockDefinitions[k].spectrum }
 
+// inputArity states how many incoming connections a block accepts. Connect's
+// incoming-count check (studio.go) and compileFlow's arity walk (simulate.go)
+// both consult this one derivation instead of separately re-deriving "every
+// non-Sum block takes one input."
+type inputArity int
+
+const (
+	// arityOne is the zero value: most registered kinds — Gain, Lag,
+	// Integrator, Transfer, PID, Delay, Scope, and Spectrum — accept
+	// exactly one connected input.
+	arityOne      inputArity = iota
+	arityNone                // sources: no incoming connection is permitted
+	arityVariadic            // Sum, and any future kind like it: any number of inputs
+)
+
+// arity folds a block's role and variadic flag into the three-way answer
+// Connect and compileFlow need: none for a source, variadic for the one
+// kind that sets variadic, and exactly one for everything else.
+func (d blockDefinition) arity() inputArity {
+	switch {
+	case d.role == roleSource:
+		return arityNone
+	case d.variadic:
+		return arityVariadic
+	default:
+		return arityOne
+	}
+}
+
+func (k BlockKind) arity() inputArity { return blockDefinitions[k].arity() }
+
 // minApproximation and maxApproximation bound the transport delay's Padé
 // order: the one place that states the range, read by both the editor's
 // Min/Max attributes and the validate hook that enforces it.
@@ -178,7 +228,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSource, Label: "Step", Category: "Sources",
 			Description: "Initial-to-final step", Glyph: "↗", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Amplitude: 1},
 		Parameters: []parameterDefinition{
@@ -204,7 +253,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockConstant, Label: "Constant", Category: "Sources",
 			Description: "Constant signal", Glyph: "C", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Value: 1},
 		Parameters: []parameterDefinition{
@@ -220,7 +268,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSine, Label: "Sine Wave", Category: "Sources",
 			Description: "Biased sinusoid", Glyph: "∿", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Amplitude: 1, Frequency: 1},
 		Parameters: []parameterDefinition{
@@ -241,7 +288,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockGain, Label: "Gain", Category: "Math",
 			Description: "Scale a signal", Glyph: "×", Tag: "MATH",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Gain: 1},
 		Parameters: []parameterDefinition{
@@ -258,7 +304,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSum, Label: "Sum", Category: "Math",
 			Description: "Signed signal sum", Glyph: "Σ", Tag: "MATH",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Signs: "+"},
 		Parameters: []parameterDefinition{{
@@ -270,11 +315,12 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			},
 			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
+		variadic: true,
 		// realize builds one gain per connected input, broadcasting the
 		// single sign to every input when only one is given (a shorthand the
 		// signs field's own Help text documents). Matching the sign count
-		// against the actual input count is compileFlow's arity walk, not
-		// this hook's job — that rule is Task 6's to consolidate.
+		// against the actual connected input count is checkInputs's job, not
+		// this hook's.
 		realize: func(block Block, inputs int) (*controlsys.System, error) {
 			gains := make([]float64, inputs)
 			for i := range gains {
@@ -297,6 +343,17 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			}
 			return nil
 		},
+		// checkInputs is Sum's own rule tying its signs to the connected
+		// input count: one sign broadcasts to every input (the signs field's
+		// Help text documents this shorthand), otherwise there must be
+		// exactly one sign per connection.
+		checkInputs: func(block Block, inputs int) error {
+			if len(block.Parameters.Signs) != 1 && len(block.Parameters.Signs) != inputs {
+				return invalid("%s has %d input signs for %d connections",
+					block.Name, len(block.Parameters.Signs), inputs)
+			}
+			return nil
+		},
 		summary: func(parameters Parameters) string {
 			return "signs " + parameters.Signs
 		},
@@ -305,7 +362,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockLag, Label: "First-order Lag", Category: "Continuous",
 			Description: "1 / (τs + 1)", Glyph: "τ", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{TimeConstant: 1},
 		Parameters: []parameterDefinition{
@@ -329,7 +385,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockIntegrator, Label: "Integrator", Category: "Continuous",
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		realize: func(Block, int) (*controlsys.System, error) {
 			return controlsys.New(
@@ -346,7 +401,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockTransfer, Label: "Transfer Function", Category: "Continuous",
 			Description: "Proper SISO model", Glyph: "G", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Numerator: []float64{1}, Denominator: []float64{1, 1}},
 		Parameters: []parameterDefinition{
@@ -386,7 +440,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockPID, Label: "PID Controller", Category: "Continuous",
 			Description: "Filtered parallel PID", Glyph: "PID", Tag: "CONTROL",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Proportional: 1, Integral: 0.5, FilterTime: 0.1},
 		Parameters: []parameterDefinition{
@@ -412,7 +465,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockDelay, Label: "Transport Delay", Category: "Continuous",
 			Description: "Padé delay approximation", Glyph: "e⁻ˢ", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Delay: 1, Approximation: 3},
 		Parameters: []parameterDefinition{
@@ -448,7 +500,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockScope, Label: "Scope", Category: "Sinks",
 			Description: "Plot a signal", Glyph: "⌁", Tag: "OUTPUT",
-			HasInput: true,
 		},
 		role:    roleSink,
 		summary: func(Parameters) string { return "trend output" },
@@ -457,7 +508,6 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSpectrum, Label: "Spectrum Analyzer", Category: "Sinks",
 			Description: "Hann-windowed FFT", Glyph: "FFT", Tag: "DSP SINK",
-			HasInput: true,
 		},
 		role:     roleSink,
 		spectrum: true,
