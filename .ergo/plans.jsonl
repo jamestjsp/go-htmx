@@ -167,3 +167,6 @@
 {"type":"state","ts":"2026-07-27T06:10:48.880951Z","data":{"id":"YC3ER3","state":"done","ts":"2026-07-27T06:10:48.880951Z"}}
 {"type":"claim","ts":"2026-07-27T06:10:53.441988Z","data":{"id":"EUHTJQ","agent_id":"codex@go-htmx","ts":"2026-07-27T06:10:53.441988Z"}}
 {"type":"state","ts":"2026-07-27T06:10:53.441988Z","data":{"id":"EUHTJQ","state":"doing","ts":"2026-07-27T06:10:53.441988Z"}}
+{"type":"message","ts":"2026-07-27T06:15:37.632019Z","data":{"task_id":"EUHTJQ","kind":"done","text":"Documented project persistence and responsive behavior; race tests, vet, restart persistence, and integrated-browser workflows pass.","ts":"2026-07-27T06:15:37.632019Z"}}
+{"type":"unclaim","ts":"2026-07-27T06:15:37.632019Z","data":{"id":"EUHTJQ","ts":"2026-07-27T06:15:37.632019Z"}}
+{"type":"state","ts":"2026-07-27T06:15:37.632019Z","data":{"id":"EUHTJQ","state":"done","ts":"2026-07-27T06:15:37.632019Z"}}
