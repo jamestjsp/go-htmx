@@ -8,9 +8,37 @@
         <small>Dynamic systems workbench</small>
       </span>
     </a>
-    <div class="project-heading">
-      <span class="eyebrow">Active flowsheet</span>
-      <h1>{{.Snapshot.Flow.Name}}</h1>
+    <!-- Where you are, and the two ways out of it: the register, and any
+         other project. The flowsheets of THIS project are the tab strip's
+         subject, not the topbar's — a second list of them here was a count
+         sitting directly above a strip that already names every sheet. -->
+    <div class="topbar-nav">
+      <a class="topbar-home" href="/">Projects</a>
+      <span class="topbar-sep" aria-hidden="true">/</span>
+      <details class="project-switcher">
+        <summary title="Switch project">
+          <span class="switcher-name">{{.Workspace.Project.Name}}</span>
+          <i class="switcher-chevron" aria-hidden="true">▾</i>
+        </summary>
+        <div class="switcher-panel">
+          <span class="popover-label">Open project</span>
+          <nav aria-label="Projects">
+            {{range .Workspace.Projects}}
+            <a href="/projects/{{.ID}}"{{if eq .ID $.Workspace.Project.ID}} aria-current="page"{{end}}><span>{{.Name}}</span></a>
+            {{end}}
+          </nav>
+          <!-- method and action as well as hx-post: with htmx the answer is an
+               HX-Redirect into the new project, and without it the browser
+               posts the form itself and follows the 303 to the same place. -->
+          <form class="switcher-create" method="post" action="/projects" hx-post="/projects" hx-swap="none">
+            <label for="new-project-name">New project</label>
+            <div>
+              <input id="new-project-name" name="name" maxlength="80" autocomplete="off" placeholder="Project name" required>
+              <button type="submit">Create</button>
+            </div>
+          </form>
+        </div>
+      </details>
     </div>
     <div class="shell-toggles" role="group" aria-label="Workspace panels">
       <button type="button" class="shell-toggle" data-rail-toggle="left" aria-controls="palette-rail" aria-expanded="true" title="Collapse the block library">
@@ -353,6 +381,8 @@
       </div>
     </aside>
   </div>
+
+  {{template "tabs" .}}
 
   <footer class="statusbar" id="readout-rail" aria-label="Flowsheet readout">
     <div class="readout-group">

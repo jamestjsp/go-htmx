@@ -810,6 +810,27 @@
     return node instanceof HTMLElement && node.closest('input, textarea, select, [contenteditable="true"]')
   }
 
+  // Something nearer the keyboard than a global shortcut has the key: a
+  // text field the user is typing into, or an open context menu.
+  //
+  // The menu half fixes a defect older than menu.js. The menu navigates
+  // itself with the arrow keys, and the nudge binding below also fires on
+  // them; the nudge saves the new positions, the save swaps the workbench,
+  // and the swap closes the menu. Arrow navigation therefore only ever
+  // worked on a menu raised over empty sheet, which clears the selection
+  // first and so leaves the nudge with nothing to move.
+  //
+  // A guard here rather than stopPropagation in menu.js. Every listener
+  // involved is on document, so stopping propagation would have to be
+  // stopImmediatePropagation, which only reaches listeners registered
+  // after menu.js's — it would silence these bindings by an accident of
+  // script order, and silence them wholesale rather than saying which ones
+  // and why. The guard is also read the same way for every region that
+  // registers a menu, not just the canvas.
+  function keyboardIsClaimed(event) {
+    return typingInAField(event) || ProcessLab.menu.ownsKey(event)
+  }
+
   document.addEventListener('wheel', (event) => {
     if (!event.target.closest('#flow-canvas')) return
     event.preventDefault()
@@ -831,13 +852,13 @@
   })
 
   document.addEventListener('keydown', (event) => {
-    if (event.key === ' ' && !typingInAField(event) && !spaceHeld) {
+    if (event.key === ' ' && !keyboardIsClaimed(event) && !spaceHeld) {
       spaceHeld = true
       setPanCursor()
       if (event.target.closest('#flow-canvas')) event.preventDefault()
       return
     }
-    if (typingInAField(event)) return
+    if (keyboardIsClaimed(event)) return
     if ((event.metaKey || event.ctrlKey) && (event.key === '=' || event.key === '+')) {
       event.preventDefault()
       zoomByStep(1.2)
@@ -863,7 +884,7 @@
   // =================================================================
   // Keyboard.
   //
-  // Every binding below is guarded by typingInAField first. Without it,
+  // Every binding below is guarded by keyboardIsClaimed first. Without it,
   // typing a block name would delete the selection on Backspace and
   // duplicate it on "d", which is the most destructive thing this file
   // could get wrong.
@@ -896,6 +917,14 @@
     ['Model', [
       ['Cmd/Ctrl + Enter', 'Run the simulation'],
       ['?', 'Show this sheet']
+    ]],
+    ['Sheets', [
+      ['Double-click a tab', 'Rename it in place'],
+      ['Enter, or Esc', 'Commit the name, or put it back'],
+      ['Right-click a tab', 'Rename, duplicate or delete the sheet'],
+      ['Drag a tab', 'Move it along the strip'],
+      ['Ctrl/Cmd + Shift + ← or →', 'Move the open sheet one place'],
+      ['+', 'Add a sheet and name it']
     ]]
   ]
 
@@ -906,9 +935,25 @@
     if (!shortcutSheet) return
     shortcutSheet.remove()
     shortcutSheet = null
-    if (shortcutOpener && document.contains(shortcutOpener)) shortcutOpener.focus()
-    else if (canvas()) canvas().focus()
+    // "?" is usually pressed with nothing focused, so the opener is <body>,
+    // which document.contains() happily accepts — focusing it is the same
+    // as focusing nothing. Only a real element counts as somewhere to
+    // return to; otherwise the sheet hands the keyboard to the canvas.
+    const hasOpener = shortcutOpener && shortcutOpener !== document.body && document.contains(shortcutOpener)
+    if (hasOpener) shortcutOpener.focus()
+    else focusCanvas()
     shortcutOpener = null
+  }
+
+  // The canvas is a div, so focus() only lands once it is a focus target;
+  // without this the fallback above silently drops focus on <body>.
+  // tabindex="-1" for the same reason menu.js uses it: the canvas is
+  // clicked or returned to, never tabbed to.
+  function focusCanvas() {
+    const root = canvas()
+    if (!root) return
+    if (!root.hasAttribute('tabindex')) root.tabIndex = -1
+    root.focus()
   }
 
   function openShortcutSheet() {
@@ -961,19 +1006,13 @@
   }
 
   // =================================================================
-  // Context menus.
+  // Canvas context menu.
   //
-  // The native menu is suppressed only over the sheet; over the rails and
+  // menu.js owns construction, placement, dismissal, and the keyboard;
+  // this file only says where the menu applies and what is in it. The
+  // native menu is suppressed only over the sheet; over the rails and
   // the dock the browser's own menu stays available, where it is useful.
   // =================================================================
-  let contextMenu = null
-
-  function closeContextMenu() {
-    if (!contextMenu) return
-    contextMenu.remove()
-    contextMenu = null
-  }
-
   function menuItems(node, point) {
     if (node) {
       const plural = selection.size > 1 ? ` ${selection.size} blocks` : ''
@@ -1041,95 +1080,18 @@
     if (status()) status().textContent = 'Signal wires removed'
   }
 
-  function buildMenu(items, x, y) {
-    const menu = document.createElement('div')
-    menu.dataset.contextMenu = ''
-    menu.setAttribute('role', 'menu')
-    menu.style.cssText = [
-      'position:fixed', 'z-index:180', 'min-width:190px', 'max-height:60vh', 'overflow:auto',
-      'padding:5px', 'border:1px solid var(--housing-line-strong,#3c4f4a)', 'border-radius:8px',
-      'background:var(--housing,#16201e)', 'color:var(--ink-inverse,#e8efec)',
-      'box-shadow:0 18px 40px rgb(6 12 11 / 44%)', 'font-size:12px'
-    ].join(';')
-
-    items.forEach((item) => {
-      if (item.submenu) {
-        const group = document.createElement('div')
-        group.style.cssText = 'padding:5px 9px 3px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--probe,#35b39c)'
-        group.textContent = item.label
-        menu.appendChild(group)
-        item.submenu.forEach((choice) => menu.appendChild(menuButton(choice)))
-        return
-      }
-      menu.appendChild(menuButton(item))
-    })
-    document.body.appendChild(menu)
-
-    // Flip near a viewport edge so the menu is never clipped.
-    const box = menu.getBoundingClientRect()
-    const left = x + box.width > window.innerWidth - 8 ? Math.max(8, x - box.width) : x
-    const top = y + box.height > window.innerHeight - 8 ? Math.max(8, y - box.height) : y
-    menu.style.left = `${left}px`
-    menu.style.top = `${top}px`
-    return menu
-  }
-
-  function menuButton(item) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.setAttribute('role', 'menuitem')
-    button.textContent = item.label
-    button.style.cssText = [
-      'display:block', 'width:100%', 'padding:7px 9px', 'border:0', 'border-radius:5px',
-      'background:transparent', 'color:' + (item.danger ? 'var(--alarm,#ef7f6a)' : 'inherit'),
-      'cursor:pointer', 'font-size:12px', 'text-align:left'
-    ].join(';')
-    button.addEventListener('mouseenter', () => button.focus())
-    button.addEventListener('focus', () => { button.style.background = 'var(--housing-raised,#1f2c29)' })
-    button.addEventListener('blur', () => { button.style.background = 'transparent' })
-    button.addEventListener('click', () => {
-      closeContextMenu()
-      item.run()
-    })
-    return button
-  }
-
-  function openContextMenu(event) {
-    const withinSheet = event.target.closest('#flow-canvas')
-    if (!withinSheet) return
-    event.preventDefault()
-    closeContextMenu()
-    const node = event.target.closest('.block-card')
-    // Right-clicking outside the current selection re-targets it; inside
-    // it, the existing selection and its plural actions are kept.
-    if (node && !selection.has(node.dataset.blockId)) setSelection([node.dataset.blockId])
-    if (!node) setSelection([])
-    const point = screenToSheet(event.clientX, event.clientY)
-    contextMenu = buildMenu(menuItems(node, point), event.clientX, event.clientY)
-    const first = contextMenu.querySelector('button')
-    if (first) first.focus()
-  }
-
-  document.addEventListener('contextmenu', openContextMenu)
-  document.addEventListener('pointerdown', (event) => {
-    if (contextMenu && !event.target.closest('[data-context-menu]')) closeContextMenu()
-  }, true)
-  document.addEventListener('htmx:beforeSwap', closeContextMenu)
-  document.addEventListener('wheel', closeContextMenu, { passive: true })
-  document.addEventListener('keydown', (event) => {
-    if (!contextMenu) return
-    const buttons = Array.from(contextMenu.querySelectorAll('button'))
-    const index = buttons.indexOf(document.activeElement)
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      closeContextMenu()
-      if (canvas()) canvas().focus()
-    } else if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      buttons[(index + 1) % buttons.length].focus()
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      buttons[(index - 1 + buttons.length) % buttons.length].focus()
+  // No restoreFocus: Escape returning focus to the region it was raised
+  // from is what the menu does by default, and for this region the host is
+  // the canvas itself.
+  ProcessLab.menu.register({
+    selector: '#flow-canvas',
+    items: (event) => {
+      const node = event.target.closest('.block-card')
+      // Right-clicking outside the current selection re-targets it; inside
+      // it, the existing selection and its plural actions are kept.
+      if (node && !selection.has(node.dataset.blockId)) setSelection([node.dataset.blockId])
+      if (!node) setSelection([])
+      return menuItems(node, screenToSheet(event.clientX, event.clientY))
     }
   })
 
@@ -1176,7 +1138,7 @@
       return
     }
     // The guard comes before every binding, deliberately.
-    if (typingInAField(event)) return
+    if (keyboardIsClaimed(event)) return
     // The dock resizer owns the arrow keys while it has focus.
     if (event.target.closest('[data-dock-resizer], [role="separator"]')) return
     const { grid } = geometry()
@@ -1197,6 +1159,8 @@
       openShortcutSheet()
     } else if (event.key === 'Escape') {
       if (selection.size) setSelection([])
+    } else if (!plainArrow(event)) {
+      /* a modified arrow belongs to someone else; see plainArrow */
     } else if (event.key === 'ArrowLeft') {
       event.preventDefault()
       nudgeSelection(-step, 0)
@@ -1211,6 +1175,16 @@
       nudgeSelection(0, step)
     }
   })
+
+  // The nudge answers a bare arrow and a Shift + arrow, and nothing else.
+  // Ctrl/Cmd + Shift + arrow is the tab strip's reorder chord, and both
+  // bindings sit on document: without this the strip and the selection
+  // would both move on one keypress, which is the sort of collision the
+  // keyboardIsClaimed guard cannot see, because neither party is a text
+  // field or a menu.
+  function plainArrow(event) {
+    return !event.ctrlKey && !event.metaKey
+  }
 
   window.addEventListener('blur', () => {
     spaceHeld = false
@@ -1268,6 +1242,10 @@
     if (event.detail === 0 && event.target.closest('.block-body')) selectBlock(event.target.closest('.block-card'))
   })
   document.addEventListener('keydown', (event) => {
+    // No typingInAField here: Cmd+Enter is meant to run the model from
+    // inside the inspector too. The menu still gets its Escape to itself,
+    // so dismissing a menu raised mid-wire does not also drop the wire.
+    if (ProcessLab.menu.ownsKey(event)) return
     if (event.key === 'Escape') cancelConnection()
     if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
       event.preventDefault()
@@ -1283,13 +1261,45 @@
   // Both events are needed: at afterSwap the replacement node is not yet
   // the one querySelector returns, so styling there alone writes to a node
   // htmx is about to discard. afterSettle is what actually sticks.
-  const restoreViewport = () => {
+  //
+  // A swap can also replace the flowsheet itself: clicking a tab swaps a
+  // different sheet into #workbench. viewportKey() is per flow, so applying
+  // the outgoing sheet's pan and zoom to the incoming one both misplaces the
+  // incoming sheet and — because applyViewport() ends in saveViewport() —
+  // overwrites the incoming sheet's stored view with the outgoing sheet's.
+  // Whichever event first sees a new flow id therefore loads that sheet's
+  // own stored viewport, and fits the sheet when it has never been opened.
+  let openFlowID = workbench() ? workbench().dataset.flowId : ''
+  let pendingFit = false
+
+  function syncViewportToFlow(settled) {
+    const root = workbench()
+    if (!root) return
+    const flowID = root.dataset.flowId || ''
+    if (flowID !== openFlowID) {
+      openFlowID = flowID
+      pendingFit = !loadViewport()
+    }
+    if (!pendingFit) return
+    // fitView() measures the canvas, which is only reliable once the new
+    // markup has settled, so the fit runs on both events and is only
+    // retired by the settled one.
+    fitView()
+    if (settled) pendingFit = false
+  }
+
+  const restoreViewport = (settled) => {
+    syncViewportToFlow(settled)
     applyViewport()
     applySelection()
     redrawEdges()
   }
-  document.addEventListener('htmx:afterSwap', restoreViewport)
-  document.addEventListener('htmx:afterSettle', restoreViewport)
+  document.addEventListener('htmx:afterSwap', () => restoreViewport(false))
+  document.addEventListener('htmx:afterSettle', () => restoreViewport(true))
+  // Back and Forward restore the page from htmx's history cache, which fires
+  // neither swap event. Without this the canvas keeps the transform of the
+  // sheet you came from and the signal wires are never drawn.
+  document.addEventListener('htmx:historyRestore', () => restoreViewport(true))
   window.addEventListener('resize', redrawEdges)
 
   function initViewport() {
@@ -1515,6 +1525,9 @@
   document.addEventListener('keydown', resizeDockByKeyboard)
   document.addEventListener('htmx:afterSwap', applyShellState)
   document.addEventListener('htmx:afterSettle', applyShellState)
+  // A history restore that misses htmx's cache re-fetches the page, so the
+  // markup arrives with the server's default rail and dock attributes.
+  document.addEventListener('htmx:historyRestore', applyShellState)
   document.addEventListener('DOMContentLoaded', applyShellState)
   window.addEventListener('resize', applyShellState)
 
@@ -1530,4 +1543,9 @@
   else if (compactViewport.addListener) compactViewport.addListener(onViewportChange)
 
   applyShellState()
+
+  // The flowsheet tab strip is not here. It began in this file because the
+  // agent that wrote it did not own page.html and had nowhere else to put
+  // it; it now lives in tabs.js, next to the rename, drag and reorder
+  // gestures that share its geometry.
 })()

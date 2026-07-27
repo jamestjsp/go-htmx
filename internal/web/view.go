@@ -13,7 +13,91 @@ type pageView struct {
 	Workbench workbenchView
 }
 
+// registerView is the projects home — the drawing register. Every project the
+// database holds arrives with the flowsheets its row expands to reveal, so
+// expanding a row costs no request.
+type registerView struct {
+	Projects     []registerRowView
+	ProjectCount int
+	ProjectLabel string
+	SheetCount   int
+	SheetLabel   string
+}
+
+// registerRowView is one ruled line of the register.
+type registerRowView struct {
+	ID   int64
+	Name string
+	// Href is the project's own address. `GET /projects/{id}` already redirects
+	// to the project's first flowsheet, so the name opens the project without
+	// the register having to name a particular sheet — and it stays correct
+	// when the first sheet changes.
+	Href       string
+	SheetCount int
+	Edited     string
+	Sheets     []registerSheetView
+	// CanDelete carries the domain's refusal to delete the last project into
+	// the interface, so the control is absent rather than present and doomed.
+	CanDelete bool
+	// Confirm names the project and its sheet count, which is what makes the
+	// confirmation worth reading.
+	Confirm string
+}
+
+// registerSheetView is one flowsheet chip under an expanded row.
+type registerSheetView struct {
+	// Ordinal is the sheet's place in the project's tab order, zero padded, the
+	// way a drawing register numbers the sheets in a set. It is the tab strip's
+	// own order, so the register and the workbench count sheets alike.
+	Ordinal  string
+	Name     string
+	Href     string
+	NeedsRun bool
+}
+
+func newRegisterView(register studio.Register) registerView {
+	view := registerView{Projects: make([]registerRowView, 0, len(register.Projects))}
+	// One project left is the one the domain refuses to delete.
+	deletable := len(register.Projects) > 1
+	for _, entry := range register.Projects {
+		row := registerRowView{
+			ID:         entry.Project.ID,
+			Name:       entry.Project.Name,
+			Href:       fmt.Sprintf("/projects/%d", entry.Project.ID),
+			SheetCount: entry.FlowCount(),
+			Edited:     relativeTime(entry.EditedAt),
+			CanDelete:  deletable,
+			Sheets:     make([]registerSheetView, 0, entry.FlowCount()),
+		}
+		row.Confirm = fmt.Sprintf("Delete “%s” and its %d %s? This cannot be undone.",
+			row.Name, row.SheetCount, plural(row.SheetCount, "flowsheet", "flowsheets"),
+		)
+		for index, flow := range entry.Flows {
+			row.Sheets = append(row.Sheets, registerSheetView{
+				Ordinal:  fmt.Sprintf("%02d", index+1),
+				Name:     flow.Name,
+				Href:     fmt.Sprintf("/projects/%d/flows/%d", flow.ProjectID, flow.ID),
+				NeedsRun: flow.NeedsRun,
+			})
+		}
+		view.SheetCount += row.SheetCount
+		view.Projects = append(view.Projects, row)
+	}
+	view.ProjectCount = len(view.Projects)
+	view.ProjectLabel = plural(view.ProjectCount, "project", "projects")
+	view.SheetLabel = plural(view.SheetCount, "sheet", "sheets")
+	return view
+}
+
+func plural(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
+}
+
 type workbenchView struct {
+	Workspace       studio.Workspace
 	Snapshot        studio.Snapshot
 	Blocks          []blockView
 	Connections     []connectionView
@@ -21,11 +105,33 @@ type workbenchView struct {
 	SelectedLinks   []inspectorLink
 	Palette         []paletteItem
 	Sheet           sheetGeometry
+	Tabs            []flowTabView
 	Chart           chartView
 	Error           string
 	Updated         string
 	BlockCount      int
 	ConnectionCount int
+}
+
+// flowTabView is one sheet in the tab strip, in the project's `position`
+// order.
+//
+// Both addresses are built here rather than in the template because a tab
+// needs both and they are not interchangeable: Fragment is the workbench
+// markup htmx swaps into the page, while Href is the canonical address the
+// tab pushes, links to, and hands to a user without JavaScript. Pushing
+// Fragment instead would put a bare <main> with no stylesheet in the address
+// bar, which is what a reader gets back if they reload or share it.
+type flowTabView struct {
+	ID       int64
+	Name     string
+	Href     string
+	Fragment string
+	Active   bool
+	// NeedsRun is the amber dot: the model changed after its last simulation.
+	// It is the same flag the simulation dock reads, so the two cannot
+	// disagree about whether the sheet is current.
+	NeedsRun bool
 }
 
 // sheetGeometry hands the domain's sheet constants to the client so the
@@ -96,8 +202,10 @@ type spectrumView struct {
 	MaxFrequency  string
 }
 
-func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage string) workbenchView {
+func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
+	snapshot := workspace.Snapshot
 	view := workbenchView{
+		Workspace:       workspace,
 		Snapshot:        snapshot,
 		Error:           errorMessage,
 		Updated:         relativeTime(snapshot.Flow.UpdatedAt),
@@ -111,6 +219,17 @@ func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage s
 			BlockHeight: studio.BlockHeight,
 		},
 	}
+	for _, flow := range workspace.Flows {
+		view.Tabs = append(view.Tabs, flowTabView{
+			ID:       flow.ID,
+			Name:     flow.Name,
+			Href:     fmt.Sprintf("/projects/%d/flows/%d", flow.ProjectID, flow.ID),
+			Fragment: fmt.Sprintf("/flows/%d/workbench", flow.ID),
+			Active:   flow.ID == snapshot.Flow.ID,
+			NeedsRun: flow.NeedsRun,
+		})
+	}
+
 	for _, definition := range studio.BlockLibrary() {
 		view.Palette = append(view.Palette, paletteItem{
 			BlockDefinition: definition,

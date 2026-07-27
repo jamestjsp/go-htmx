@@ -6,19 +6,31 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
+// Foreign keys are enabled by the DSN, not here. A PRAGMA in this string would
+// run on whichever connection executes it, which makes enforcement depend on
+// the pool staying pinned to one connection — and would mask a broken DSN, so
+// TestOpenEnforcesForeignKeys would pass while proving nothing.
 const schema = `
-PRAGMA foreign_keys = ON;
-CREATE TABLE IF NOT EXISTS flows (
+CREATE TABLE IF NOT EXISTS projects (
 	id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL,
 	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS flows (
+	id INTEGER PRIMARY KEY,
+	project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	name TEXT NOT NULL,
+	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
-	model_updated_at TEXT NOT NULL
+	model_updated_at TEXT NOT NULL,
+	position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS blocks (
 	id INTEGER PRIMARY KEY,
@@ -56,10 +68,14 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
 CREATE INDEX IF NOT EXISTS connections_flow_id_idx ON connections(flow_id);
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);
+CREATE INDEX IF NOT EXISTS simulation_runs_flow_id_created_at_idx
+	ON simulation_runs(flow_id, created_at);
 `
 
+const defaultProjectName = "Process Lab project"
+
 func Open(ctx context.Context, path string) (*Studio, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dataSourceName(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -80,6 +96,16 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := ensureProjects(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// After ensureProjects, so every flow already belongs to a project and the
+	// backfill can number each project's tabs separately.
+	if err := ensureFlowPositions(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	studio := &Studio{db: db, now: time.Now}
 	if err := studio.seed(ctx); err != nil {
@@ -89,26 +115,22 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 	return studio, nil
 }
 
+// dataSourceName asks the driver for foreign key enforcement on every
+// connection it opens. Deleting a project destroys rows in five tables through
+// ON DELETE CASCADE, and leaving that to the PRAGMA in the schema statement
+// would make it depend on the pool staying pinned to one connection.
+func dataSourceName(path string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "_pragma=foreign_keys(1)"
+}
+
 func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(blocks)")
+	found, err := tableHasColumn(ctx, db, "blocks", "parameters_json")
 	if err != nil {
-		return fmt.Errorf("inspect blocks schema: %w", err)
-	}
-	found := false
-	for rows.Next() {
-		var index, notNull, primaryKey int
-		var name, dataType string
-		var defaultValue any
-		if err := rows.Scan(&index, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan blocks schema: %w", err)
-		}
-		if name == "parameters_json" {
-			found = true
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close blocks schema: %w", err)
+		return err
 	}
 	if found {
 		return nil
@@ -122,25 +144,9 @@ func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
 }
 
 func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, "PRAGMA table_info(flows)")
+	found, err := tableHasColumn(ctx, db, "flows", "model_updated_at")
 	if err != nil {
-		return fmt.Errorf("inspect flows schema: %w", err)
-	}
-	found := false
-	for rows.Next() {
-		var index, notNull, primaryKey int
-		var name, dataType string
-		var defaultValue any
-		if err := rows.Scan(&index, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan flows schema: %w", err)
-		}
-		if name == "model_updated_at" {
-			found = true
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close flows schema: %w", err)
+		return err
 	}
 	if found {
 		return nil
@@ -158,6 +164,171 @@ func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+func ensureProjects(ctx context.Context, db *sql.DB) error {
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		hasProjectID, err := tableHasColumn(ctx, tx, "flows", "project_id")
+		if err != nil {
+			return err
+		}
+		if !hasProjectID {
+			if _, err := tx.ExecContext(ctx,
+				"ALTER TABLE flows ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE",
+			); err != nil {
+				return fmt.Errorf("add flow project: %w", err)
+			}
+		}
+
+		var unassigned int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM flows WHERE project_id IS NULL",
+		).Scan(&unassigned); err != nil {
+			return fmt.Errorf("count unassigned flows: %w", err)
+		}
+		if unassigned > 0 {
+			projectID, err := emptyDefaultProject(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if projectID == 0 {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				result, err := tx.ExecContext(ctx,
+					"INSERT INTO projects(name, created_at, updated_at) VALUES(?, ?, ?)",
+					defaultProjectName, now, now,
+				)
+				if err != nil {
+					return fmt.Errorf("create legacy project: %w", err)
+				}
+				projectID, err = result.LastInsertId()
+				if err != nil {
+					return fmt.Errorf("read legacy project id: %w", err)
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE flows SET project_id = ? WHERE project_id IS NULL", projectID,
+			); err != nil {
+				return fmt.Errorf("assign legacy flows: %w", err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx,
+			"CREATE INDEX IF NOT EXISTS flows_project_id_idx ON flows(project_id)",
+		); err != nil {
+			return fmt.Errorf("index flows by project: %w", err)
+		}
+		return nil
+	})
+}
+
+func emptyDefaultProject(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var projectID int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT projects.id
+		FROM projects
+		LEFT JOIN flows ON flows.project_id = projects.id
+		WHERE projects.name = ?
+		GROUP BY projects.id
+		HAVING COUNT(flows.id) = 0
+		ORDER BY projects.id
+		LIMIT 1`,
+		defaultProjectName,
+	).Scan(&projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("find interrupted legacy project: %w", err)
+	}
+	return projectID, nil
+}
+
+// ensureFlowPositions gives flowsheets an order a user can change. Databases
+// written before the column open with their tabs in the order the old menu
+// showed them, numbered from zero within each project. It also repairs the
+// duplicate default positions left by an interrupted older migration while
+// preserving every valid user-defined order.
+func ensureFlowPositions(ctx context.Context, db *sql.DB) error {
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		found, err := tableHasColumn(ctx, tx, "flows", "position")
+		if err != nil {
+			return err
+		}
+		if !found {
+			if _, err := tx.ExecContext(ctx,
+				"ALTER TABLE flows ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+			); err != nil {
+				return fmt.Errorf("add flow position: %w", err)
+			}
+		}
+
+		invalid, err := hasInvalidFlowPositions(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if found && !invalid {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE flows SET position = (
+				SELECT ordered.position
+				FROM (
+					SELECT id, ROW_NUMBER() OVER (
+						PARTITION BY project_id
+						ORDER BY position, name COLLATE NOCASE, id
+					) - 1 AS position
+					FROM flows
+				) AS ordered
+				WHERE ordered.id = flows.id
+			)`,
+		); err != nil {
+			return fmt.Errorf("order legacy flows: %w", err)
+		}
+		return nil
+	})
+}
+
+func hasInvalidFlowPositions(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var invalid int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM flows
+			GROUP BY project_id
+			HAVING MIN(position) <> 0
+				OR MAX(position) <> COUNT(*) - 1
+				OR COUNT(DISTINCT position) <> COUNT(*)
+		)`,
+	).Scan(&invalid); err != nil {
+		return false, fmt.Errorf("validate flow positions: %w", err)
+	}
+	return invalid != 0, nil
+}
+
+type schemaQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func tableHasColumn(ctx context.Context, db schemaQueryer, table, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var index, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&index, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read %s schema: %w", table, err)
+	}
+	return false, nil
+}
+
 func (s *Studio) Close() error {
 	return s.db.Close()
 }
@@ -173,9 +344,20 @@ func (s *Studio) seed(ctx context.Context) error {
 
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		now := s.now().UTC().Format(time.RFC3339Nano)
+		projectResult, err := tx.ExecContext(ctx,
+			"INSERT INTO projects(name, created_at, updated_at) VALUES(?, ?, ?)",
+			defaultProjectName, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("seed project: %w", err)
+		}
+		projectID, err := projectResult.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("seed project id: %w", err)
+		}
 		result, err := tx.ExecContext(ctx,
-			"INSERT INTO flows(name, created_at, updated_at, model_updated_at) VALUES(?, ?, ?, ?)",
-			"Reactor temperature loop", now, now, now,
+			"INSERT INTO flows(project_id, name, created_at, updated_at, model_updated_at) VALUES(?, ?, ?, ?, ?)",
+			projectID, "Reactor temperature loop", now, now, now,
 		)
 		if err != nil {
 			return fmt.Errorf("seed flow: %w", err)
@@ -241,7 +423,11 @@ func (s *Studio) seed(ctx context.Context) error {
 }
 
 func (s *Studio) inTx(ctx context.Context, action func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	return inDBTx(ctx, s.db, action)
+}
+
+func inDBTx(ctx context.Context, db *sql.DB, action func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -267,8 +453,11 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	var snapshot Snapshot
 	var created, updated, modelUpdated string
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, created_at, updated_at, model_updated_at FROM flows WHERE id = ?", flowID,
-	).Scan(&snapshot.Flow.ID, &snapshot.Flow.Name, &created, &updated, &modelUpdated)
+		"SELECT id, project_id, name, created_at, updated_at, model_updated_at FROM flows WHERE id = ?", flowID,
+	).Scan(
+		&snapshot.Flow.ID, &snapshot.Flow.ProjectID, &snapshot.Flow.Name,
+		&created, &updated, &modelUpdated,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, ErrNotFound
 	}
@@ -374,6 +563,9 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 		run.SampleTime = sampleTime
 		snapshot.LastRun = &run
 	}
+	// The dock and the tab dot answer the same question from the same query:
+	// a flowsheet needs a run exactly when no run survived the filter above.
+	snapshot.Flow.NeedsRun = snapshot.LastRun == nil
 	return snapshot, nil
 }
 

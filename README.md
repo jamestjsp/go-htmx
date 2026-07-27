@@ -21,7 +21,7 @@ Requirements:
 go run ./cmd/processlab
 ```
 
-Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `processlab.db` and seeds the reactor example.
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `processlab.db` and seeds the reactor example. The address serves the drawing register; open the seeded project from there.
 
 To use another address or database:
 
@@ -30,6 +30,78 @@ go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
 ```
 
 All CSS, application JavaScript, and HTML templates are embedded in the Go binary. Only HTMX itself is loaded from the pinned CDN URL.
+
+## Projects, flowsheets, and persistence
+
+Process Lab organizes top-level flowsheets inside projects.
+
+`/` is the drawing register: one line per project, carrying its sheet count and
+when it was last edited, and a row expands to reveal that project's flowsheets.
+It replaces the old redirect into a flowsheet, so the application opens by
+showing what exists rather than dropping you into whichever sheet it saw last.
+
+- The last line of the register creates a project. It starts with one empty
+  flowsheet named `Untitled flowsheet`.
+- A project name opens that project's first sheet. A sheet chip in an expanded
+  row opens that sheet directly, so the home screen reaches a sheet in one
+  click.
+- Double-click a project name, or use **Rename** on its row, to rename it in
+  place. **Delete** removes the project and everything under it after a
+  confirmation naming the project and its sheet count. The last remaining
+  project offers no Delete.
+
+Inside a project the flowsheets are a tab strip across the bottom of the
+workbench, below the simulation dock and above the readout rail, so it stays
+visible whatever the rails and the dock are doing:
+
+| Gesture or control | Action |
+| --- | --- |
+| Click a tab | Open that sheet; only the workbench is swapped, so the page does not flash |
+| Double-click a tab | Rename it in place; `Enter` commits, `Esc` puts the old name back |
+| Right-click a tab | Rename, Duplicate, Delete |
+| Drag a tab | Move it along the strip; an insertion marker shows where it lands |
+| `Ctrl`/`Cmd` + `Shift` + `←` / `→` | Move the open sheet one place |
+| `+` | Add a sheet named `Flowsheet N` and open its tab in rename, with no dialog |
+| `‹ ›` | Scroll the strip one tab when there are more tabs than fit |
+| `N sheets` | A jump list of every sheet in the project |
+
+Duplicating a sheet copies its blocks, their parameters and positions, and the
+wiring between them; run history is not copied. The copy is named `‹name› copy`
+and lands immediately right of the sheet it came from. Deleting the open sheet
+opens its left neighbour, or its right neighbour when it was the first tab, and
+deleting the project you are inside returns you to the register. A project
+always keeps at least one flowsheet, which is what guarantees the tab strip is
+never empty.
+
+A tab carries an amber dot when its model changed since its last simulation.
+That is the same condition the simulation dock uses to call a chart stale, so
+the tab and the chart cannot disagree.
+
+The topbar carries **Projects**, a link back to the register, and a switcher
+naming the open project that lists the others and creates a new one. The
+flowsheets of the open project are the tab strip's subject and are not repeated
+there.
+
+Every edit is saved to the SQLite file passed with `-db`; there is no separate
+save command. Stop the server with `Ctrl+C`, then run it again with the same
+database path to reopen the workspace:
+
+```bash
+go run ./cmd/processlab -db ./demo.db
+```
+
+Each sheet has a canonical URL that stays valid across restarts, for example
+`/projects/2/flows/5`, and switching tabs pushes it, so Back walks the sheets
+you visited. Use a stable `-db` path when starting the server from different
+working directories.
+
+Databases from versions without projects are migrated at startup. Existing
+flowsheets are retained inside a default `Process Lab project`, and their tabs
+open in the order the old flowsheet menu listed them — by name, ignoring case —
+after which the order is yours to change and is stored per project.
+
+Projects currently contain independent top-level flowsheets. Hierarchical
+subflowsheet or subsystem blocks inside a flowsheet are not yet supported.
 
 ## Try the workbench
 
@@ -45,11 +117,14 @@ Press `?` for the full shortcut sheet.
 
 ## Workbench interaction
 
-The window is a fixed application shell: the page itself never scrolls, and
-the canvas is the only region that grows. Both side rails collapse to a
-46px icon strip — the collapsed library still adds blocks — and the
-simulation dock at the bottom drags between a header-only state and 70% of
-the window. Those choices persist across reloads.
+On desktop, the window is a fixed application shell: the canvas is the only
+region that grows. At 860px and below, the interface stacks and the page
+scrolls so every control remains reachable without horizontal overflow. Both
+side rails collapse to a 46px icon strip — the collapsed library still adds
+blocks — and the simulation dock at the bottom drags between a header-only
+state and 70% of the window. Those choices persist across reloads. The
+flowsheet tab strip spans the full width below the dock, outside the rails, so
+collapsing anything never takes the other sheets with it.
 
 The sheet is a 6000×4000 world on a 20px grid, viewed through a pan/zoom
 viewport at 25%–400%.
@@ -76,6 +151,7 @@ viewport at 25%–400%.
 | `Shift` + `1` | Fit the flowsheet to the window |
 | `Esc` | Cancel wiring, or clear the selection |
 | `Cmd`/`Ctrl` + `Enter` | Run the model |
+| `Cmd`/`Ctrl` + `Shift` + `←` / `→` | Move the open sheet along the tab strip |
 | `?` | Shortcut sheet |
 
 The status bar is a live readout rail: cursor position in sheet
@@ -92,7 +168,7 @@ flowchart LR
     Browser["Browser<br/>HTMX + small gesture layer"]
     HTTP["Go HTTP handlers<br/>HTML fragments"]
     Studio["Studio service<br/>domain operations"]
-    SQLite[("SQLite<br/>flows, events, runs")]
+    SQLite[("SQLite<br/>projects, flows, events, runs")]
     Compiler["Flow compiler<br/>graph to state space"]
     Controlsys["controlsys v1.2.0<br/>Lsim"]
 
@@ -139,13 +215,21 @@ The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the G
 
 The database stores:
 
-- flows and separate layout/model update timestamps;
+- projects and their top-level flowsheets;
+- flows, their place in the project's tab strip, and separate layout/model
+  update timestamps;
 - blocks, positions, and version-tolerant JSON parameters;
 - signal connections with foreign keys and uniqueness constraints;
 - recent activity events;
 - complete simulation runs as JSON time series.
 
-Model edits invalidate the displayed result, while layout-only moves do not. Historical runs remain in SQLite. Schema startup migrates databases created before model timestamps or JSON block parameters were introduced.
+Model edits invalidate the displayed result, while layout-only moves and
+flowsheet renames do not. Historical runs remain in SQLite. Schema startup
+migrates databases created before projects, tab order, model timestamps, or
+JSON block parameters were introduced. Deleting a project reaches its
+flowsheets, blocks, connections, events, and runs through `ON DELETE CASCADE`,
+so foreign keys are turned on in the connection string rather than left to a
+pragma on whichever connection happens to run it.
 
 ## Project structure
 
@@ -166,8 +250,33 @@ go test -race ./...
 go build ./cmd/processlab
 ```
 
-The persistent tests cover SQLite round trips and legacy migration, grid snapping and the sheet bounds, collision-free block placement, connection constraints, cycle rejection, analytic control-block responses, FFT peak detection, HTML fragment behavior, embedded assets, multi-field HTTP editing flows, and the batch move, delete, and duplicate endpoints including rejection of ids from another flow.
+The persistent tests cover project and flowsheet lifecycle operations —
+including the refusal to delete the last project or the last flowsheet,
+duplicate fidelity down to block parameters and remapped connection ids, and
+reorder rejecting ids from another project — SQLite round trips, legacy
+migration and the per-project tab-order backfill, the register query's counts
+and stale-run flag, grid snapping and the sheet bounds, collision-free block
+placement, connection constraints, cycle rejection, analytic control-block
+responses, FFT peak detection, HTML fragment behavior, embedded assets,
+multi-field HTTP editing flows, and the batch move, delete, and duplicate
+endpoints including rejection of ids from another flow.
 
-Interaction behavior cannot be covered by Go tests. It was verified by driving real pointer and key gestures against headless Chrome over CDP — 88 checks across viewport, snapping, selection, keyboard, context menus, and wiring — at 25%, 100%, and 400% zoom, plus rendering at 1440×900, 1280×720, 860px, and 620px.
+Interaction behavior cannot be covered by Go tests. It was verified by driving
+real pointer and key gestures against headless Chrome over CDP — 88 checks
+across viewport, snapping, selection, keyboard, context menus, and wiring — at
+25%, 100%, and 400% zoom.
+
+The navigation redesign was verified the same way, end to end in one browser
+session: create a project from the register, add sheets with `+`, rename a tab
+by double-click, duplicate it, reorder by drag and by keyboard, delete a sheet
+and land on the neighbour the domain chose, switch projects from the register
+and from the topbar switcher, rename and delete a project, then restart the
+server and confirm the register, the tab names, and the tab order came back
+unchanged — 77 checks. The same pass was repeated against a database written
+before this branch, whose `flows` table had no `position`, `project_id`, or
+`model_updated_at` column: it migrated on open, its tabs appeared in the old
+by-name order, every new operation worked on it, and a second open did not
+re-sort the strip — 46 checks. Rendering was confirmed at 1440, 1280, 860, and
+620px on both pages.
 
 Note that templates and static assets are `go:embed`-ed into the binary, so a change to `app.js` or `app.css` needs a rebuild before the server serves it.

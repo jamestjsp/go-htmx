@@ -2,6 +2,7 @@ package web
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -35,7 +36,17 @@ func New(studioService *studio.Studio) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /", server.page)
+	mux.HandleFunc("GET /projects/{projectID}", server.projectPage)
+	mux.HandleFunc("GET /projects/{projectID}/flows/{flowID}", server.projectFlowPage)
 	mux.HandleFunc("GET /flows/{flowID}/workbench", server.workbench)
+	mux.HandleFunc("POST /projects", server.createProject)
+	mux.HandleFunc("PUT /projects/{projectID}/name", server.renameProject)
+	mux.HandleFunc("DELETE /projects/{projectID}", server.deleteProject)
+	mux.HandleFunc("POST /projects/{projectID}/flows", server.createFlow)
+	mux.HandleFunc("PATCH /projects/{projectID}/flows/order", server.reorderFlows)
+	mux.HandleFunc("PUT /flows/{flowID}/name", server.renameFlow)
+	mux.HandleFunc("POST /flows/{flowID}/duplicate", server.duplicateFlow)
+	mux.HandleFunc("DELETE /flows/{flowID}", server.deleteFlow)
 	mux.HandleFunc("POST /flows/{flowID}/blocks", server.addBlock)
 	mux.HandleFunc("PATCH /blocks/{blockID}/position", server.moveBlock)
 	mux.HandleFunc("PATCH /flows/{flowID}/blocks/positions", server.moveBlocks)
@@ -55,17 +66,70 @@ func (s *Server) Handler() http.Handler {
 	return s.handler
 }
 
+// page renders the register: every project the database holds, each row
+// carrying the flowsheets it expands to reveal. It replaces a redirect into a
+// flowsheet, which left the application with no screen that showed what
+// projects existed.
+//
+// `GET /` is also the mux's catch-all, so an address nothing else matches
+// arrives here. That is a miss, not the home page, and answering it with the
+// register would dress every typo as a 200.
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.studio.Current(r.Context())
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	register, err := s.studio.Register(r.Context())
 	if err != nil {
+		http.Error(w, "Process Lab could not load the register.", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "register", newRegisterView(register)); err != nil {
+		http.Error(w, "Process Lab could not render the register.", http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) projectFlowPage(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathID(w, r, "projectID")
+	if !ok {
+		return
+	}
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	workspace, err := s.studio.Workspace(r.Context(), projectID, flowID)
+	if err != nil {
+		if errors.Is(err, studio.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
 		http.Error(w, "Process Lab could not load the flowsheet.", http.StatusInternalServerError)
 		return
 	}
-	view := pageView{Workbench: newWorkbenchView(snapshot, selectedID(r), "")}
+	view := pageView{Workbench: newWorkbenchView(workspace, selectedID(r), "")}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "page", view); err != nil {
 		http.Error(w, "Process Lab could not render the page.", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathID(w, r, "projectID")
+	if !ok {
+		return
+	}
+	workspace, err := s.studio.ProjectWorkspace(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, studio.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Process Lab could not load the project.", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, workspacePath(workspace), http.StatusSeeOther)
 }
 
 func (s *Server) workbench(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +142,63 @@ func (s *Server) workbench(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, selectedID(r), "")
+	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
+}
+
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid project.", http.StatusBadRequest)
+		return
+	}
+	workspace, err := s.studio.CreateProject(r.Context(), r.FormValue("name"))
+	if err != nil {
+		http.Error(w, studio.ValidationMessage(err), http.StatusBadRequest)
+		return
+	}
+	s.redirectWorkspace(w, r, workspace)
+}
+
+func (s *Server) createFlow(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathID(w, r, "projectID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid flowsheet.", http.StatusBadRequest)
+		return
+	}
+	workspace, err := s.studio.CreateFlow(r.Context(), projectID, r.FormValue("name"))
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, studio.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, studio.ValidationMessage(err), status)
+		return
+	}
+	s.redirectWorkspace(w, r, workspace)
+}
+
+func (s *Server) renameFlow(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	workspace, err := s.studio.RenameFlow(r.Context(), flowID, r.FormValue("name"))
+	if err != nil {
+		s.renderFailure(w, r, flowID, 0, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "workbench", newWorkbenchView(
+		workspace, selectedID(r), "",
+	)); err != nil {
+		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) addBlock(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +224,7 @@ func (s *Server) addBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, blockID, "")
+	s.renderWorkbench(w, r, snapshot, blockID, "")
 }
 
 func (s *Server) moveBlock(w http.ResponseWriter, r *http.Request) {
@@ -190,7 +310,7 @@ func (s *Server) updateBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, blockID, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, blockID, "")
+	s.renderWorkbench(w, r, snapshot, blockID, "")
 }
 
 func (s *Server) deleteBlock(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +323,7 @@ func (s *Server) deleteBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, 0, "")
+	s.renderWorkbench(w, r, snapshot, 0, "")
 }
 
 // deleteBlocks removes a selection. Ids arrive as repeated query values,
@@ -226,7 +346,7 @@ func (s *Server) deleteBlocks(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, 0, "")
+	s.renderWorkbench(w, r, snapshot, 0, "")
 }
 
 func (s *Server) duplicateBlocks(w http.ResponseWriter, r *http.Request) {
@@ -247,7 +367,7 @@ func (s *Server) duplicateBlocks(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, 0, "")
+	s.renderWorkbench(w, r, snapshot, 0, "")
 }
 
 // formIDs reads the repeated `id` values shared by the batch endpoints.
@@ -291,7 +411,7 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, targetID, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, targetID, "")
+	s.renderWorkbench(w, r, snapshot, targetID, "")
 }
 
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
@@ -304,7 +424,7 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, 0, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, selectedID(r), "")
+	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
 }
 
 func (s *Server) disconnectBlock(w http.ResponseWriter, r *http.Request) {
@@ -317,7 +437,7 @@ func (s *Server) disconnectBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, blockID, err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, blockID, "")
+	s.renderWorkbench(w, r, snapshot, blockID, "")
 }
 
 func (s *Server) runSimulation(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +464,7 @@ func (s *Server) runSimulation(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, flowID, selectedID(r), err)
 		return
 	}
-	s.renderWorkbench(w, snapshot, selectedID(r), "")
+	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
 }
 
 func (s *Server) renderFailure(w http.ResponseWriter, r *http.Request, flowID, selected int64, failure any) {
@@ -368,14 +488,45 @@ func (s *Server) renderFailure(w http.ResponseWriter, r *http.Request, flowID, s
 		http.Error(w, message, http.StatusBadRequest)
 		return
 	}
-	s.renderWorkbench(w, snapshot, selected, message)
+	s.renderWorkbench(w, r, snapshot, selected, message)
 }
 
-func (s *Server) renderWorkbench(w http.ResponseWriter, snapshot studio.Snapshot, selected int64, message string) {
+func (s *Server) renderWorkbench(
+	w http.ResponseWriter,
+	r *http.Request,
+	snapshot studio.Snapshot,
+	selected int64,
+	message string,
+) {
+	workspace, err := s.studio.Workspace(
+		r.Context(), snapshot.Flow.ProjectID, snapshot.Flow.ID,
+	)
+	if err != nil {
+		http.Error(w, "Process Lab could not load the project.", http.StatusInternalServerError)
+		return
+	}
+	workspace.Snapshot = snapshot
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "workbench", newWorkbenchView(snapshot, selected, message)); err != nil {
+	if err := s.templates.ExecuteTemplate(
+		w, "workbench", newWorkbenchView(workspace, selected, message),
+	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) redirectWorkspace(w http.ResponseWriter, r *http.Request, workspace studio.Workspace) {
+	location := workspacePath(workspace)
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", location)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	http.Redirect(w, r, location, http.StatusSeeOther)
+}
+
+func workspacePath(workspace studio.Workspace) string {
+	return "/projects/" + strconv.FormatInt(workspace.Project.ID, 10) +
+		"/flows/" + strconv.FormatInt(workspace.Snapshot.Flow.ID, 10)
 }
 
 func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {

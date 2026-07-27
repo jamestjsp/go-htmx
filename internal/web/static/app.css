@@ -100,7 +100,8 @@ input {
 /* Fields that sit in the housing get dark native controls, so the
    number spinners and caret match the chrome instead of flashing white. */
 .run-form input,
-.property-form input {
+.property-form input,
+.switcher-create input {
   color-scheme: dark;
 }
 
@@ -124,6 +125,7 @@ button {
 .axis-title,
 .run-form input,
 .project-facts b,
+.tab-jump summary b,
 kbd {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
@@ -143,6 +145,7 @@ kbd {
 .palette-panel,
 .inspector-panel,
 .results-header,
+.tab-strip,
 .statusbar {
   --focus: #5fd8c0;
 }
@@ -168,7 +171,10 @@ kbd {
      nowrap content (the readout rail especially), whose min-content
      would otherwise widen the single column past the viewport. */
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto 1fr auto;
+  /* topbar, error banner, studio, tab strip, readout rail. The strip sits
+     between the studio and the rail so it is visible whatever the rails and
+     the dock are doing. */
+  grid-template-rows: auto auto 1fr auto auto;
   overflow: hidden;
   background: var(--housing);
 }
@@ -246,8 +252,23 @@ kbd {
   letter-spacing: .04em;
 }
 
-.project-heading {
+/* --------------------------------- Topbar navigation ----------
+   Where you are, and the way out of it. The brand, the register,
+   then the project you are inside. The flowsheets inside that
+   project are the tab strip's subject at the foot of the housing,
+   not the topbar's.
+
+   The switcher is a selector plate sunk into the housing. Opening
+   it lights a teal lamp along the plate's lower edge — the edge
+   the panel drops from — which is the lamp the active tab in the
+   strip carries along its upper edge. "The thing you are inside"
+   then reads the same way at both ends of the housing.
+   --------------------------------------------------------------- */
+.topbar-nav {
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding-left: 18px;
   border-left: 1px solid var(--housing-line);
 }
@@ -262,14 +283,213 @@ kbd {
   text-transform: uppercase;
 }
 
-.project-heading h1 {
-  margin: 2px 0 0;
+.topbar-home {
+  flex: none;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-200);
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.topbar-home:hover {
+  border-color: var(--housing-line);
+  color: var(--probe);
+  background: var(--housing-deep);
+}
+
+.topbar-sep {
+  flex: none;
+  color: var(--housing-line-strong);
+  font-size: var(--fs-500);
+  font-weight: 300;
+  line-height: 1;
+}
+
+.project-switcher {
+  position: relative;
+  min-width: 0;
+}
+
+.project-switcher summary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  border: 1px solid var(--housing-line);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  background: var(--housing-deep);
+  cursor: pointer;
+  list-style: none;
+}
+
+.project-switcher summary::-webkit-details-marker {
+  display: none;
+}
+
+.project-switcher summary:hover {
+  border-color: var(--housing-line-strong);
+  background: var(--housing-raised);
+}
+
+/* The lamp, lit while the panel is down. */
+.project-switcher[open] summary {
+  border-color: var(--housing-line-strong);
+  background: var(--housing-raised);
+  box-shadow:
+    inset 0 -2px 0 0 var(--probe),
+    inset 0 -10px 14px -10px var(--probe-glow);
+}
+
+.switcher-name {
+  min-width: 0;
+  max-width: 230px;
   overflow: hidden;
-  font-size: var(--fs-400);
+  font-size: var(--fs-300);
   font-weight: 650;
   letter-spacing: -.005em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.switcher-chevron {
+  flex: none;
+  color: var(--ink-inverse-muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1;
+  transition: transform 140ms;
+}
+
+.project-switcher[open] .switcher-chevron {
+  color: var(--probe);
+  transform: rotate(180deg);
+}
+
+.switcher-panel {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 9px);
+  left: 0;
+  width: min(300px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid var(--housing-line-strong);
+  border-radius: var(--radius);
+  background: var(--housing-raised);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 42%);
+}
+
+.popover-label,
+.switcher-create > label {
+  display: block;
+  margin: 0 4px 6px;
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-100);
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.switcher-panel nav {
+  max-height: 244px;
+  display: grid;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+/* Two popovers hang off the housing: the project switcher up here and the
+   sheet jump list down on the tab strip. One rule draws the rows of both,
+   so a project and a sheet cannot start reading as different kinds of
+   thing. Each panel keeps its own box, because one drops from the top of
+   the housing and the other rises from the bottom of it. */
+.switcher-panel nav a,
+.tab-jump-panel nav a {
+  /* A grid item's min-width is auto, so without this a long project or sheet
+     name pushes the row out past the panel and is cut off square instead of
+     ellipsed. */
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-200);
+  text-decoration: none;
+}
+
+.switcher-panel nav a > span,
+.tab-jump-panel nav a > span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-panel nav a:hover,
+.switcher-panel nav a[aria-current="page"],
+.tab-jump-panel nav a:hover,
+.tab-jump-panel nav a[aria-current="page"] {
+  border-color: var(--housing-line);
+  color: var(--ink-inverse);
+  background: var(--housing-deep);
+}
+
+.switcher-panel nav a[aria-current="page"] > span::before,
+.tab-jump-panel nav a[aria-current="page"] > span::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--probe);
+  box-shadow: 0 0 0 3px var(--probe-glow);
+}
+
+.switcher-create {
+  margin-top: 9px;
+  padding-top: 10px;
+  border-top: 1px solid var(--housing-line);
+}
+
+.switcher-create > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.switcher-create input {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--housing-line);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  background: var(--housing-deep);
+}
+
+.switcher-create button {
+  padding: 8px 10px;
+  border: 1px solid rgb(53 179 156 / 45%);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  background: rgb(53 179 156 / 14%);
+  cursor: pointer;
+  font-size: var(--fs-200);
+  font-weight: 700;
+}
+
+.switcher-create button:hover {
+  border-color: var(--probe);
+  background: rgb(53 179 156 / 22%);
 }
 
 .project-facts {
@@ -1967,13 +2187,367 @@ body.is-resizing-dock .studio-grid {
 }
 
 /* ---------------------------------------------------------------
+   Flowsheet tab strip. An annunciator: the tabs are legend windows
+   seated in a recessed channel milled into the housing, and the
+   sheet you are on is the one whose lamp is lit — a teal bar along
+   the top edge of the tab, struck as an inset shadow so it reads as
+   light behind the legend rather than a border drawn around it.
+
+   The active tab deliberately does NOT adopt the vellum of the
+   sheet. Tabs belong to the machine, not to the drawing, and a lit
+   white tab down here would read as a second sheet below the first.
+   Ink brightness carries the same signal as the lamp, so the state
+   survives without colour.
+   --------------------------------------------------------------- */
+.tab-strip {
+  z-index: 25;
+  grid-row: 4;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: stretch;
+  border-top: 1px solid var(--housing-deep);
+  background: var(--housing-deep);
+  box-shadow: inset 0 2px 5px rgb(0 0 0 / 30%);
+  color: var(--ink-inverse);
+}
+
+/* The four columns are assigned by hand, not by auto-placement.
+
+   The ‹ › arrows are display:none until the track actually scrolls, and a
+   display:none child is not a grid item. Left to auto-placement the track
+   would then slide into the leading `auto` column and size itself to the
+   whole tab list, and `.tab-tools` would land in `minmax(0, 1fr)` with only
+   the remainder — so between "the tabs just fit" and "the tabs fit with
+   140px to spare", the + and the sheet count were laid out wider than their
+   track and hung off the right edge of the shell. Naming the columns makes
+   the arrows' two tracks collapse to 0 when they are hidden and leaves the
+   track, which scrolls, as the only thing that gives up width. */
+.tab-scroll-back {
+  grid-column: 1;
+}
+
+.tab-track {
+  grid-column: 2;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* The ‹ › arrows are the affordance; a scrollbar under 36px of tabs
+     is a second one that eats the lamp bar. */
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+
+.tab-track::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-list {
+  /* The insertion marker is placed against this, so it scrolls with the
+     tabs rather than hanging over a track that has moved underneath it. */
+  position: relative;
+  height: 100%;
+  width: max-content;
+  display: flex;
+  align-items: stretch;
+  /* The channel showing through is the scribe line between legends. */
+  gap: 1px;
+}
+
+.flow-tab {
+  position: relative;
+  max-width: 216px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 15px;
+  min-height: 36px;
+  color: var(--ink-inverse-muted);
+  background: var(--housing);
+  text-decoration: none;
+  font-size: var(--fs-200);
+  font-weight: 550;
+  letter-spacing: .005em;
+  /* A tab is dragged, so a drag must not select its name instead. */
+  -webkit-user-select: none;
+  user-select: none;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.flow-tab:hover {
+  color: var(--ink-inverse);
+  background: var(--housing-raised);
+}
+
+/* The track clips vertically, so the ring is drawn inside the tab rather
+   than around it, where the strip would cut its top and bottom off. */
+.flow-tab:focus-visible {
+  outline-offset: -3px;
+}
+
+/* The lamp. Bar plus the light it spills down the legend window. */
+.flow-tab[aria-current="page"] {
+  color: var(--ink-inverse);
+  background: var(--housing-raised);
+  box-shadow:
+    inset 0 2px 0 0 var(--probe),
+    inset 0 10px 14px -10px var(--probe-glow);
+  font-weight: 650;
+}
+
+.flow-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Amber: this sheet's model moved after its last simulation. */
+.flow-tab-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--caution);
+  box-shadow: 0 0 5px rgb(217 164 65 / 55%);
+}
+
+/* Renaming. The legend is out of its window and the name is being cut
+   fresh in the empty channel: the tab drops to the recessed colour and
+   the field carries a teal scribe frame — the lamp colour struck as an
+   outline rather than a bar, so a tab can be lit and editable at once
+   without the two states fighting over the same edge. */
+.flow-tab[data-renaming] {
+  background: var(--housing-deep);
+}
+
+.flow-tab-input {
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 3px;
+  outline: 0;
+  color: var(--ink-inverse);
+  background: var(--housing);
+  box-shadow: inset 0 0 0 1px var(--probe);
+  caret-color: var(--probe);
+  color-scheme: dark;
+  font-size: var(--fs-200);
+  font-weight: 550;
+  letter-spacing: .005em;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.flow-tab-input::selection {
+  color: var(--housing);
+  background: var(--probe);
+}
+
+/* Dragging. What shows where the tab was is the milled channel it seats
+   in, with the name ghosted at the bottom of the well so the sheet in
+   your hand is still legible. */
+.tab-strip[data-dragging] {
+  cursor: grabbing;
+}
+
+.tab-strip[data-dragging] .flow-tab:not([aria-current="page"]):hover {
+  color: var(--ink-inverse-muted);
+  background: var(--housing);
+}
+
+.flow-tab[data-dragging],
+.flow-tab[data-dragging]:hover {
+  color: var(--housing-line-strong);
+  background: var(--housing-deep);
+  box-shadow: inset 0 0 0 1px var(--housing-line);
+  cursor: grabbing;
+}
+
+.flow-tab[data-dragging] .flow-tab-dot {
+  background: var(--housing-line-strong);
+  box-shadow: none;
+}
+
+/* Where the tab would land: a scribe caret standing in the channel,
+   capped top and bottom the way a centre mark is struck on a drawing. */
+.tab-insert {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--probe);
+  box-shadow: 0 0 7px rgb(53 179 156 / 55%);
+  pointer-events: none;
+}
+
+.tab-insert::before,
+.tab-insert::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  width: 6px;
+  height: 2px;
+  background: var(--probe);
+}
+
+.tab-insert::before {
+  top: 0;
+}
+
+.tab-insert::after {
+  bottom: 0;
+}
+
+.tab-scroll {
+  display: none;
+  width: 28px;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid var(--housing-line);
+  color: var(--ink-inverse-muted);
+  background: var(--housing);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.tab-scroll-forward {
+  grid-column: 3;
+  border-right: 0;
+  border-left: 1px solid var(--housing-line);
+}
+
+.tab-strip[data-overflow="true"] .tab-scroll {
+  display: block;
+}
+
+.tab-scroll:hover:not(:disabled) {
+  color: var(--ink-inverse);
+  background: var(--housing-raised);
+}
+
+.tab-scroll:disabled {
+  color: var(--housing-line-strong);
+  cursor: default;
+}
+
+.tab-tools {
+  grid-column: 4;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 8px;
+  border-left: 1px solid var(--housing-line);
+  background: var(--housing-deep);
+}
+
+.tab-add-form {
+  display: flex;
+}
+
+.tab-add {
+  width: 28px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--housing-line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--probe);
+  background: var(--housing);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.tab-add:hover {
+  border-color: var(--probe);
+  background: var(--housing-raised);
+}
+
+.tab-jump {
+  position: relative;
+}
+
+.tab-jump summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse-muted);
+  cursor: pointer;
+  font-size: var(--fs-100);
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  list-style: none;
+  white-space: nowrap;
+}
+
+.tab-jump summary::-webkit-details-marker {
+  display: none;
+}
+
+.tab-jump summary b {
+  color: var(--ink-inverse);
+  font-weight: 650;
+}
+
+.tab-jump summary:hover,
+.tab-jump[open] summary {
+  color: var(--ink-inverse);
+  background: var(--housing);
+}
+
+.tab-jump-chevron {
+  font-size: var(--fs-200);
+  font-style: normal;
+  line-height: 1;
+  transition: transform 140ms;
+}
+
+.tab-jump[open] .tab-jump-chevron {
+  transform: rotate(180deg);
+}
+
+/* The strip is the last thing above the readout rail, so its popover
+   opens upward. */
+.tab-jump-panel {
+  position: absolute;
+  z-index: 120;
+  right: 0;
+  bottom: calc(100% + 9px);
+  width: min(288px, calc(100vw - 24px));
+  padding: 10px;
+  border: 1px solid var(--housing-line-strong);
+  border-radius: var(--radius);
+  background: var(--housing-raised);
+  box-shadow: 0 -18px 48px rgb(0 0 0 / 42%);
+}
+
+.tab-jump-panel nav {
+  max-height: 268px;
+  display: grid;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+/* The rows of this panel are drawn with the project switcher's, up in the
+   topbar section: one popover component, one set of rules. */
+/* ---------------------------------------------------------------
    Readout rail. The signature element: a live monospace instrument
    strip across the bottom of the housing. Keys are grotesque and
    quiet; values are mono, bright and tabular so nothing shifts as
    the numbers change. IDs here are the contract app.js populates.
    --------------------------------------------------------------- */
 .statusbar {
-  grid-row: 4;
+  grid-row: 5;
   min-height: 38px;
   display: flex;
   align-items: stretch;
@@ -2168,6 +2742,10 @@ body.is-resizing-dock .studio-grid {
     display: none;
   }
 
+  .switcher-name {
+    max-width: 140px;
+  }
+
   .project-facts > span:not(.saved-state) {
     display: none;
   }
@@ -2211,15 +2789,26 @@ body.is-resizing-dock .studio-grid {
     padding: 12px 14px;
   }
 
-  .project-heading {
-    grid-column: 1 / -1;
+  /* The topbar stops being one row here. The nav cluster drops to a second
+     line under the brand, ruled off rather than divided beside it, and takes
+     the saved lamp along with it so nothing sits on a line of its own. */
+  .topbar-nav {
+    grid-column: 1;
     margin-top: 9px;
     padding: 9px 0 0;
     border-top: 1px solid var(--housing-line);
     border-left: 0;
   }
 
+  .switcher-name {
+    max-width: 240px;
+  }
+
   .project-facts {
+    grid-column: 2;
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 1px solid var(--housing-line);
     justify-self: end;
   }
 
@@ -2295,6 +2884,12 @@ body.is-resizing-dock .studio-grid {
     display: none;
   }
 
+  /* The shell stops being a grid here, so the strip holds its place by
+     document order instead: after the studio, before the readout rail. */
+  .flow-tab {
+    max-width: 168px;
+  }
+
   .statusbar {
     min-height: 40px;
     padding: 0 12px;
@@ -2318,6 +2913,16 @@ body.is-resizing-dock .studio-grid {
     display: block;
   }
 
+  .topbar-nav {
+    margin-top: 12px;
+  }
+
+  /* The plate takes what the link, the slash and its own padding leave, so
+     a long project name ellipses instead of pushing the page sideways. */
+  .switcher-name {
+    max-width: calc(100vw - 190px);
+  }
+
   .palette-list {
     grid-template-columns: repeat(5, 160px);
   }
@@ -2337,6 +2942,18 @@ body.is-resizing-dock .studio-grid {
 
   .metric-panel {
     grid-template-columns: 1fr;
+  }
+
+  /* The tools cluster is now the fixed cost of the strip, and at this width
+     it is buying about a third of the legend window. The digit is the part
+     that carries the reading, so the word goes and the count, the chevron
+     and the whole jump list stay; the summary's title still names it. */
+  .tab-jump summary {
+    padding: 0 6px;
+  }
+
+  .tab-jump summary > span {
+    display: none;
   }
 
   .statusbar {
@@ -2369,6 +2986,10 @@ body.is-resizing-dock .studio-grid {
   .palette-item,
   .add-glyph,
   .tool-button,
+  .flow-tab,
+  .tab-scroll,
+  .tab-jump-chevron,
+  .switcher-chevron,
   .block-card,
   .port,
   .run-button,

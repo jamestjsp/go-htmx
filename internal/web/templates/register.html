@@ -1,0 +1,143 @@
+{{define "register"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Drawing register · Process Lab</title>
+  <link rel="stylesheet" href="/assets/register.css">
+  <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
+  <!-- The register loads neither app.js nor menu.js: it is a different shell
+       from the workbench and shares only the :root tokens with it. -->
+  <script src="/assets/register.js" defer></script>
+</head>
+<body class="register-page">
+  <header class="register-bar">
+    <a class="brand" href="/" aria-label="Process Lab home">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-words">
+        <strong>Process Lab</strong>
+        <small>Dynamic systems workbench</small>
+      </span>
+    </a>
+    <!-- The real create form is the register's next free line. Without
+         JavaScript this anchor still walks the reader to it. -->
+    <a class="bar-action" href="#new-project-name" data-focus-new-project>+ New project</a>
+  </header>
+
+  <main class="register-main">
+    <section class="register-sheet" aria-labelledby="register-title">
+      <div class="register-caption">
+        <h1 id="register-title">Drawing register</h1>
+        <p class="register-totals">
+          <b>{{.ProjectCount}}</b> <span>{{.ProjectLabel}}</span>
+          <i aria-hidden="true">·</i>
+          <b>{{.SheetCount}}</b> <span>{{.SheetLabel}}</span>
+        </p>
+      </div>
+
+      <p class="register-alert" id="register-alert" role="alert" hidden></p>
+
+      <div class="register-head" aria-hidden="true">
+        <span class="line-mark"></span>
+        <span class="line-name">Project</span>
+        <span class="line-sheets">Sheets</span>
+        <span class="line-edited">Edited</span>
+        <span class="line-actions"></span>
+      </div>
+
+      <div class="register-rows" id="register-rows">
+        {{template "register-rows" .}}
+      </div>
+
+      <form class="register-new" hx-post="/projects" hx-swap="none">
+        <span class="line-mark" aria-hidden="true">+</span>
+        <label class="visually-hidden" for="new-project-name">New project name</label>
+        <input
+          id="new-project-name"
+          name="name"
+          maxlength="80"
+          autocomplete="off"
+          placeholder="Add a project to the register"
+          required>
+        <button type="submit">Create project</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>
+{{end}}
+
+{{define "register-rows"}}
+{{range .Projects}}{{template "register-row" .}}{{else}}
+<p class="register-empty">
+  Nothing on the register yet. Name a project on the line below to start one.
+</p>
+{{end}}
+{{end}}
+
+{{define "register-row"}}
+<details class="register-row" data-project="{{.ID}}">
+  <summary class="register-line">
+    <span class="line-mark" aria-hidden="true"><i class="line-caret"></i></span>
+    <span class="line-name">
+      <a class="project-open" href="{{.Href}}">{{.Name}}</a>
+      <!-- Renaming happens on the line itself. The input carries the request:
+           htmx includes a named input's own value, so no <form> is needed —
+           and a <form> is not phrasing content, which a <summary> requires.
+
+           The trigger is a plain custom event rather than the filter
+           `keyup[key=='Enter']`, because htmx compiles a filter with `new
+           Function`, and the Content-Security-Policy has no 'unsafe-eval'.
+           The filter is dropped in the browser with nothing but a console
+           violation to show for it, so register.js decides when to commit and
+           the markup still states what committing does. -->
+      <input
+        class="project-rename"
+        type="text"
+        name="name"
+        value="{{.Name}}"
+        maxlength="80"
+        autocomplete="off"
+        aria-label="Rename {{.Name}}"
+        hidden
+        hx-put="/projects/{{.ID}}/name"
+        hx-trigger="register:rename"
+        hx-target="#register-rows"
+        hx-swap="innerHTML">
+    </span>
+    <span class="line-sheets">
+      <b>{{.SheetCount}}</b><span class="visually-hidden"> sheets</span>
+    </span>
+    <span class="line-edited">
+      <span class="visually-hidden">Edited </span>{{.Edited}}
+    </span>
+    <span class="line-actions">
+      <button type="button" class="line-action" data-rename>Rename<span class="visually-hidden"> {{.Name}}</span></button>
+      {{if .CanDelete}}
+      <button
+        type="button"
+        class="line-action line-delete"
+        hx-delete="/projects/{{.ID}}"
+        hx-swap="none"
+        hx-confirm="{{.Confirm}}">Delete<span class="visually-hidden"> {{.Name}}</span></button>
+      {{end}}
+    </span>
+  </summary>
+
+  <div class="register-continuation">
+    <ol class="sheet-chips" aria-label="Flowsheets in {{.Name}}">
+      {{range .Sheets}}
+      <li>
+        <a class="sheet-chip" href="{{.Href}}">
+          <b class="chip-index">{{.Ordinal}}</b>
+          <span class="chip-name">{{.Name}}</span>
+          {{if .NeedsRun}}<i class="chip-dot" role="img" aria-label="Model changed since its last run"></i>{{end}}
+        </a>
+      </li>
+      {{end}}
+    </ol>
+  </div>
+</details>
+{{end}}
