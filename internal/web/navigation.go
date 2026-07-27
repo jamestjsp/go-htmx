@@ -12,12 +12,16 @@ import (
 // projects; the block, connection and simulation handlers in server.go work
 // inside the one sheet the caller already has open.
 //
-// Three response shapes appear below, and which one a handler uses follows
+// Four response shapes appear below, and which one a handler uses follows
 // from what the caller is left looking at:
 //
 //   - An operation that leaves the caller on a flowsheet answers with the
 //     `workbench` fragment for that flowsheet, as every mutation in server.go
 //     does.
+//   - An operation on a project the caller is reading rather than editing —
+//     renaming it from the register — answers with that project's register
+//     row, because the register is not a workbench and must never be handed
+//     one.
 //   - An operation the client has already drawn for itself — dragging a tab
 //     into a new place — answers 204, as moveBlock and moveBlocks do for the
 //     same gesture on the canvas.
@@ -30,13 +34,23 @@ import (
 // exist; these handlers answer the domain's own message with a status the
 // client can branch on.
 
-// renameProject renames a project and answers with the workbench fragment, so
-// the shell that carries the project's name re-renders carrying the new one.
+// renameProject renames a project and answers with that project's line of the
+// register.
 //
-// The workspace RenameProject returns opens the project's *first* flowsheet,
-// since renaming a project says nothing about which sheet is open. A caller
-// with a different sheet open must therefore take the header out of this
-// response — `hx-select` — rather than swap the whole workbench with it.
+// It used to answer with the `workbench` fragment, which was a trap. The
+// workspace RenameProject returns opens the project's *first* flowsheet,
+// because renaming a project says nothing about which sheet is open — so a
+// caller on any other sheet who swapped that response into `#workbench` would
+// find themselves moved to sheet one, and the register, which is not a
+// workbench at all, had nothing it could do with the response but pick it
+// apart with `hx-select`.
+//
+// The register row is the one piece of markup whose subject is exactly a
+// project: its name, its sheet count, when it was last edited, and the sheets
+// it expands to reveal. Answering with it makes the response match the thing
+// the request changed, and it re-renders the row's figures from the same read
+// the register itself is drawn from, so a renamed line cannot drift from the
+// rest of the page. Nothing else calls this route.
 func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathID(w, r, "projectID")
 	if !ok {
@@ -46,12 +60,35 @@ func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid project name.", http.StatusBadRequest)
 		return
 	}
-	workspace, err := s.studio.RenameProject(r.Context(), projectID, r.FormValue("name"))
-	if err != nil {
+	if _, err := s.studio.RenameProject(r.Context(), projectID, r.FormValue("name")); err != nil {
 		refuse(w, err)
 		return
 	}
-	s.renderWorkspace(w, r, workspace, selectedID(r), "")
+	s.renderRegisterRow(w, r, projectID)
+}
+
+// renderRegisterRow writes one project's line of the register.
+//
+// It reads the whole register rather than that project alone, because the row
+// needs two things only the whole register knows: the project's own figures,
+// and whether it is the last project standing — which is what decides that the
+// row offers Delete at all. Register is two queries whatever the number of
+// projects, so this is a fixed cost rather than one that grows with the page.
+func (s *Server) renderRegisterRow(w http.ResponseWriter, r *http.Request, projectID int64) {
+	register, err := s.studio.Register(r.Context())
+	if err != nil {
+		http.Error(w, "Process Lab could not load the register.", http.StatusInternalServerError)
+		return
+	}
+	row, ok := newRegisterView(register).row(projectID)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "register-row", row); err != nil {
+		http.Error(w, "Process Lab could not render the register.", http.StatusInternalServerError)
+	}
 }
 
 // deleteProject removes a project and sends the caller to the register.

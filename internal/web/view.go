@@ -13,6 +13,101 @@ type pageView struct {
 	Workbench workbenchView
 }
 
+// registerView is the projects home — the drawing register. Every project the
+// database holds arrives with the flowsheets its row expands to reveal, so
+// expanding a row costs no request.
+type registerView struct {
+	Projects     []registerRowView
+	ProjectCount int
+	ProjectLabel string
+	SheetCount   int
+	SheetLabel   string
+}
+
+// registerRowView is one ruled line of the register.
+type registerRowView struct {
+	ID   int64
+	Name string
+	// Href is the project's own address. `GET /projects/{id}` already redirects
+	// to the project's first flowsheet, so the name opens the project without
+	// the register having to name a particular sheet — and it stays correct
+	// when the first sheet changes.
+	Href       string
+	SheetCount int
+	Edited     string
+	Sheets     []registerSheetView
+	// CanDelete carries the domain's refusal to delete the last project into
+	// the interface, so the control is absent rather than present and doomed.
+	CanDelete bool
+	// Confirm names the project and its sheet count, which is what makes the
+	// confirmation worth reading.
+	Confirm string
+}
+
+// registerSheetView is one flowsheet chip under an expanded row.
+type registerSheetView struct {
+	// Ordinal is the sheet's place in the project's tab order, zero padded, the
+	// way a drawing register numbers the sheets in a set. It is the tab strip's
+	// own order, so the register and the workbench count sheets alike.
+	Ordinal  string
+	Name     string
+	Href     string
+	NeedsRun bool
+}
+
+func newRegisterView(register studio.Register) registerView {
+	view := registerView{Projects: make([]registerRowView, 0, len(register.Projects))}
+	// One project left is the one the domain refuses to delete.
+	deletable := len(register.Projects) > 1
+	for _, entry := range register.Projects {
+		row := registerRowView{
+			ID:         entry.Project.ID,
+			Name:       entry.Project.Name,
+			Href:       fmt.Sprintf("/projects/%d", entry.Project.ID),
+			SheetCount: entry.FlowCount(),
+			Edited:     relativeTime(entry.EditedAt),
+			CanDelete:  deletable,
+			Sheets:     make([]registerSheetView, 0, entry.FlowCount()),
+		}
+		row.Confirm = fmt.Sprintf("Delete “%s” and its %d %s? This cannot be undone.",
+			row.Name, row.SheetCount, plural(row.SheetCount, "flowsheet", "flowsheets"),
+		)
+		for index, flow := range entry.Flows {
+			row.Sheets = append(row.Sheets, registerSheetView{
+				Ordinal:  fmt.Sprintf("%02d", index+1),
+				Name:     flow.Name,
+				Href:     fmt.Sprintf("/projects/%d/flows/%d", flow.ProjectID, flow.ID),
+				NeedsRun: flow.NeedsRun,
+			})
+		}
+		view.SheetCount += row.SheetCount
+		view.Projects = append(view.Projects, row)
+	}
+	view.ProjectCount = len(view.Projects)
+	view.ProjectLabel = plural(view.ProjectCount, "project", "projects")
+	view.SheetLabel = plural(view.SheetCount, "sheet", "sheets")
+	return view
+}
+
+// row is the register's line for one project, which is what a rename answers
+// with. It reports whether the project is on the register at all, so a rename
+// racing a delete answers 404 rather than a blank line.
+func (v registerView) row(projectID int64) (registerRowView, bool) {
+	for _, row := range v.Projects {
+		if row.ID == projectID {
+			return row, true
+		}
+	}
+	return registerRowView{}, false
+}
+
+func plural(count int, one, many string) string {
+	if count == 1 {
+		return one
+	}
+	return many
+}
+
 type workbenchView struct {
 	Workspace       studio.Workspace
 	Snapshot        studio.Snapshot

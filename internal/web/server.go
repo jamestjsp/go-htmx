@@ -66,13 +66,28 @@ func (s *Server) Handler() http.Handler {
 	return s.handler
 }
 
+// page renders the register: every project the database holds, each row
+// carrying the flowsheets it expands to reveal. It replaces a redirect into a
+// flowsheet, which left the application with no screen that showed what
+// projects existed.
+//
+// `GET /` is also the mux's catch-all, so an address nothing else matches
+// arrives here. That is a miss, not the home page, and answering it with the
+// register would dress every typo as a 200.
 func (s *Server) page(w http.ResponseWriter, r *http.Request) {
-	workspace, err := s.studio.CurrentWorkspace(r.Context())
-	if err != nil {
-		http.Error(w, "Process Lab could not load the flowsheet.", http.StatusInternalServerError)
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
 		return
 	}
-	http.Redirect(w, r, workspacePath(workspace), http.StatusSeeOther)
+	register, err := s.studio.Register(r.Context())
+	if err != nil {
+		http.Error(w, "Process Lab could not load the register.", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.templates.ExecuteTemplate(w, "register", newRegisterView(register)); err != nil {
+		http.Error(w, "Process Lab could not render the register.", http.StatusInternalServerError)
+	}
 }
 
 func (s *Server) projectFlowPage(w http.ResponseWriter, r *http.Request) {

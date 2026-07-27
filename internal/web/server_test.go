@@ -15,15 +15,201 @@ import (
 	"github.com/jamestjsp/go-htmx/internal/studio"
 )
 
-func TestPageRendersSeededHTMXWorkbench(t *testing.T) {
+// TestPageRendersTheRegister pins the projects home. `/` used to redirect into
+// a flowsheet, which left the application with no screen that showed what
+// projects existed; it now renders, and it renders its own shell rather than
+// the workbench's.
+func TestPageRendersTheRegister(t *testing.T) {
 	server, _ := openTestServer(t)
-	redirect := request(t, server, http.MethodGet, "/", nil)
-	if redirect.Code != http.StatusSeeOther {
-		t.Fatalf("redirect status = %d", redirect.Code)
-	}
-	location := redirect.Header().Get("Location")
-	response := request(t, server, http.MethodGet, location, nil)
+	response := request(t, server, http.MethodGet, "/", nil)
 
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if location := response.Header().Get("Location"); location != "" {
+		t.Fatalf("the register still redirects to %q", location)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Process Lab",
+		"Drawing register",
+		"Process Lab project",
+		"Reactor temperature loop",
+		`class="register-row"`,
+		`href="/projects/1"`,
+		`href="/projects/1/flows/1"`,
+		`hx-post="/projects"`,
+		`hx-put="/projects/1/name"`,
+		`href="/assets/register.css"`,
+		`src="/assets/register.js"`,
+		"htmx.org@2.0.10",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("register does not contain %q", expected)
+		}
+	}
+	// The register is a different shell. Pulling the workbench stylesheet or
+	// its scripts onto it would undo the point of the separation.
+	for _, unwanted := range []string{"/assets/app.css", "/assets/app.js", "/assets/menu.js"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("the register loads %q", unwanted)
+		}
+	}
+	// A CSP of `script-src 'self' https://cdn.jsdelivr.net` drops an inline
+	// script in the browser while every test here still passes, so the absence
+	// has to be asserted rather than assumed.
+	if strings.Contains(body, "onclick=") || strings.Contains(body, "<script>") {
+		t.Error("the register carries inline script, which the CSP drops silently")
+	}
+}
+
+// TestRegisterListsEveryProjectAndFlowsheet is the register's whole promise:
+// nothing is behind a menu, and a sheet can be opened without opening its
+// project first.
+func TestRegisterListsEveryProjectAndFlowsheet(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	seeded, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err := service.CreateProject(ctx, "Operations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	startup := addFlow(t, service, operations.Project.ID, "Startup")
+	shutdown := addFlow(t, service, operations.Project.ID, "Shutdown")
+
+	body := request(t, server, http.MethodGet, "/", nil).Body.String()
+	for _, name := range []string{
+		seeded.Project.Name, seeded.Snapshot.Flow.Name,
+		"Operations", "Untitled flowsheet", "Startup", "Shutdown",
+	} {
+		if !strings.Contains(body, name) {
+			t.Errorf("register does not name %q", name)
+		}
+	}
+	// Every sheet is reachable directly, in the project's tab order.
+	for _, flowID := range []int64{operations.Snapshot.Flow.ID, startup, shutdown} {
+		href := fmt.Sprintf(`href="/projects/%d/flows/%d"`, operations.Project.ID, flowID)
+		if !strings.Contains(body, href) {
+			t.Errorf("register does not link to %s", href)
+		}
+	}
+	order := []string{
+		fmt.Sprintf(`/flows/%d"`, operations.Snapshot.Flow.ID),
+		fmt.Sprintf(`/flows/%d"`, startup),
+		fmt.Sprintf(`/flows/%d"`, shutdown),
+	}
+	if at := indexesOf(body, order); !ascending(at) {
+		t.Errorf("flowsheet chips are at %v, not in tab order", at)
+	}
+	if !strings.Contains(body, ">3<") {
+		t.Error("register does not show the three-sheet count")
+	}
+}
+
+// TestRegisterHidesDeleteForASingleProject keeps the domain's refusal to
+// delete the last project out of the interface, so it cannot be reached by
+// accident.
+func TestRegisterHidesDeleteForASingleProject(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+
+	only := request(t, server, http.MethodGet, "/", nil).Body.String()
+	if strings.Contains(only, "hx-delete=") {
+		t.Error("the only project offers Delete")
+	}
+
+	second, err := service.CreateProject(ctx, "Operations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := request(t, server, http.MethodGet, "/", nil).Body.String()
+	for _, expected := range []string{
+		fmt.Sprintf(`hx-delete="/projects/%d"`, second.Project.ID),
+		"and its 1 flowsheet?",
+	} {
+		if !strings.Contains(both, expected) {
+			t.Errorf("register does not contain %q", expected)
+		}
+	}
+	if !strings.Contains(both, "Delete &#34;Operations&#34;") &&
+		!strings.Contains(both, "Delete “Operations”") {
+		t.Errorf("the confirmation does not name the project: %s", both)
+	}
+}
+
+// TestRenameProjectAnswersWithTheRegisterRow pins the seam. RenameProject
+// hands back the project's FIRST flowsheet, so answering with the workbench
+// fragment would move a caller on any other sheet — and would hand the
+// register a whole workbench it has no place to put.
+func TestRenameProjectAnswersWithTheRegisterRow(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	workspace, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := workspace.Project.ID
+	addFlow(t, service, projectID, "Startup")
+
+	response := request(t, server, http.MethodPut,
+		fmt.Sprintf("/projects/%d/name", projectID),
+		url.Values{"name": {"Cracker unit"}},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("rename status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	if strings.Contains(body, "workbench") || strings.Contains(body, "flow-canvas") {
+		t.Fatalf("rename answered with the workbench: %s", body)
+	}
+	for _, expected := range []string{
+		`<details class="register-row"`,
+		"Cracker unit",
+		"Startup",
+		fmt.Sprintf(`hx-put="/projects/%d/name"`, projectID),
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("row does not contain %q", expected)
+		}
+	}
+	// The row re-renders its own figures, so a renamed line cannot go stale.
+	if !strings.Contains(body, ">2<") {
+		t.Errorf("row does not carry the two-sheet count: %s", body)
+	}
+}
+
+// TestRegisterViewCoversTheEmptyState reaches the state `Open` cannot: `seed`
+// creates a project whenever no flows exist and DeleteProject refuses the last
+// one, so an empty register is defensive markup, verified here rather than
+// through the public API.
+func TestRegisterViewCoversTheEmptyState(t *testing.T) {
+	server, _ := openTestServer(t)
+	view := newRegisterView(studio.Register{})
+	if view.ProjectCount != 0 || view.SheetCount != 0 {
+		t.Fatalf("empty register counts = %d projects, %d sheets", view.ProjectCount, view.SheetCount)
+	}
+	if view.ProjectLabel != "projects" || view.SheetLabel != "sheets" {
+		t.Fatalf("empty register labels = %q, %q", view.ProjectLabel, view.SheetLabel)
+	}
+	var page strings.Builder
+	if err := server.templates.ExecuteTemplate(&page, "register", view); err != nil {
+		t.Fatalf("the empty register does not render: %v", err)
+	}
+	for _, expected := range []string{"Nothing on the register yet", `hx-post="/projects"`} {
+		if !strings.Contains(page.String(), expected) {
+			t.Errorf("empty register does not contain %q", expected)
+		}
+	}
+}
+
+// TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
+// `/` no longer leads to it.
+func TestWorkbenchPageRendersTheShell(t *testing.T) {
+	server, _ := openTestServer(t)
+	response := request(t, server, http.MethodGet, "/projects/1/flows/1", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
@@ -33,17 +219,44 @@ func TestPageRendersSeededHTMXWorkbench(t *testing.T) {
 		"Process Lab project",
 		"Reactor temperature loop",
 		"Feed setpoint",
+		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
-		`hx-post="/projects"`,
-		`hx-post="/projects/1/flows"`,
 		`hx-put="/flows/1/name"`,
-		`aria-label="Project navigation"`,
 		"htmx.org@2.0.10",
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body does not contain %q", expected)
 		}
 	}
+}
+
+// TestUnknownPathIsNotTheRegister guards the mux's catch-all: `GET /` matches
+// anything no other pattern claims, and answering a typo with the home page
+// would dress every miss as a 200.
+func TestUnknownPathIsNotTheRegister(t *testing.T) {
+	server, _ := openTestServer(t)
+	response := request(t, server, http.MethodGet, "/nowhere", nil)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+}
+
+// indexesOf reports where each needle first appears, or -1.
+func indexesOf(body string, needles []string) []int {
+	at := make([]int, 0, len(needles))
+	for _, needle := range needles {
+		at = append(at, strings.Index(body, needle))
+	}
+	return at
+}
+
+func ascending(values []int) bool {
+	for i, value := range values {
+		if value < 0 || (i > 0 && value <= values[i-1]) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
@@ -102,8 +315,9 @@ func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
 
 func TestCatalogPaletteAndTransferFunctionEditor(t *testing.T) {
 	server, service := openTestServer(t)
-	redirect := request(t, server, http.MethodGet, "/", nil)
-	page := request(t, server, http.MethodGet, redirect.Header().Get("Location"), nil)
+	// The workbench directly: `/` is the register now, and reading a Location
+	// off a 200 would hand httptest.NewRequest an empty URL, which panics.
+	page := request(t, server, http.MethodGet, "/projects/1/flows/1", nil)
 	for _, expected := range []string{
 		"Constant", "Sine Wave", "Integrator", "Transfer Function",
 		"PID Controller", "Transport Delay", "Spectrum Analyzer",
@@ -330,7 +544,10 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
-	for _, path := range []string{"/assets/app.css", "/assets/app.js", "/assets/menu.js"} {
+	for _, path := range []string{
+		"/assets/app.css", "/assets/app.js", "/assets/menu.js",
+		"/assets/register.css", "/assets/register.js",
+	} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, response.Code)
