@@ -1198,13 +1198,45 @@
   // Both events are needed: at afterSwap the replacement node is not yet
   // the one querySelector returns, so styling there alone writes to a node
   // htmx is about to discard. afterSettle is what actually sticks.
-  const restoreViewport = () => {
+  //
+  // A swap can also replace the flowsheet itself: clicking a tab swaps a
+  // different sheet into #workbench. viewportKey() is per flow, so applying
+  // the outgoing sheet's pan and zoom to the incoming one both misplaces the
+  // incoming sheet and — because applyViewport() ends in saveViewport() —
+  // overwrites the incoming sheet's stored view with the outgoing sheet's.
+  // Whichever event first sees a new flow id therefore loads that sheet's
+  // own stored viewport, and fits the sheet when it has never been opened.
+  let openFlowID = workbench() ? workbench().dataset.flowId : ''
+  let pendingFit = false
+
+  function syncViewportToFlow(settled) {
+    const root = workbench()
+    if (!root) return
+    const flowID = root.dataset.flowId || ''
+    if (flowID !== openFlowID) {
+      openFlowID = flowID
+      pendingFit = !loadViewport()
+    }
+    if (!pendingFit) return
+    // fitView() measures the canvas, which is only reliable once the new
+    // markup has settled, so the fit runs on both events and is only
+    // retired by the settled one.
+    fitView()
+    if (settled) pendingFit = false
+  }
+
+  const restoreViewport = (settled) => {
+    syncViewportToFlow(settled)
     applyViewport()
     applySelection()
     redrawEdges()
   }
-  document.addEventListener('htmx:afterSwap', restoreViewport)
-  document.addEventListener('htmx:afterSettle', restoreViewport)
+  document.addEventListener('htmx:afterSwap', () => restoreViewport(false))
+  document.addEventListener('htmx:afterSettle', () => restoreViewport(true))
+  // Back and Forward restore the page from htmx's history cache, which fires
+  // neither swap event. Without this the canvas keeps the transform of the
+  // sheet you came from and the signal wires are never drawn.
+  document.addEventListener('htmx:historyRestore', () => restoreViewport(true))
   window.addEventListener('resize', redrawEdges)
 
   function initViewport() {
@@ -1430,6 +1462,9 @@
   document.addEventListener('keydown', resizeDockByKeyboard)
   document.addEventListener('htmx:afterSwap', applyShellState)
   document.addEventListener('htmx:afterSettle', applyShellState)
+  // A history restore that misses htmx's cache re-fetches the page, so the
+  // markup arrives with the server's default rail and dock attributes.
+  document.addEventListener('htmx:historyRestore', applyShellState)
   document.addEventListener('DOMContentLoaded', applyShellState)
   window.addEventListener('resize', applyShellState)
 
@@ -1445,4 +1480,92 @@
   else if (compactViewport.addListener) compactViewport.addListener(onViewportChange)
 
   applyShellState()
+
+  // =================================================================
+  // Flowsheet tab strip.
+  //
+  // The strip is server-rendered and comes back whole with every swap,
+  // so the client owns only what markup cannot state: how far the track
+  // is scrolled, whether the ‹ › arrows have anywhere left to go, and
+  // keeping the open sheet's tab in view once the strip is wider than
+  // the window.
+  // =================================================================
+  const tabStrip = () => document.querySelector('#flow-tabs')
+  const tabTrack = () => document.querySelector('#flow-tab-track')
+
+  // Where a tab starts within the scrolled content. offsetLeft would be
+  // measured from the offset parent, which is not the track.
+  function tabOffsets(track) {
+    const origin = track.getBoundingClientRect().left - track.scrollLeft
+    return Array.from(track.querySelectorAll('[data-flow-tab]')).map((tab) => {
+      const box = tab.getBoundingClientRect()
+      return { start: box.left - origin, end: box.right - origin }
+    })
+  }
+
+  function syncTabStrip() {
+    const strip = tabStrip()
+    const track = tabTrack()
+    if (!strip || !track) return
+    const slack = track.scrollWidth - track.clientWidth
+    strip.dataset.overflow = slack > 1 ? 'true' : 'false'
+    const back = strip.querySelector('[data-tab-scroll="-1"]')
+    const forward = strip.querySelector('[data-tab-scroll="1"]')
+    if (back) back.disabled = track.scrollLeft <= 1
+    if (forward) forward.disabled = track.scrollLeft >= slack - 1
+  }
+
+  // One tab per press, the way a workbook steps its sheet tabs: the leftmost
+  // tab still in view is the anchor, and an arrow moves the anchor by one.
+  // Scrolling by a fraction of the window instead would step by half a name.
+  function scrollTabs(direction) {
+    const track = tabTrack()
+    if (!track) return
+    const tabs = tabOffsets(track)
+    if (!tabs.length) return
+    let anchor = tabs.findIndex((tab) => tab.end > track.scrollLeft + 1)
+    if (anchor < 0) anchor = tabs.length - 1
+    const next = tabs[Math.min(tabs.length - 1, Math.max(0, anchor + direction))]
+    track.scrollTo({
+      left: Math.max(0, next.start),
+      behavior: reducedMotion.matches ? 'auto' : 'smooth'
+    })
+  }
+
+  // Every swap rebuilds the strip with its scroll at zero, so the sheet you
+  // just opened has to be brought back into view.
+  function revealActiveTab() {
+    const track = tabTrack()
+    if (!track) return
+    const active = track.querySelector('[data-flow-tab][aria-current="page"]')
+    if (!active) return
+    const view = track.getBoundingClientRect()
+    const tab = active.getBoundingClientRect()
+    const margin = 16
+    if (tab.left < view.left) {
+      track.scrollTo({ left: track.scrollLeft - (view.left - tab.left) - margin, behavior: 'auto' })
+    } else if (tab.right > view.right) {
+      track.scrollTo({ left: track.scrollLeft + (tab.right - view.right) + margin, behavior: 'auto' })
+    }
+  }
+
+  const settleTabStrip = () => {
+    revealActiveTab()
+    syncTabStrip()
+  }
+
+  document.addEventListener('click', (event) => {
+    const arrow = event.target.closest('[data-tab-scroll]')
+    if (arrow) scrollTabs(Number(arrow.dataset.tabScroll))
+  })
+  // scroll does not bubble, and the track is replaced on every swap, so the
+  // capture phase is what keeps this to a single listener.
+  document.addEventListener('scroll', (event) => {
+    if (event.target === tabTrack()) syncTabStrip()
+  }, true)
+  document.addEventListener('htmx:afterSwap', settleTabStrip)
+  document.addEventListener('htmx:afterSettle', settleTabStrip)
+  document.addEventListener('htmx:historyRestore', settleTabStrip)
+  window.addEventListener('resize', syncTabStrip)
+  settleTabStrip()
 })()

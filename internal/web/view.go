@@ -22,11 +22,33 @@ type workbenchView struct {
 	SelectedLinks   []inspectorLink
 	Palette         []paletteItem
 	Sheet           sheetGeometry
+	Tabs            []flowTabView
 	Chart           chartView
 	Error           string
 	Updated         string
 	BlockCount      int
 	ConnectionCount int
+}
+
+// flowTabView is one sheet in the tab strip, in the project's `position`
+// order.
+//
+// Both addresses are built here rather than in the template because a tab
+// needs both and they are not interchangeable: Fragment is the workbench
+// markup htmx swaps into the page, while Href is the canonical address the
+// tab pushes, links to, and hands to a user without JavaScript. Pushing
+// Fragment instead would put a bare <main> with no stylesheet in the address
+// bar, which is what a reader gets back if they reload or share it.
+type flowTabView struct {
+	ID       int64
+	Name     string
+	Href     string
+	Fragment string
+	Active   bool
+	// NeedsRun is the amber dot: the model changed after its last simulation.
+	// It is the same flag the simulation dock reads, so the two cannot
+	// disagree about whether the sheet is current.
+	NeedsRun bool
 }
 
 // sheetGeometry hands the domain's sheet constants to the client so the
@@ -114,6 +136,17 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 			BlockHeight: studio.BlockHeight,
 		},
 	}
+	for _, flow := range workspace.Flows {
+		view.Tabs = append(view.Tabs, flowTabView{
+			ID:       flow.ID,
+			Name:     flow.Name,
+			Href:     fmt.Sprintf("/projects/%d/flows/%d", flow.ProjectID, flow.ID),
+			Fragment: fmt.Sprintf("/flows/%d/workbench", flow.ID),
+			Active:   flow.ID == snapshot.Flow.ID,
+			NeedsRun: flow.NeedsRun,
+		})
+	}
+
 	for _, definition := range studio.BlockLibrary() {
 		view.Palette = append(view.Palette, paletteItem{
 			BlockDefinition: definition,

@@ -1,0 +1,70 @@
+{{define "tabs"}}
+<nav class="tab-strip" id="flow-tabs" aria-label="Flowsheets" data-overflow="false">
+  <button
+    type="button"
+    class="tab-scroll tab-scroll-back"
+    data-tab-scroll="-1"
+    title="Scroll tabs left"
+    aria-label="Scroll tabs left"
+    aria-controls="flow-tab-track">‹</button>
+
+  <div class="tab-track" id="flow-tab-track">
+    <div class="tab-list">
+      {{range .Tabs}}
+      <a
+        class="flow-tab"
+        href="{{.Href}}"
+        data-flow-tab="{{.ID}}"
+        {{if .Active}}aria-current="page"{{end}}
+        title="{{.Name}}"
+        hx-get="{{.Fragment}}"
+        hx-target="#workbench"
+        hx-swap="outerHTML"
+        hx-push-url="{{.Href}}">
+        <span class="flow-tab-name">{{.Name}}</span>
+        {{if .NeedsRun}}<i class="flow-tab-dot" role="img" aria-label="Model changed since its last run"></i>{{end}}
+      </a>
+      {{end}}
+    </div>
+  </div>
+
+  <button
+    type="button"
+    class="tab-scroll tab-scroll-forward"
+    data-tab-scroll="1"
+    title="Scroll tabs right"
+    aria-label="Scroll tabs right"
+    aria-controls="flow-tab-track">›</button>
+
+  <div class="tab-tools">
+    <form class="tab-add-form" method="post" action="/projects/{{.Workspace.Project.ID}}/flows">
+      <button class="tab-add" type="submit" title="New flowsheet" aria-label="New flowsheet">+</button>
+    </form>
+    <details class="tab-jump">
+      <summary title="Jump to a flowsheet">
+        <b>{{len .Tabs}}</b>
+        <span>{{if eq (len .Tabs) 1}}sheet{{else}}sheets{{end}}</span>
+        <i class="tab-jump-chevron" aria-hidden="true">⌄</i>
+      </summary>
+      <div class="tab-jump-panel">
+        <span class="popover-label">Jump to sheet</span>
+        <nav aria-label="All flowsheets in this project">
+          {{range .Tabs}}
+          <a
+            href="{{.Href}}"
+            data-flow-jump="{{.ID}}"
+            {{if .Active}}aria-current="page"{{end}}
+            hx-get="{{.Fragment}}"
+            hx-target="#workbench"
+            hx-swap="outerHTML"
+            hx-push-url="{{.Href}}">
+            <span>{{.Name}}</span>
+            {{if .NeedsRun}}<i class="flow-tab-dot" role="img" aria-label="Model changed since its last run"></i>{{end}}
+          </a>
+          {{end}}
+        </nav>
+      </div>
+    </details>
+  </div>
+</nav>
+{{end}}

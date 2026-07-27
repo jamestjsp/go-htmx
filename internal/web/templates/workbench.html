@@ -418,6 +418,8 @@
     </aside>
   </div>
 
+  {{template "tabs" .}}
+
   <footer class="statusbar" id="readout-rail" aria-label="Flowsheet readout">
     <div class="readout-group">
       <div class="readout readout-solver" id="readout-solver-field" data-state="{{if .Chart.Present}}solved{{else}}idle{{end}}">
