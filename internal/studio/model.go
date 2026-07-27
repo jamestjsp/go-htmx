@@ -78,6 +78,22 @@ type Parameters struct {
 	Approximation int       `json:"approximation,omitempty"`
 }
 
+// Sheet geometry. The flowsheet is a fixed world measured in sheet
+// coordinates; the client pans and zooms a viewport across it. Blocks always
+// sit on the grid, so a replayed or hand-edited request cannot place one
+// between intersections.
+const (
+	GridPitch   = 20
+	BlockWidth  = 172
+	BlockHeight = 84
+	SheetWidth  = 6000
+	SheetHeight = 4000
+)
+
+// maxBlocksPerRequest bounds the batch operations so one request cannot ask
+// for unbounded work.
+const maxBlocksPerRequest = 256
+
 type Point struct {
 	X int
 	Y int
@@ -165,8 +181,20 @@ type BlockUpdate struct {
 	Parameters map[string]string
 }
 
+// clampPosition keeps a block wholly inside the sheet and on the grid.
 func clampPosition(point Point) Point {
-	point.X = max(20, min(point.X, 1040))
-	point.Y = max(20, min(point.Y, 500))
+	point.X = snapWithin(point.X, SheetWidth-BlockWidth)
+	point.Y = snapWithin(point.Y, SheetHeight-BlockHeight)
 	return point
+}
+
+// snapWithin clamps value to 0..limit and rounds it to the nearest grid
+// intersection that still fits.
+func snapWithin(value, limit int) int {
+	value = max(0, min(value, limit))
+	snapped := (value + GridPitch/2) / GridPitch * GridPitch
+	if snapped > limit {
+		snapped -= GridPitch
+	}
+	return snapped
 }

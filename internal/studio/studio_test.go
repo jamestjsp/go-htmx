@@ -71,7 +71,7 @@ func TestBlockChangesRoundTripThroughSQLite(t *testing.T) {
 	if block.Name != "Separator vessel" {
 		t.Fatalf("name = %q", block.Name)
 	}
-	if block.Position != (Point{X: 333, Y: 222}) {
+	if block.Position != (Point{X: 340, Y: 220}) {
 		t.Fatalf("position = %#v", block.Position)
 	}
 	if block.Parameters.TimeConstant != 6.5 {
@@ -172,6 +172,88 @@ func TestAddBlockChoosesOpenPosition(t *testing.T) {
 	added := findBlock(t, snapshot.Blocks, blockID)
 	if added.Position == occupied {
 		t.Fatalf("new block was placed on occupied position %#v", occupied)
+	}
+}
+
+func TestClampPositionSnapsAndBounds(t *testing.T) {
+	cases := []struct {
+		name  string
+		point Point
+		want  Point
+	}{
+		{"rounds down", Point{X: 333, Y: 222}, Point{X: 340, Y: 220}},
+		{"rounds half up", Point{X: 410, Y: 190}, Point{X: 420, Y: 200}},
+		{"already on grid", Point{X: 240, Y: 120}, Point{X: 240, Y: 120}},
+		{"negative clamps to origin", Point{X: -500, Y: -1}, Point{X: 0, Y: 0}},
+		{"beyond the sheet keeps the block inside", Point{X: 99999, Y: 99999},
+			Point{X: 5820, Y: 3900}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := clampPosition(testCase.point)
+			if got != testCase.want {
+				t.Fatalf("clampPosition(%#v) = %#v, want %#v", testCase.point, got, testCase.want)
+			}
+			if got.X%GridPitch != 0 || got.Y%GridPitch != 0 {
+				t.Fatalf("position %#v is off the %dpx grid", got, GridPitch)
+			}
+			if got.X+BlockWidth > SheetWidth || got.Y+BlockHeight > SheetHeight {
+				t.Fatalf("position %#v puts the block outside the sheet", got)
+			}
+		})
+	}
+}
+
+func TestMoveBlockSnapsToGridAcrossTheWidenedSheet(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockID := snapshot.Blocks[0].ID
+
+	// A coordinate far outside the old 1040x500 world must now be accepted.
+	if err := studio.MoveBlock(ctx, blockID, Point{X: 3007, Y: 2503}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved := findBlock(t, snapshot.Blocks, blockID); moved.Position != (Point{X: 3000, Y: 2500}) {
+		t.Fatalf("position = %#v, want {3000 2500}", moved.Position)
+	}
+}
+
+func TestAddBlockFillsTheLatticeWithoutOverlapping(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := snapshot.Blocks[0].Position
+
+	// Every request names the same occupied point, so each block must fall
+	// through to the next free lattice cell.
+	for range 8 {
+		snapshot, _, err = studio.AddBlock(ctx, snapshot.Flow.ID, BlockGain, desired)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, block := range snapshot.Blocks {
+		if block.Position.X%GridPitch != 0 || block.Position.Y%GridPitch != 0 {
+			t.Fatalf("block %d at %#v is off the grid", block.ID, block.Position)
+		}
+		for _, other := range snapshot.Blocks[i+1:] {
+			if abs(block.Position.X-other.Position.X) < BlockWidth &&
+				abs(block.Position.Y-other.Position.Y) < BlockHeight {
+				t.Fatalf("blocks %d and %d overlap at %#v and %#v",
+					block.ID, other.ID, block.Position, other.Position)
+			}
+		}
 	}
 }
 

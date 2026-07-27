@@ -83,7 +83,7 @@ func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, candidate := range afterMove.Blocks {
-		if candidate.ID == block.ID && candidate.Position != (studio.Point{X: 410, Y: 190}) {
+		if candidate.ID == block.ID && candidate.Position != (studio.Point{X: 420, Y: 200}) {
 			t.Fatalf("position = %#v", candidate.Position)
 		}
 	}
@@ -252,6 +252,167 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 			t.Fatalf("%s unexpectedly small", path)
 		}
 	}
+}
+
+func TestMoveBlocksBatchThroughHTTP(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Blocks) < 3 {
+		t.Fatalf("seeded flow has %d blocks", len(snapshot.Blocks))
+	}
+	moved := snapshot.Blocks[:3]
+	path := "/flows/" + strconv.FormatInt(snapshot.Flow.ID, 10) + "/blocks/positions"
+
+	values := url.Values{}
+	want := map[int64]studio.Point{}
+	for i, block := range moved {
+		position := studio.Point{X: 400 + i*220, Y: 600}
+		values.Add("id", strconv.FormatInt(block.ID, 10))
+		values.Add("x", strconv.Itoa(position.X))
+		values.Add("y", strconv.Itoa(position.Y))
+		want[block.ID] = position
+	}
+	if response := request(t, server, http.MethodPatch, path, values); response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	after, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, block := range after.Blocks {
+		if expected, ok := want[block.ID]; ok && block.Position != expected {
+			t.Fatalf("block %d position = %#v, want %#v", block.ID, block.Position, expected)
+		}
+	}
+
+	t.Run("mismatched arrays are rejected", func(t *testing.T) {
+		bad := url.Values{}
+		bad.Add("id", strconv.FormatInt(moved[0].ID, 10))
+		bad.Add("id", strconv.FormatInt(moved[1].ID, 10))
+		bad.Add("x", "100")
+		bad.Add("y", "100")
+		if response := request(t, server, http.MethodPatch, path, bad); response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d", response.Code)
+		}
+	})
+
+	t.Run("a block from another flow moves nothing", func(t *testing.T) {
+		before, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreign := url.Values{}
+		foreign.Add("id", strconv.FormatInt(moved[0].ID, 10))
+		foreign.Add("x", "1200")
+		foreign.Add("y", "1200")
+		foreign.Add("id", "999999")
+		foreign.Add("x", "1200")
+		foreign.Add("y", "1200")
+		if response := request(t, server, http.MethodPatch, path, foreign); response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d", response.Code)
+		}
+		after, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, block := range after.Blocks {
+			if block.Position != before.Blocks[i].Position {
+				t.Fatalf("block %d moved despite the rejected batch", block.ID)
+			}
+		}
+	})
+}
+
+func TestDuplicateAndBatchDeleteBlocksThroughHTTP(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := strconv.FormatInt(snapshot.Flow.ID, 10)
+	originals := snapshot.Blocks[:2]
+
+	values := url.Values{}
+	for _, block := range originals {
+		values.Add("id", strconv.FormatInt(block.ID, 10))
+	}
+	response := request(t, server, http.MethodPost, "/flows/"+flowID+"/blocks/duplicate", values)
+	if response.Code != http.StatusOK {
+		t.Fatalf("duplicate status = %d, body = %s", response.Code, response.Body.String())
+	}
+	afterCopy, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterCopy.Blocks) != len(snapshot.Blocks)+2 {
+		t.Fatalf("block count = %d, want %d", len(afterCopy.Blocks), len(snapshot.Blocks)+2)
+	}
+	for _, block := range originals {
+		if !strings.Contains(response.Body.String(), block.Name+" copy") {
+			t.Errorf("no copy rendered for %q", block.Name)
+		}
+	}
+	// Duplicating must not invent new wiring.
+	if len(afterCopy.Connections) != len(snapshot.Connections) {
+		t.Fatalf("connections = %d, want %d", len(afterCopy.Connections), len(snapshot.Connections))
+	}
+
+	t.Run("a foreign block duplicates nothing", func(t *testing.T) {
+		foreign := url.Values{}
+		foreign.Add("id", strconv.FormatInt(originals[0].ID, 10))
+		foreign.Add("id", "999999")
+		before, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request(t, server, http.MethodPost, "/flows/"+flowID+"/blocks/duplicate", foreign)
+		after, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(after.Blocks) != len(before.Blocks) {
+			t.Fatalf("block count changed from %d to %d", len(before.Blocks), len(after.Blocks))
+		}
+	})
+
+	t.Run("batch delete removes blocks and their wires", func(t *testing.T) {
+		before, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		gain := findKindBlock(t, before.Blocks, "gain")
+		path := "/flows/" + flowID + "/blocks?id=" + strconv.FormatInt(gain.ID, 10)
+		if response := request(t, server, http.MethodDelete, path, nil); response.Code != http.StatusOK {
+			t.Fatalf("delete status = %d, body = %s", response.Code, response.Body.String())
+		}
+		after, err := service.Current(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, connection := range after.Connections {
+			if connection.SourceID == gain.ID || connection.TargetID == gain.ID {
+				t.Fatalf("connection %#v survived the delete", connection)
+			}
+		}
+		if len(after.Blocks) != len(before.Blocks)-1 {
+			t.Fatalf("block count = %d, want %d", len(after.Blocks), len(before.Blocks)-1)
+		}
+	})
+}
+
+func findKindBlock(t *testing.T, blocks []studio.Block, kind string) studio.Block {
+	t.Helper()
+	for _, block := range blocks {
+		if string(block.Kind) == kind {
+			return block
+		}
+	}
+	t.Fatalf("no %s block in the flow", kind)
+	return studio.Block{}
 }
 
 func openTestServer(t *testing.T) (*Server, *studio.Studio) {

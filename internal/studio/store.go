@@ -191,15 +191,16 @@ func (s *Studio) seed(ctx context.Context) error {
 			x, y int
 			p    Parameters
 		}
+		// Laid out on the sheet lattice so the demo flowsheet opens on-grid.
 		seeds := []seedBlock{
-			{BlockSource, "Feed setpoint", 30, 90, Parameters{Amplitude: 1}},
-			{BlockGain, "Valve gain", 210, 90, Parameters{Gain: 1.8}},
-			{BlockLag, "Reactor", 390, 90, Parameters{TimeConstant: 2.2}},
-			{BlockSource, "Disturbance", 30, 350, Parameters{Amplitude: 0.3}},
-			{BlockLag, "Jacket lag", 210, 350, Parameters{TimeConstant: 4}},
-			{BlockGain, "Heat loss", 390, 350, Parameters{Gain: -0.7}},
-			{BlockSum, "Energy balance", 570, 220, Parameters{}},
-			{BlockScope, "Temperature", 750, 220, Parameters{}},
+			{BlockSource, "Feed setpoint", 60, 80, Parameters{Amplitude: 1}},
+			{BlockGain, "Valve gain", 300, 80, Parameters{Gain: 1.8}},
+			{BlockLag, "Reactor", 540, 80, Parameters{TimeConstant: 2.2}},
+			{BlockSource, "Disturbance", 60, 320, Parameters{Amplitude: 0.3}},
+			{BlockLag, "Jacket lag", 300, 320, Parameters{TimeConstant: 4}},
+			{BlockGain, "Heat loss", 540, 320, Parameters{Gain: -0.7}},
+			{BlockSum, "Energy balance", 780, 200, Parameters{}},
+			{BlockScope, "Temperature", 1020, 200, Parameters{}},
 		}
 
 		ids := make([]int64, len(seeds))
@@ -208,12 +209,13 @@ func (s *Studio) seed(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			placed := clampPosition(Point{X: seed.x, Y: seed.y})
 			result, err := tx.ExecContext(ctx, `
 				INSERT INTO blocks(
 					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
 				)
 				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				flowID, seed.kind, seed.name, seed.x, seed.y,
+				flowID, seed.kind, seed.name, placed.X, placed.Y,
 				seed.p.Amplitude, seed.p.Gain, seed.p.TimeConstant, encoded,
 			)
 			if err != nil {
