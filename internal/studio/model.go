@@ -99,8 +99,16 @@ type Point struct {
 	Y int
 }
 
+type Project struct {
+	ID        int64
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
 type Flow struct {
 	ID             int64
+	ProjectID      int64
 	Name           string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time

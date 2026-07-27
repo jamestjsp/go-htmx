@@ -103,12 +103,49 @@ func TestOpenMigratesLegacyBlockParameters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.Close() })
 	snapshot, err := service.Current(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := snapshot.Blocks[0].Parameters.TimeConstant; got != 4.5 {
 		t.Fatalf("time constant = %g, want 4.5", got)
+	}
+	if snapshot.Flow.ProjectID == 0 {
+		t.Fatal("legacy flow has no project")
+	}
+	var projectCount int
+	var projectName string
+	if err := service.db.QueryRowContext(ctx,
+		"SELECT COUNT(*), MIN(name) FROM projects",
+	).Scan(&projectCount, &projectName); err != nil {
+		t.Fatal(err)
+	}
+	if projectCount != 1 || projectName != defaultProjectName {
+		t.Fatalf("projects = %d, %q", projectCount, projectName)
+	}
+	projectID := snapshot.Flow.ProjectID
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	snapshot, err = reopened.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Flow.ProjectID != projectID {
+		t.Fatalf("project id after reopen = %d, want %d", snapshot.Flow.ProjectID, projectID)
+	}
+	if err := reopened.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM projects",
+	).Scan(&projectCount); err != nil {
+		t.Fatal(err)
+	}
+	if projectCount != 1 {
+		t.Fatalf("project count after reopen = %d, want 1", projectCount)
 	}
 }

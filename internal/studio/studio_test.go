@@ -17,6 +17,9 @@ func TestOpenSeedsUsableExample(t *testing.T) {
 	if snapshot.Flow.Name != "Reactor temperature loop" {
 		t.Fatalf("flow name = %q", snapshot.Flow.Name)
 	}
+	if snapshot.Flow.ProjectID == 0 {
+		t.Fatal("seeded flow has no project")
+	}
 	if len(snapshot.Blocks) != 8 {
 		t.Fatalf("block count = %d, want 8", len(snapshot.Blocks))
 	}
