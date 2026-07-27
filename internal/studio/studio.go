@@ -77,14 +77,7 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 		if err != nil {
 			return fmt.Errorf("read block id: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Added %s", name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Added %s", name))
 	})
 	if err != nil {
 		return Snapshot{}, 0, err
@@ -128,9 +121,7 @@ func (s *Studio) MoveBlocks(ctx context.Context, flowID int64, moves []BlockMove
 				return ErrNotFound
 			}
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
-			s.now().UTC().Format(time.RFC3339Nano), flowID)
-		return err
+		return s.touchLayout(ctx, tx, flowID)
 	})
 }
 
@@ -155,9 +146,7 @@ func (s *Studio) MoveBlock(ctx context.Context, blockID int64, position Point) e
 		if affected == 0 {
 			return ErrNotFound
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
-			s.now().UTC().Format(time.RFC3339Nano), block.FlowID)
-		return err
+		return s.touchLayout(ctx, tx, block.FlowID)
 	})
 }
 
@@ -187,14 +176,7 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		if err != nil {
 			return fmt.Errorf("update block: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Updated %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Updated %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -213,14 +195,7 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 		if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE id = ?", blockID); err != nil {
 			return fmt.Errorf("delete block: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Deleted %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Deleted %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -257,18 +232,11 @@ func (s *Studio) DeleteBlocks(ctx context.Context, flowID int64, blockIDs []int6
 				return fmt.Errorf("delete blocks: %w", err)
 			}
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
 		message := "Deleted " + names[0]
 		if len(names) > 1 {
 			message = fmt.Sprintf("Deleted %d blocks", len(names))
 		}
-		return insertEvent(ctx, tx, flowID, now, message)
+		return s.touchModel(ctx, tx, flowID, message)
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -327,18 +295,11 @@ func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []i
 			}
 			copied++
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
 		message := fmt.Sprintf("Duplicated %d blocks", copied)
 		if copied == 1 {
 			message = "Duplicated 1 block"
 		}
-		return insertEvent(ctx, tx, flowID, now, message)
+		return s.touchModel(ctx, tx, flowID, message)
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -442,14 +403,7 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		); err != nil {
 			return fmt.Errorf("connect blocks: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Connected %s → %s", source.Name, target.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Connected %s → %s", source.Name, target.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -479,15 +433,7 @@ func (s *Studio) DisconnectBlock(ctx context.Context, blockID int64) (Snapshot, 
 		if removed == 0 {
 			return nil
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now,
-			fmt.Sprintf("Disconnected %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Disconnected %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -515,19 +461,38 @@ func (s *Studio) Disconnect(ctx context.Context, connectionID int64) (Snapshot, 
 		if _, err := tx.ExecContext(ctx, "DELETE FROM connections WHERE id = ?", connectionID); err != nil {
 			return fmt.Errorf("disconnect blocks: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Disconnected %s → %s", sourceName, targetName))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Disconnected %s → %s", sourceName, targetName))
 	})
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+// touchModel records an edit to what a flowsheet simulates: it stamps both
+// updated_at and model_updated_at, then logs message as an event. Every
+// mutation that adds, removes, or rewires a block goes through this, because
+// which operations count as a model edit is exactly the boundary flowSelect
+// (workspace.go) reads to light the amber staleness dot — moving
+// model_updated_at is what makes a flowsheet's last simulation run stale.
+func (s *Studio) touchModel(ctx context.Context, tx *sql.Tx, flowID int64, message string) error {
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+		now, now, flowID,
+	); err != nil {
+		return err
+	}
+	return insertEvent(ctx, tx, flowID, now, message)
+}
+
+// touchLayout stamps updated_at only. Rearranging blocks on the sheet changes
+// nothing a simulation depends on, so model_updated_at stays put and nothing
+// is logged — the event feed would otherwise fill with every drag.
+func (s *Studio) touchLayout(ctx context.Context, tx *sql.Tx, flowID int64) error {
+	_, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
+		s.now().UTC().Format(time.RFC3339Nano), flowID)
+	return err
 }
 
 func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) (Point, error) {
