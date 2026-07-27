@@ -39,9 +39,6 @@ CREATE TABLE IF NOT EXISTS blocks (
 	name TEXT NOT NULL,
 	x INTEGER NOT NULL,
 	y INTEGER NOT NULL,
-	amplitude REAL NOT NULL DEFAULT 0,
-	gain REAL NOT NULL DEFAULT 0,
-	time_constant REAL NOT NULL DEFAULT 0,
 	parameters_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS connections (
@@ -96,6 +93,12 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		db.Close()
 		return nil, err
 	}
+	// After ensureParametersJSON, so the column this reads from is guaranteed
+	// to exist whether it was just added or has been there all along.
+	if err := ensureLegacyBlockParameters(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := ensureProjects(ctx, db); err != nil {
 		db.Close()
 		return nil, err
@@ -141,6 +144,72 @@ func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("add block parameters: %w", err)
 	}
 	return nil
+}
+
+// ensureLegacyBlockParameters fills parameters_json for rows written before
+// that column existed, applying once, at migration time, the same
+// kind-to-field mapping decodeParameters used to apply on every read. A fresh
+// database never had the amplitude, gain and time_constant columns to begin
+// with, so there is nothing here for it to do. An already-migrated row has a
+// non-empty parameters_json and will not match the WHERE clause below, which
+// is what makes re-running this on every Open safe rather than merely
+// harmless.
+func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
+	hasLegacyColumns, err := tableHasColumn(ctx, db, "blocks", "amplitude")
+	if err != nil {
+		return err
+	}
+	if !hasLegacyColumns {
+		return nil
+	}
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx,
+			"SELECT id, kind, amplitude, gain, time_constant FROM blocks WHERE parameters_json = ''",
+		)
+		if err != nil {
+			return fmt.Errorf("find legacy block parameters: %w", err)
+		}
+		type legacyBlock struct {
+			id                            int64
+			kind                          BlockKind
+			amplitude, gain, timeConstant float64
+		}
+		var legacy []legacyBlock
+		for rows.Next() {
+			var block legacyBlock
+			if err := rows.Scan(
+				&block.id, &block.kind, &block.amplitude, &block.gain, &block.timeConstant,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan legacy block parameters: %w", err)
+			}
+			legacy = append(legacy, block)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("read legacy block parameters: %w", err)
+		}
+		for _, block := range legacy {
+			parameters := defaultParameters(block.kind)
+			switch block.kind {
+			case BlockSource:
+				parameters.Amplitude = block.amplitude
+			case BlockGain:
+				parameters.Gain = block.gain
+			case BlockLag:
+				parameters.TimeConstant = block.timeConstant
+			}
+			encoded, err := encodeParameters(parameters)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE blocks SET parameters_json = ? WHERE id = ?", encoded, block.id,
+			); err != nil {
+				return fmt.Errorf("backfill block %d parameters: %w", block.id, err)
+			}
+		}
+		return nil
+	})
 }
 
 func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
@@ -393,12 +462,9 @@ func (s *Studio) seed(ctx context.Context) error {
 			}
 			placed := clampPosition(Point{X: seed.x, Y: seed.y})
 			result, err := tx.ExecContext(ctx, `
-				INSERT INTO blocks(
-					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-				)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				flowID, seed.kind, seed.name, placed.X, placed.Y,
-				seed.p.Amplitude, seed.p.Gain, seed.p.TimeConstant, encoded,
+				INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+				VALUES(?, ?, ?, ?, ?, ?)`,
+				flowID, seed.kind, seed.name, placed.X, placed.Y, encoded,
 			)
 			if err != nil {
 				return fmt.Errorf("seed block %q: %w", seed.name, err)
@@ -469,24 +535,22 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	snapshot.Flow.ModelUpdatedAt, _ = time.Parse(time.RFC3339Nano, modelUpdated)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+		SELECT id, flow_id, kind, name, x, y, parameters_json
 		FROM blocks WHERE flow_id = ? ORDER BY id`, flowID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load blocks: %w", err)
 	}
 	for rows.Next() {
 		var block Block
-		var legacy Parameters
 		var encoded string
 		if err := rows.Scan(
 			&block.ID, &block.FlowID, &block.Kind, &block.Name,
-			&block.Position.X, &block.Position.Y,
-			&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
+			&block.Position.X, &block.Position.Y, &encoded,
 		); err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("scan block: %w", err)
 		}
-		block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+		block.Parameters, err = decodeParameters(block.Kind, encoded)
 		if err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
@@ -571,15 +635,13 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 
 func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	var block Block
-	var legacy Parameters
 	var encoded string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+		SELECT id, flow_id, kind, name, x, y, parameters_json
 		FROM blocks WHERE id = ?`, id,
 	).Scan(
 		&block.ID, &block.FlowID, &block.Kind, &block.Name,
-		&block.Position.X, &block.Position.Y,
-		&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
+		&block.Position.X, &block.Position.Y, &encoded,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Block{}, ErrNotFound
@@ -587,7 +649,7 @@ func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	if err != nil {
 		return Block{}, fmt.Errorf("load block: %w", err)
 	}
-	block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+	block.Parameters, err = decodeParameters(block.Kind, encoded)
 	if err != nil {
 		return Block{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
 	}
@@ -602,21 +664,13 @@ func encodeParameters(parameters Parameters) (string, error) {
 	return string(encoded), nil
 }
 
-func decodeParameters(kind BlockKind, encoded string, legacy Parameters) (Parameters, error) {
+func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	parameters := defaultParameters(kind)
-	if encoded != "" {
-		if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
-			return Parameters{}, err
-		}
+	if encoded == "" {
 		return parameters, nil
 	}
-	switch kind {
-	case BlockSource:
-		parameters.Amplitude = legacy.Amplitude
-	case BlockGain:
-		parameters.Gain = legacy.Gain
-	case BlockLag:
-		parameters.TimeConstant = legacy.TimeConstant
+	if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
+		return Parameters{}, err
 	}
 	return parameters, nil
 }

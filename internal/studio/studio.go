@@ -63,12 +63,9 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 			return err
 		}
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO blocks(
-				flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-			)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			flowID, kind, name, placed.X, placed.Y,
-			parameters.Amplitude, parameters.Gain, parameters.TimeConstant, encoded,
+			INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+			flowID, kind, name, placed.X, placed.Y, encoded,
 		)
 		if err != nil {
 			return fmt.Errorf("add block: %w", err)
@@ -168,10 +165,9 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE blocks
-			SET name = ?, amplitude = ?, gain = ?, time_constant = ?, parameters_json = ?
+			SET name = ?, parameters_json = ?
 			WHERE id = ?`,
-			block.Name, block.Parameters.Amplitude, block.Parameters.Gain,
-			block.Parameters.TimeConstant, encoded, block.ID,
+			block.Name, encoded, block.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("update block: %w", err)
@@ -283,13 +279,9 @@ func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []i
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO blocks(
-					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-				)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				flowID, block.Kind, name, placed.X, placed.Y,
-				block.Parameters.Amplitude, block.Parameters.Gain,
-				block.Parameters.TimeConstant, encoded,
+				INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+				VALUES(?, ?, ?, ?, ?, ?)`,
+				flowID, block.Kind, name, placed.X, placed.Y, encoded,
 			); err != nil {
 				return fmt.Errorf("duplicate block: %w", err)
 			}

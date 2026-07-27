@@ -449,10 +449,14 @@ func TestDuplicateFlowCopiesBlocksAndRewiresConnections(t *testing.T) {
 	}
 }
 
-// decodeParameters prefers parameters_json and falls back to the legacy
-// amplitude, gain and time_constant columns, so a copy that carried only one of
-// the two would decode differently from the block it claims to be a copy of.
-func TestDuplicateFlowPreservesEveryParameterColumn(t *testing.T) {
+// copyBlocks carries parameters_json verbatim, the one column a block's
+// parameters live in now that the legacy scalar columns are retired. This
+// still has to prove two distinct ways a copy could lose data: a JSON blob
+// written before the catalog gained fields it now has, where decodeParameters
+// fills the rest from today's defaults, and a polynomial array, which a
+// column-for-column string copy cannot silently truncate the way a
+// per-field copy could.
+func TestDuplicateFlowPreservesBlockParameters(t *testing.T) {
 	ctx := context.Background()
 	service := openTestStudio(t, ":memory:")
 	current, err := service.CurrentWorkspace(ctx)
@@ -464,14 +468,12 @@ func TestDuplicateFlowPreservesEveryParameterColumn(t *testing.T) {
 		t.Fatal(err)
 	}
 	flowID := created.Snapshot.Flow.ID
-	insertBlock := func(kind BlockKind, name string, amplitude, gain, timeConstant float64, encoded string) int64 {
+	insertBlock := func(kind BlockKind, name, encoded string) int64 {
 		t.Helper()
 		result, err := service.db.ExecContext(ctx, `
-			INSERT INTO blocks(
-				flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-			)
-			VALUES(?, ?, ?, 60, 80, ?, ?, ?, ?)`,
-			flowID, kind, name, amplitude, gain, timeConstant, encoded,
+			INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+			VALUES(?, ?, ?, 60, 80, ?)`,
+			flowID, kind, name, encoded,
 		)
 		if err != nil {
 			t.Fatal(err)
@@ -482,14 +484,12 @@ func TestDuplicateFlowPreservesEveryParameterColumn(t *testing.T) {
 		}
 		return id
 	}
-	// A block written before parameters_json existed: its value lives only in
-	// the legacy column.
-	legacyID := insertBlock(BlockSource, "Feed", 1.75, 0, 0, "")
+	sourceID := insertBlock(BlockSource, "Feed", `{"amplitude":1.75}`)
 	// A block written before the catalog gained the fields it now has: the JSON
 	// holds one field and decoding fills the rest from today's defaults.
-	partialID := insertBlock(BlockPID, "Controller", 0, 0, 0, `{"derivative":0.25}`)
-	insertBlock(BlockTransfer, "Valve", 0, 0, 0, `{"numerator":[2,1],"denominator":[1,3,1]}`)
-	if _, err := service.Connect(ctx, flowID, legacyID, partialID); err != nil {
+	partialID := insertBlock(BlockPID, "Controller", `{"derivative":0.25}`)
+	insertBlock(BlockTransfer, "Valve", `{"numerator":[2,1],"denominator":[1,3,1]}`)
+	if _, err := service.Connect(ctx, flowID, sourceID, partialID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -510,7 +510,7 @@ func TestDuplicateFlowPreservesEveryParameterColumn(t *testing.T) {
 	}
 	// Stated outright, because each of these is a different way to lose data.
 	if got := blockNamed(t, duplicated.Snapshot.Blocks, "Feed").Parameters.Amplitude; got != 1.75 {
-		t.Fatalf("legacy amplitude = %v, want 1.75", got)
+		t.Fatalf("copied amplitude = %v, want 1.75", got)
 	}
 	controller := blockNamed(t, duplicated.Snapshot.Blocks, "Controller").Parameters
 	if controller.Derivative != 0.25 {

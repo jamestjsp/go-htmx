@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -149,6 +150,126 @@ func TestOpenMigratesLegacyBlockParameters(t *testing.T) {
 	if projectCount != 1 {
 		t.Fatalf("project count after reopen = %d, want 1", projectCount)
 	}
+}
+
+// ensureLegacyBlockParameters must run after ensureParametersJSON has
+// guaranteed parameters_json exists, backfilling it from the scalar columns
+// for rows the column's own DEFAULT ” left empty. This fixture's blocks
+// table already carries parameters_json — unlike
+// TestOpenMigratesLegacyBlockParameters's, where ensureParametersJSON has to
+// add the column first — so this is the ordering constraint's own coverage,
+// not the same path exercised a second time.
+func TestOpenBackfillsBlockParametersFromLegacyColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "pre-json.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE flows (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE blocks (
+			id INTEGER PRIMARY KEY,
+			flow_id INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			name TEXT NOT NULL,
+			x INTEGER NOT NULL,
+			y INTEGER NOT NULL,
+			amplitude REAL NOT NULL DEFAULT 0,
+			gain REAL NOT NULL DEFAULT 0,
+			time_constant REAL NOT NULL DEFAULT 0,
+			parameters_json TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO flows(id, name, created_at, updated_at)
+		VALUES(1, 'Legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO blocks(flow_id, kind, name, x, y, amplitude, gain, time_constant) VALUES
+			(1, 'source', 'Feed', 60, 80, 1.75, 0, 0),
+			(1, 'gain', 'Valve', 300, 80, 0, 2.4, 0),
+			(1, 'lag', 'Reactor', 540, 80, 0, 0, 4.5),
+			(1, 'sum', 'Balance', 780, 80, 0, 0, 0);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Feed").Parameters.Amplitude; got != 1.75 {
+		t.Fatalf("amplitude = %v, want 1.75", got)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Valve").Parameters.Gain; got != 2.4 {
+		t.Fatalf("gain = %v, want 2.4", got)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Reactor").Parameters.TimeConstant; got != 4.5 {
+		t.Fatalf("time constant = %v, want 4.5", got)
+	}
+	// A kind outside decodeParameters' old switch — nothing in the legacy
+	// columns ever described a sum block — backfills to its catalog defaults,
+	// the same value a fresh sum block gets today.
+	if got, want := blockNamed(t, snapshot.Blocks, "Balance").Parameters, defaultParameters(BlockSum); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sum defaults = %#v, want %#v", got, want)
+	}
+
+	encoded := blockParametersJSON(t, service, "Feed")
+	if encoded == "" {
+		t.Fatal("parameters_json was not backfilled")
+	}
+	// The legacy columns are kept, not dropped: rebuilding the table for no
+	// runtime benefit is exactly what this migration avoids.
+	if got := legacyColumn(t, service, "amplitude", "Feed"); got != 1.75 {
+		t.Fatalf("legacy amplitude column = %v, want 1.75 to survive untouched", got)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopening must not rewrite a row the first Open already backfilled: the
+	// WHERE parameters_json = '' clause is what makes this safe to run on
+	// every startup rather than only the first one.
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := blockParametersJSON(t, reopened, "Feed"); got != encoded {
+		t.Fatalf("parameters_json after reopen = %q, want unchanged %q", got, encoded)
+	}
+}
+
+func blockParametersJSON(t *testing.T, service *Studio, name string) string {
+	t.Helper()
+	var encoded string
+	if err := service.db.QueryRowContext(context.Background(),
+		"SELECT parameters_json FROM blocks WHERE name = ?", name,
+	).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func legacyColumn(t *testing.T, service *Studio, column, name string) float64 {
+	t.Helper()
+	var value float64
+	if err := service.db.QueryRowContext(context.Background(),
+		"SELECT "+column+" FROM blocks WHERE name = ?", name,
+	).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 // A database written before projects, model revisions, and tab order existed
@@ -374,6 +495,23 @@ func TestOpenEnforcesForeignKeys(t *testing.T) {
 	}
 	if enforced != 1 {
 		t.Fatalf("foreign_keys = %d, want 1", enforced)
+	}
+}
+
+// A fresh database has no reason to carry columns nothing reads or writes
+// anymore; only a database opened from before this migration keeps them, for
+// compatibility rather than any ongoing use.
+func TestOpenFreshDatabaseOmitsLegacyBlockColumns(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, filepath.Join(t.TempDir(), "fresh.db"))
+	for _, column := range []string{"amplitude", "gain", "time_constant"} {
+		found, err := tableHasColumn(ctx, service.db, "blocks", column)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found {
+			t.Fatalf("fresh database has the legacy %s column", column)
+		}
 	}
 }
 

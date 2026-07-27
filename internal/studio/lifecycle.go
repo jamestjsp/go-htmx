@@ -274,20 +274,17 @@ func copyName(name string) string {
 // copyBlocks copies every block of one flowsheet into another and reports how
 // the ids moved, so the connections can follow the blocks they join.
 //
-// The rows are copied column for column, carrying both parameters_json and the
-// legacy amplitude, gain and time_constant columns. decodeParameters prefers
-// the JSON and falls back to those columns for blocks written before the JSON
-// column existed, so a copy that carried only one of the two would decode
-// differently from the block it claims to be a copy of.
+// The rows are copied column for column on parameters_json, the one place a
+// block's parameters live now that a migration at Open has backfilled it for
+// every row the legacy scalar columns used to describe.
 func copyBlocks(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID int64) (map[int64]int64, error) {
 	type row struct {
-		id                            int64
-		kind, name, parameters        string
-		x, y                          int
-		amplitude, gain, timeConstant float64
+		id                     int64
+		kind, name, parameters string
+		x, y                   int
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+		SELECT id, kind, name, x, y, parameters_json
 		FROM blocks WHERE flow_id = ? ORDER BY id`, sourceFlowID)
 	if err != nil {
 		return nil, fmt.Errorf("load blocks to copy: %w", err)
@@ -298,8 +295,7 @@ func copyBlocks(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID int6
 	for rows.Next() {
 		var block row
 		if err := rows.Scan(
-			&block.id, &block.kind, &block.name, &block.x, &block.y,
-			&block.amplitude, &block.gain, &block.timeConstant, &block.parameters,
+			&block.id, &block.kind, &block.name, &block.x, &block.y, &block.parameters,
 		); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan block to copy: %w", err)
@@ -313,12 +309,9 @@ func copyBlocks(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID int6
 	moved := make(map[int64]int64, len(source))
 	for _, block := range source {
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO blocks(
-				flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-			)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			targetFlowID, block.kind, block.name, block.x, block.y,
-			block.amplitude, block.gain, block.timeConstant, block.parameters,
+			INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+			targetFlowID, block.kind, block.name, block.x, block.y, block.parameters,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("copy block %q: %w", block.name, err)
