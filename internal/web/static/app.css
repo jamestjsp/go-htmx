@@ -2212,7 +2212,23 @@ body.is-resizing-dock .studio-grid {
   color: var(--ink-inverse);
 }
 
+/* The four columns are assigned by hand, not by auto-placement.
+
+   The ‹ › arrows are display:none until the track actually scrolls, and a
+   display:none child is not a grid item. Left to auto-placement the track
+   would then slide into the leading `auto` column and size itself to the
+   whole tab list, and `.tab-tools` would land in `minmax(0, 1fr)` with only
+   the remainder — so between "the tabs just fit" and "the tabs fit with
+   140px to spare", the + and the sheet count were laid out wider than their
+   track and hung off the right edge of the shell. Naming the columns makes
+   the arrows' two tracks collapse to 0 when they are hidden and leaves the
+   track, which scrolls, as the only thing that gives up width. */
+.tab-scroll-back {
+  grid-column: 1;
+}
+
 .tab-track {
+  grid-column: 2;
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
@@ -2400,6 +2416,7 @@ body.is-resizing-dock .studio-grid {
 }
 
 .tab-scroll-forward {
+  grid-column: 3;
   border-right: 0;
   border-left: 1px solid var(--housing-line);
 }
@@ -2419,6 +2436,7 @@ body.is-resizing-dock .studio-grid {
 }
 
 .tab-tools {
+  grid-column: 4;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -2924,6 +2942,18 @@ body.is-resizing-dock .studio-grid {
 
   .metric-panel {
     grid-template-columns: 1fr;
+  }
+
+  /* The tools cluster is now the fixed cost of the strip, and at this width
+     it is buying about a third of the legend window. The digit is the part
+     that carries the reading, so the word goes and the count, the chevron
+     and the whole jump list stay; the summary's title still names it. */
+  .tab-jump summary {
+    padding: 0 6px;
+  }
+
+  .tab-jump summary > span {
+    display: none;
   }
 
   .statusbar {
