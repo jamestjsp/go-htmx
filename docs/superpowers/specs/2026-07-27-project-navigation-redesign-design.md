@@ -73,10 +73,26 @@ Tabs and register links are real `<a href>` elements carrying `hx-get` and
 flash. `GET /flows/{id}/workbench` already returns that fragment; it becomes
 project-aware so the swapped markup includes the tab strip.
 
-The existing `htmx:afterSwap` and `htmx:afterSettle` hooks (`restoreViewport`,
-`applyShellState`) re-run on every swap, and viewport state is keyed per flow
-in `localStorage`, so each sheet keeps its own pan, zoom, and rail state across
-switches. That is what makes the strip feel like a workbook rather than a menu.
+Per-sheet viewport is added work, not an inheritance. `viewportKey()` is keyed
+per flow (`app.js:601`), but `loadViewport()` runs exactly once at page load
+(`app.js:1296`), while `restoreViewport` fires `applyViewport()` on every swap
+and `applyViewport()` ends by calling `saveViewport()` (`app.js:636`) against
+whatever flow id is in the live DOM. Switching sheets would therefore stamp
+sheet A's pan and zoom onto sheet B *and* overwrite B's stored viewport. The
+tab strip must detect the flow-id change on swap and load that sheet's stored
+viewport, falling back to `fitView()`, before applying it.
+
+Rail and dock state stays global: `SHELL_KEYS` are fixed strings
+(`app.js:1317`), not per-flow, and making them per-sheet is neither required
+nor obviously desirable.
+
+HTMX history needs explicit handling. `hx-push-url="true"` would push the
+fragment URL `/flows/{id}/workbench`, which renders a bare `<main>` with no
+stylesheet if reloaded or shared, so tabs must push the canonical
+`/projects/{p}/flows/{f}` explicitly. HTMX history restore fires neither
+`htmx:afterSwap` nor `htmx:afterSettle`, and no `htmx:historyRestore` listener
+exists today, so Back after a tab switch would leave the canvas transform
+un-stamped and edges undrawn. The tab strip adds that listener.
 
 Rejected: keeping every sheet in the DOM and toggling visibility. It duplicates
 server state on the client and needs cache invalidation on every mutation,
@@ -147,7 +163,9 @@ existing `CreateFlow` and `RenameFlow` shape.
 last-edited timestamp, plus every project's flowsheets in one grouped query.
 No N+1, and rows expand with no further request.
 
-Each flowsheet carries `NeedsRun`, derived from
+`NeedsRun` is not a register-only concern — the tab strip needs the same flag —
+so it lives on `studio.Flow` and is populated by the flow queries themselves.
+It is derived from
 
 ```sql
 NOT EXISTS (
@@ -157,7 +175,10 @@ NOT EXISTS (
 ```
 
 which is the same predicate `snapshot` already uses to decide whether a chart
-is current, so the amber tab dot and the simulation dock cannot disagree.
+is current, so the amber tab dot and the simulation dock cannot disagree. Note
+that `snapshot` compares RFC3339Nano *text*, not parsed times; the register and
+the tab strip must use the identical raw-text comparison, because "fixing" one
+side to a datetime comparison is exactly how the two would drift apart.
 
 ### Landing after a destructive edit
 
@@ -169,8 +190,13 @@ register at `/`.
 
 ### Register page
 
-`templates/register.html` and `static/register.css`, sharing only the `:root`
-tokens with the workbench.
+`templates/register.html`, `static/register.css`, and `static/register.js`,
+sharing only the `:root` tokens with the workbench. The third file is not
+optional: the CSP sets `script-src 'self'` with no `'unsafe-inline'`
+(`server.go:542`), so an inline `<script>` or an `onclick=` attribute is
+silently blocked in the browser while every Go test still passes. The page also
+needs the htmx `<script>` tag, integrity hash included, copied from
+`page.html`.
 
 A topbar carries the brand and **+ New project**. The register table follows:
 Project, Sheets, Edited. Rows expand with `<details>`/`<summary>` — the
@@ -178,7 +204,10 @@ flowsheets are already in the DOM, so expansion needs no request and no
 JavaScript. A project name opens that project's first sheet; a flowsheet chip
 opens that sheet directly. Double-clicking a project name renames it in place.
 The row menu holds Rename and Delete, and Delete is absent when only one
-project exists. An empty database renders a create-your-first-project state.
+project exists. The empty-register state is defensive markup only — `seed`
+creates a project whenever no flows exist and `DeleteProject` refuses the last
+one, so the state is unreachable through the public API and is covered at the
+view-model level rather than through `Open`.
 
 ### Tab strip
 
