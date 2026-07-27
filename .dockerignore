@@ -1,0 +1,10 @@
+.git
+.ergo
+.superpowers
+docs
+*.md
+*.db
+*.db-shm
+*.db-wal
+processlab
+.DS_Store

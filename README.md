@@ -31,6 +31,37 @@ go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
 
 All CSS, application JavaScript, and HTML templates are embedded in the Go binary. Only HTMX itself is loaded from the pinned CDN URL.
 
+## Run with Docker Compose
+
+With Docker Desktop or another Docker Engine running:
+
+```bash
+docker compose up --build --detach
+docker compose ps
+```
+
+Open [http://127.0.0.1:8080](http://127.0.0.1:8080). Compose builds a small
+non-root image and stores `processlab.db` in the named
+`processlab-data` volume, so projects and flowsheets survive container
+replacement and restarts.
+
+If port 8080 is already in use, choose another host port:
+
+```bash
+PROCESSLAB_PORT=9090 docker compose up --build --detach
+```
+
+Follow logs or stop the deployment with:
+
+```bash
+docker compose logs --follow
+docker compose down
+```
+
+`docker compose down` preserves the database volume. Run
+`docker compose down --volumes` only when you intentionally want to delete all
+containerized Process Lab data.
+
 ## Projects, flowsheets, and persistence
 
 Process Lab organizes top-level flowsheets inside projects.

@@ -1,0 +1,16 @@
+services:
+  processlab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: processlab:local
+    init: true
+    ports:
+      - "${PROCESSLAB_PORT:-8080}:8080"
+    volumes:
+      - processlab-data:/data
+    restart: unless-stopped
+    stop_grace_period: 10s
+
+volumes:
+  processlab-data:
