@@ -9,8 +9,72 @@
       </span>
     </a>
     <div class="project-heading">
-      <span class="eyebrow">Active flowsheet</span>
-      <h1>{{.Snapshot.Flow.Name}}</h1>
+      <div class="workspace-breadcrumb" aria-label="Project navigation">
+        <details class="workspace-menu">
+          <summary>
+            <span class="eyebrow">Project</span>
+            <strong>{{.Workspace.Project.Name}}</strong>
+            <span class="workspace-menu-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="workspace-popover">
+            <span class="popover-label">Open project</span>
+            <nav aria-label="Projects">
+              {{range .Workspace.Projects}}
+              <a href="/projects/{{.ID}}"{{if eq .ID $.Workspace.Project.ID}} aria-current="page"{{end}}>{{.Name}}</a>
+              {{end}}
+            </nav>
+            <form class="workspace-create-form" hx-post="/projects" hx-swap="none">
+              <label for="new-project-name">New project</label>
+              <div>
+                <input id="new-project-name" name="name" maxlength="80" placeholder="Project name" required>
+                <button type="submit">Create</button>
+              </div>
+            </form>
+          </div>
+        </details>
+        <span class="workspace-separator" aria-hidden="true">/</span>
+        <details class="workspace-menu">
+          <summary>
+            <span class="eyebrow">Flowsheets</span>
+            <strong>{{len .Workspace.Flows}}</strong>
+            <span class="workspace-menu-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="workspace-popover">
+            <span class="popover-label">Open flowsheet</span>
+            <nav aria-label="Flowsheets">
+              {{range .Workspace.Flows}}
+              <a href="/projects/{{.ProjectID}}/flows/{{.ID}}"{{if eq .ID $.Snapshot.Flow.ID}} aria-current="page"{{end}}>{{.Name}}</a>
+              {{end}}
+            </nav>
+            <form class="workspace-create-form" hx-post="/projects/{{.Workspace.Project.ID}}/flows" hx-swap="none">
+              <label for="new-flow-name">New flowsheet</label>
+              <div>
+                <input id="new-flow-name" name="name" maxlength="80" placeholder="Flowsheet name" required>
+                <button type="submit">Create</button>
+              </div>
+            </form>
+          </div>
+        </details>
+      </div>
+      <form class="flow-name-form">
+        {{if .Selected}}<input type="hidden" name="selected_id" value="{{.Selected.ID}}">{{end}}
+        <label>
+          <span class="eyebrow">Active flowsheet</span>
+          <input
+            name="name"
+            value="{{.Snapshot.Flow.Name}}"
+            maxlength="80"
+            aria-label="Flowsheet name"
+            required
+            hx-put="/flows/{{.Snapshot.Flow.ID}}/name"
+            hx-target="#workbench"
+            hx-swap="outerHTML"
+            hx-trigger="input changed delay:600ms, change"
+            hx-include=".flow-name-form"
+          >
+        </label>
+        <span class="autosave-label"><i></i> autosaved</span>
+      </form>
     </div>
     <div class="shell-toggles" role="group" aria-label="Workspace panels">
       <button type="button" class="shell-toggle" data-rail-toggle="left" aria-controls="palette-rail" aria-expanded="true" title="Collapse the block library">

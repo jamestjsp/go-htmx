@@ -100,7 +100,9 @@ input {
 /* Fields that sit in the housing get dark native controls, so the
    number spinners and caret match the chrome instead of flashing white. */
 .run-form input,
-.property-form input {
+.property-form input,
+.workspace-create-form input,
+.flow-name-form input {
   color-scheme: dark;
 }
 
@@ -247,6 +249,7 @@ kbd {
 }
 
 .project-heading {
+  position: relative;
   min-width: 0;
   padding-left: 18px;
   border-left: 1px solid var(--housing-line);
@@ -270,6 +273,205 @@ kbd {
   letter-spacing: -.005em;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.workspace-menu {
+  position: relative;
+  min-width: 0;
+}
+
+.workspace-menu summary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  align-items: center;
+  column-gap: 6px;
+  color: var(--ink-inverse);
+  cursor: pointer;
+  list-style: none;
+}
+
+.workspace-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-menu summary .eyebrow {
+  grid-column: 1 / -1;
+}
+
+.workspace-menu summary strong {
+  max-width: 180px;
+  overflow: hidden;
+  font-size: var(--fs-200);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-menu-chevron {
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-200);
+  line-height: 1;
+  transition: transform 140ms;
+}
+
+.workspace-menu[open] .workspace-menu-chevron {
+  transform: rotate(180deg);
+}
+
+.workspace-separator {
+  color: var(--housing-line-strong);
+  font-size: var(--fs-500);
+  font-weight: 300;
+}
+
+.workspace-popover {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 10px);
+  left: -10px;
+  width: min(300px, calc(100vw - 28px));
+  padding: 10px;
+  border: 1px solid var(--housing-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--housing-raised);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 38%);
+}
+
+.popover-label,
+.workspace-create-form > label {
+  display: block;
+  margin: 0 4px 6px;
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-100);
+  font-weight: 700;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+}
+
+.workspace-popover nav {
+  max-height: 190px;
+  display: grid;
+  gap: 3px;
+  overflow-y: auto;
+}
+
+.workspace-popover nav a {
+  padding: 8px 9px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-200);
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-popover nav a:hover,
+.workspace-popover nav a[aria-current="page"] {
+  border-color: var(--housing-line);
+  color: var(--ink-inverse);
+  background: var(--housing-deep);
+}
+
+.workspace-popover nav a[aria-current="page"]::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--probe);
+  box-shadow: 0 0 0 3px var(--probe-glow);
+}
+
+.workspace-create-form {
+  margin-top: 9px;
+  padding-top: 10px;
+  border-top: 1px solid var(--housing-line);
+}
+
+.workspace-create-form > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.workspace-create-form input,
+.flow-name-form input {
+  min-width: 0;
+  border: 1px solid var(--housing-line);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  background: var(--housing-deep);
+}
+
+.workspace-create-form input {
+  padding: 8px 9px;
+}
+
+.workspace-create-form button {
+  padding: 8px 10px;
+  border: 1px solid rgb(53 179 156 / 45%);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  background: rgb(53 179 156 / 14%);
+  cursor: pointer;
+  font-size: var(--fs-200);
+  font-weight: 700;
+}
+
+.flow-name-form {
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.flow-name-form label {
+  min-width: 0;
+  flex: 1;
+}
+
+.flow-name-form input {
+  width: 100%;
+  display: block;
+  margin-top: 2px;
+  padding: 3px 7px;
+  font-size: var(--fs-400);
+  font-weight: 650;
+  letter-spacing: -.005em;
+}
+
+.flow-name-form input:hover,
+.flow-name-form input:focus {
+  border-color: var(--housing-line-strong);
+  background: var(--housing-raised);
+}
+
+.autosave-label {
+  padding-bottom: 5px;
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-100);
+  white-space: nowrap;
+}
+
+.autosave-label i {
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  margin-right: 4px;
+  border-radius: 50%;
+  background: var(--probe);
 }
 
 .project-facts {
@@ -2168,6 +2370,14 @@ body.is-resizing-dock .studio-grid {
     display: none;
   }
 
+  .workspace-menu summary strong {
+    max-width: 120px;
+  }
+
+  .autosave-label {
+    display: none;
+  }
+
   .project-facts > span:not(.saved-state) {
     display: none;
   }
@@ -2217,6 +2427,10 @@ body.is-resizing-dock .studio-grid {
     padding: 9px 0 0;
     border-top: 1px solid var(--housing-line);
     border-left: 0;
+  }
+
+  .workspace-menu summary strong {
+    max-width: 240px;
   }
 
   .project-facts {
@@ -2316,6 +2530,31 @@ body.is-resizing-dock .studio-grid {
 
   .topbar {
     display: block;
+  }
+
+  .project-heading {
+    margin-top: 12px;
+  }
+
+  .workspace-breadcrumb {
+    justify-content: space-between;
+  }
+
+  .workspace-menu {
+    flex: 1;
+  }
+
+  .workspace-menu summary strong {
+    max-width: calc(50vw - 64px);
+  }
+
+  .workspace-menu:last-of-type .workspace-popover {
+    right: 0;
+    left: auto;
+  }
+
+  .flow-name-form {
+    margin-top: 9px;
   }
 
   .palette-list {

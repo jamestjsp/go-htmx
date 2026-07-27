@@ -30,9 +30,14 @@ func TestPageRendersSeededHTMXWorkbench(t *testing.T) {
 	body := response.Body.String()
 	for _, expected := range []string{
 		"Process Lab",
+		"Process Lab project",
 		"Reactor temperature loop",
 		"Feed setpoint",
 		`hx-post="/flows/1/blocks"`,
+		`hx-post="/projects"`,
+		`hx-post="/projects/1/flows"`,
+		`hx-put="/flows/1/name"`,
+		`aria-label="Project navigation"`,
 		"htmx.org@2.0.10",
 	} {
 		if !strings.Contains(body, expected) {
@@ -170,8 +175,17 @@ func TestProjectAndFlowLifecycleThroughHTTP(t *testing.T) {
 		t.Fatalf("project location = %q: %v", projectLocation, err)
 	}
 	projectPage := request(t, server, http.MethodGet, projectLocation, nil)
-	if projectPage.Code != http.StatusOK || !strings.Contains(projectPage.Body.String(), "Untitled flowsheet") {
+	if projectPage.Code != http.StatusOK ||
+		!strings.Contains(projectPage.Body.String(), "Operations") ||
+		!strings.Contains(projectPage.Body.String(), "Untitled flowsheet") {
 		t.Fatalf("project page status = %d, body = %s", projectPage.Code, projectPage.Body.String())
+	}
+	projectRedirect := request(t, server, http.MethodGet,
+		"/projects/"+strconv.FormatInt(projectID, 10), nil,
+	)
+	if projectRedirect.Code != http.StatusSeeOther ||
+		projectRedirect.Header().Get("Location") != projectLocation {
+		t.Fatalf("project redirect = %d %q", projectRedirect.Code, projectRedirect.Header().Get("Location"))
 	}
 
 	createFlow := requestHX(t, server, http.MethodPost,

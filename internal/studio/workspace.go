@@ -33,6 +33,25 @@ func (s *Studio) CurrentWorkspace(ctx context.Context) (Workspace, error) {
 	return s.Workspace(ctx, projectID, flowID)
 }
 
+func (s *Studio) ProjectWorkspace(ctx context.Context, projectID int64) (Workspace, error) {
+	var flowID int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id
+		FROM flows
+		WHERE project_id = ?
+		ORDER BY name COLLATE NOCASE, id
+		LIMIT 1`,
+		projectID,
+	).Scan(&flowID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Workspace{}, ErrNotFound
+	}
+	if err != nil {
+		return Workspace{}, fmt.Errorf("open project workspace: %w", err)
+	}
+	return s.Workspace(ctx, projectID, flowID)
+}
+
 func (s *Studio) Workspace(ctx context.Context, projectID, flowID int64) (Workspace, error) {
 	var workspace Workspace
 	var created, updated string

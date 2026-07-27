@@ -36,6 +36,7 @@ func New(studioService *studio.Studio) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /", server.page)
+	mux.HandleFunc("GET /projects/{projectID}", server.projectPage)
 	mux.HandleFunc("GET /projects/{projectID}/flows/{flowID}", server.projectFlowPage)
 	mux.HandleFunc("GET /flows/{flowID}/workbench", server.workbench)
 	mux.HandleFunc("POST /projects", server.createProject)
@@ -92,6 +93,23 @@ func (s *Server) projectFlowPage(w http.ResponseWriter, r *http.Request) {
 	if err := s.templates.ExecuteTemplate(w, "page", view); err != nil {
 		http.Error(w, "Process Lab could not render the page.", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) projectPage(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathID(w, r, "projectID")
+	if !ok {
+		return
+	}
+	workspace, err := s.studio.ProjectWorkspace(r.Context(), projectID)
+	if err != nil {
+		if errors.Is(err, studio.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, "Process Lab could not load the project.", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, workspacePath(workspace), http.StatusSeeOther)
 }
 
 func (s *Server) workbench(w http.ResponseWriter, r *http.Request) {
