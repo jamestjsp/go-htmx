@@ -51,32 +51,54 @@ the non-test sources for Runge-Kutta, adaptive or variable step, and any
 integrator type returns nothing. `System.Simulate` (`simulate.go:24`) is a
 discrete recurrence and refuses continuous systems outright with
 `controlsys: wrong time domain for operation`. `NonlinearModel`
-(`linearize.go:9`) is not a simulation type: its only consumers are
-`Linearize` and `EKF`. There is no Saturation, Dead Zone, Relay, or any
-other nonlinearity anywhere in the package.
+(`linearize.go:9`) is not a simulation type: its only consumer is
+`Linearize`. (`EKF` is not a second consumer — it takes its own `EKFModel`,
+`ekf.go:10`.) There is no Saturation, Dead Zone, Relay, or any other
+nonlinearity anywhere in the package.
 
 `controlsys`'s own `docs/lpv-ltv-sparse-scope.md` confirms this is
 deliberate: LTV models are listed as "Later", explicitly needing
 "time-varying state update callbacks or sampled trajectories,
 simulation-only semantics".
 
-**4. `Linearize` exists and is exactly the wrong tool.** It takes a nonlinear
-model and returns a continuous `System` by finite differences at an operating
-point. Linearizing a saturation at a point *inside* its limit returns
-`C = [0]`, `D = [0]` and a nil error — a model that reports the signal as
-identically zero, with no diagnostic. That is precisely the silent
-linearization this repository forbids, offered by the library as a
-success. Nothing in the compiler may call it.
+**4. `Linearize` exists, works correctly, and is still not usable here.** It
+takes a `NonlinearModel` and returns a continuous `System` by finite
+differences at an operating point. Its answers for a saturation with limits
+at ±0.5 are right in every construction:
+
+| Model | Operating point | Result |
+| --- | --- | --- |
+| saturation as feedthrough in `H` | `u0 = 0.2`, inside the limit | `C = 0`, `D = 1` |
+| saturation as feedthrough in `H` | `u0 = 0.8`, saturated | `C = 0`, `D = 0` |
+| saturation in the state update `F` | `u0 = 0.2`, inside the limit | `B = 1`, `C = 1` |
+| saturation in the state update `F` | `u0 = 0.8`, saturated | `B = 0`, `C = 1` |
+
+Inside the limit it returns the unity model, which is the correct local
+behaviour. `C = 0`, `D = 0` appears only at a *saturated* operating point,
+where zero local gain is the mathematically correct answer, not a defect. The
+step size is `h = sqrt(eps) * max(|u0|, 1)` ≈ 1.5e-8
+(`local_approx.go:60,72,110`), far too small to straddle a limit, so no
+construction produces a wrong Jacobian.
+
+The reason the compiler must not call it is simpler and has nothing to do
+with the library's accuracy: **a linearized saturation is not a saturation at
+any operating point.** Linearization replaces the block with an LTI
+approximation valid only in a neighbourhood, and the sheet is then no longer
+the model the user drew. That is what the no-silent-linearization rule
+forbids, and it forbids it regardless of how correctly the Jacobian is
+computed. Nothing in the compiler may call `Linearize`.
 
 What *is* usable, verified working:
 
 | Capability | Call | Use here |
 | --- | --- | --- |
-| Per-sample stepping with carried state | `System.Simulate(u, x0, opts)` returning `XFinal` | Drives an LTI segment one sample at a time |
-| Continuous to discrete | `DiscretizeZOH`, `DiscretizeFOH`, `DiscretizeMatched`, `DiscretizeImpulse` | Prepares a segment for stepping |
-| Discrete to discrete resample | `D2D(newDt, opts)` | Not used; see the sample-time policy below |
+| Per-sample stepping with carried state | `(*System).Simulate(u, x0, opts)` returning `XFinal` | Drives an LTI segment one sample at a time |
+| Continuous to discrete | `(*System).DiscretizeZOH`, `.DiscretizeFOH`, `.DiscretizeMatched`, `.DiscretizeImpulse` | Prepares a segment for stepping |
+| Discrete to discrete resample | `(*System).D2D(newDt, opts)` | Not used; see the sample-time policy below |
 | Discrete realization | `New(A, B, C, D, dt)` with `dt > 0` | Discrete filters, if they are ever composed |
 | Fractional discrete delay | `ThiranDelay(tau, order, dt)` | A later discrete Transport Delay |
+
+The first three are methods on `*System`; the last two are package functions.
 
 `DiscretizeZOH` was checked against every realization the catalog produces
 today — static gain (`n = 0`), first-order lag, integrator (pole at the
@@ -91,24 +113,53 @@ the Tustin route succeeds while producing a model that is not the delay.
 
 ## The measurement that decides the design
 
-Two first-order lags in series, unit step, `dt = 0.1`, compared against the
-analytic response of `1 / ((s+1)(2s+1))`:
+Two first-order lags in series with time constants τ = 1 and τ = 0.5 — the
+system `1 / ((s+1)(0.5s+1))` — driven by a unit step and compared against its
+closed-form response `1 - 2e^{-t} + e^{-2t}`. Errors are the maximum over the
+run and are flat in the horizon (checked at 3, 5, 10, 20 and 50 s):
 
-| Path | Max absolute error |
-| --- | --- |
-| Connect continuous, then discretize (today's `Lsim`) | 5.551e-16 |
-| Discretize each block, then connect | 2.629e-02 |
+| Sample time | Connect, then discretize (today's `Lsim`) | Discretize each block, then connect |
+| --- | --- | --- |
+| 0.05 | 1.221e-15 | 1.282e-02 |
+| 0.1 | 8.882e-16 | **2.629e-02** |
+| 0.2 | 5.551e-16 | 5.482e-02 |
 
-ZOH is exact for a piecewise-constant input, and today the only
-piecewise-constant signals are the external source channels — every internal
-signal stays inside one continuous composition, so the answer is exact to
-machine precision. That is why
-`TestContinuousBlockResponsesAgainstAnalyticModels` can assert 1e-10 against
-closed-form step responses.
+**Quote the system, not just the sample time, when citing these.** The error
+scales with the product of the sample time and the fastest pole, so the same
+number attaches to a different `dt` on a different plant. The slower pairing
+τ = 1 and τ = 2 — the system `1 / ((s+1)(2s+1))` — gives 6.329e-03, 1.282e-02
+and 2.629e-02 at the same three sample times, one column shifted. An earlier
+draft of this document named that second system in its prose while measuring
+the first, which is exactly the confusion this paragraph exists to prevent.
+
+ZOH is exact for a piecewise-constant input. Every internal signal stays
+inside one continuous composition, so nothing internal is ever held, and the
+composed answer is exact to machine precision for a source that really is
+piecewise constant. That is why
+`TestContinuousBlockResponsesAgainstAnalyticModels` can assert 1e-10 — its
+three cases all use Constant or Step inputs (`simulate_test.go:222-233`).
+
+**The exactness does not extend to every sheet that exists today.** `Lsim`
+samples each source and holds it across the step, so a Sine source is already
+stair-stepped going in. One Lag driven by `sin(t)`:
+
+| Sample time | Sine source | Step source |
+| --- | --- | --- |
+| 0.2 | 7.397e-02 | 6.661e-16 |
+| 0.1 | 3.642e-02 | 1.887e-15 |
+| 0.05 | 1.807e-02 | 2.443e-15 |
+| 0.01 | 3.591e-03 | 1.166e-14 |
+
+At `dt = 0.1` a Sine sheet is already carrying more error (3.642e-02) than a
+segment cut would add (2.629e-02). Nothing in the existing tests covers this,
+because none of them use a Sine source against a closed form. The
+"exact for linear models" claim in this repository means *exact for
+piecewise-constant sources*, and the distinction matters for what the
+interface can honestly tell a user (see T4 below).
 
 Cutting a continuous chain and holding the signal at the cut over each step
-is what costs 2.6e-2. **Every cut costs this.** Any proposal is measured
-against whether it cuts sheets that do not need cutting.
+is what costs the right-hand column. **Every cut costs this.** Any proposal is
+measured against whether it cuts sheets that do not need cutting.
 
 A second measurement fixes the seam. Stepping a discretized system one
 sample at a time with `Simulate`, feeding `XFinal` back as the next `x0`,
@@ -128,11 +179,13 @@ Give every `realize` hook the simulation's sample time, return discrete
 systems at that `Dt`, compose with `ConnectByName`, keep `Lsim`. Structurally
 this is the smallest change: one extra argument, nothing else moves.
 
-**Rejected.** It converts every existing sheet from the 5.551e-16 row to the
-2.629e-02 row of the table above, and would break the 1e-10 assertions in
-`simulate_test.go`. It also buys nothing it was chosen for: a Saturation has
-no LTI realization at any `Dt`, so the whole numerical price is paid and the
-nonlinear boundary has not moved.
+**Rejected.** It moves every existing sheet from the left column of the table
+above to the right one — at `dt = 0.1`, from 8.882e-16 to 2.629e-02 on a
+two-lag chain — and would break the 1e-10 assertions in `simulate_test.go`.
+Note that it charges this to *every* block boundary, not just the ones a
+nonlinear block sits on, so a long chain compounds it. It also buys nothing
+it was chosen for: a Saturation has no LTI realization at any `Dt`, so the
+whole numerical price is paid and the nonlinear boundary has not moved.
 
 ### C. Replace `Lsim` with a per-step evaluator everywhere
 
@@ -148,17 +201,20 @@ it to gain Saturation is a bad trade.
 
 ### D. Segmented hybrid (recommended)
 
-Partition the sheet into maximal LTI segments separated by **step blocks** —
-blocks that have no continuous LTI realization. Compile each segment exactly
-as today. Drive the sheet one sample at a time: step blocks are evaluated
-algebraically between segments, in the topological order `compileFlow`
-already computes.
+Partition the sheet into LTI segments separated by **step blocks** — blocks
+that have no continuous LTI realization. Compile each segment exactly as
+today. Drive the sheet one sample at a time: step blocks are evaluated
+algebraically between segments, in an order derived from the topological walk
+`compileFlow` already performs.
 
 The property that makes this the right answer: **a sheet with no step blocks
 partitions into exactly one segment, and one segment is compiled and run by
 today's code, unchanged.** The linear path is not a fast path bolted beside
 the new engine; it is the degenerate case of the partition. It cannot drift,
 because there is nothing to keep in sync.
+
+Getting the partition rule right is the real design work in this option, and
+the obvious rule does not work. See the next section.
 
 ## Recommendation
 
@@ -169,9 +225,58 @@ first. At that point every sheet in existence is one segment, the entire
 existing test suite must pass untouched, and the engine change is provably
 inert. Only then register the first nonlinear block.
 
-## How a Gain and a Saturation coexist on one sheet
+## The partition rule
 
-Take the sheet the constraint asks about:
+**The obvious rule is wrong.** "Delete the step-block vertices and take the
+weakly-connected components of what is left" works on a chain and fails on
+the most ordinary way anyone will place a Saturation — on one branch of a
+Sum. This sheet is legal and acyclic today, since `BlockSum` is
+`arityVariadic`:
+
+```
+Step -> Gain ; Gain -> Sat ; Gain -> Sum ; Sat -> Sum ; Sum -> Scope
+```
+
+Delete `Sat` and the survivors `{Step, Gain, Sum, Scope}` are one
+weakly-connected component. But `Sat` draws its input from that component and
+returns its output to it, so the segment/step graph is
+`segment -> Sat -> segment` — a two-cycle produced from an acyclic block
+graph, with no execution order to compute. On 200,000 random acyclic block
+graphs with random step-block subsets, this rule produced a cyclic segment
+graph **18.3% of the time**. It is not an edge case.
+
+**The rule that works** assigns each block a step depth and cuts on that:
+
+```
+depth(b) = 0                                     if b has no incoming edges
+depth(b) = max over incoming edges a -> b of
+             depth(a) + (1 if a is a step block else 0)
+```
+
+A segment is the set of non-step blocks sharing one depth. Step blocks are
+ordered by their own depth.
+
+This is acyclic by construction. Depth never decreases along an edge, and
+crossing a step block strictly increases it, so an edge can only leave a
+segment for a step block at the same or greater depth, and can only leave a
+step block for a segment at strictly greater depth. A cycle would have to
+return to a lower depth, which no edge does. The same 200,000 random graphs
+produced **zero** cyclic segment graphs under this rule, with at most five
+segments on any sheet.
+
+It also preserves the property the whole recommendation rests on: with no
+step blocks every block has depth 0, so there is exactly one segment
+regardless of whether the sheet is connected — which is what today's single
+`ConnectByName` call over all blocks already does. Note that segments are
+depth classes, *not* connected components; refining by connectivity would
+split a disconnected linear sheet into several segments and lose that
+property for no gain.
+
+On the reviewer's counterexample the rule gives depth 0 to `{Step, Gain}` and
+`Sat`, and depth 1 to `{Sum, Scope}` — two segments with `Sat` between them,
+correctly ordered.
+
+## How a Gain and a Saturation coexist on one sheet
 
 ```
 Step -> Gain(2) -> Saturation(±0.5) -> Lag(1) -> Scope
@@ -181,41 +286,56 @@ Compilation:
 
 1. `compileFlow` runs unchanged: validation, arity, cycle rejection, and the
    topological order.
-2. Delete the step-block vertices (Saturation) from the block graph. The
-   remaining weakly-connected components are the segments: `{Step, Gain}` and
-   `{Lag, Scope}`. Each is acyclic because the whole graph is, so each
-   compiles through `ConnectByName` exactly as the whole sheet does today.
+2. Compute step depths in that same topological pass and group the non-step
+   blocks by depth: `{Step, Gain}` at depth 0, `{Lag, Scope}` at depth 1,
+   with `Saturation` a step block at depth 0. Each segment is acyclic because
+   the whole graph is, so each compiles through `ConnectByName` exactly as
+   the whole sheet does today.
 3. A segment's inputs are the source channels inside it plus one channel per
    edge entering it from a step block. Its outputs are the sink outputs
-   inside it plus one output per edge leaving it to a step block.
-4. Segments and step blocks form their own DAG; topologically order it.
+   inside it plus one output per edge leaving it to a step block. These
+   synthetic boundary channels need names that cannot collide with the
+   block-id-derived names `inputSignalName` and `outputSignalName` already
+   mint.
+4. ZOH-discretize each segment at the base step. `Simulate` refuses
+   continuous systems (`controlsys: wrong time domain for operation`), so
+   `DiscretizeZOH(baseStep)` is a required step, not an optimisation. Do it
+   once at compile time, not once per sample.
 
-Each sample `k` at time `t_k`:
+Each sample `k` at time `t_k`, for depth 0, 1, 2, … in order:
 
 1. Evaluate every source `waveform` at `t_k`. Unchanged.
-2. Walk the segment/step order. For a segment, assemble its one-column input
-   from the source values and the step-block outputs already computed this
-   sample, call `Simulate` with the segment's carried state, read its
-   outputs, keep `XFinal`. For a step block, read its input samples and call
-   its step closure.
-3. Record the sink outputs.
+2. Run the segment at this depth: assemble its one-column input from the
+   source values and the step-block outputs already computed this sample,
+   call `Simulate` with the segment's carried state, read its outputs, keep
+   `XFinal` — remembering that a stateless segment returns a nil `XFinal`.
+3. Run every step block at this depth. They cannot feed each other, because
+   an edge between two step blocks raises the depth of the target, so their
+   order within a depth is free.
+4. Record the sink outputs.
 
-Remove the Saturation and step 2 has one segment and nothing else, so the
-driver falls back to a single batch `Lsim` over the whole grid — today's
-call, today's allocations, today's numbers.
+Remove the Saturation and every block sits at depth 0, so there is one
+segment and no step blocks: the driver falls back to a single batch `Lsim`
+over the whole grid — today's call, today's allocations, today's numbers.
 
 **What the user pays, and must be told.** The signal entering the Saturation
 is held over each step; the second segment sees a piecewise-constant input
-that the true continuous signal is not. That is the 2.629e-02 row. It is not
-a defect to be fixed — it is the inherent cost of fixed-step hybrid
-simulation, and it is only charged where the user placed a nonlinear block.
-Two consequences for the interface:
+that the true continuous signal is not. That is the right-hand column of the
+table above — 2.629e-02 for a two-lag chain at `dt = 0.1`. It is not a defect
+to be fixed; it is the inherent cost of fixed-step hybrid simulation, and it
+is only charged where the user placed a nonlinear block.
+
+Two consequences for the interface, and one trap:
 
 - On a multi-segment sheet the sample time stops being "how often an exact
   answer is sampled" and becomes the integration step. The simulation dock
   has to say so.
-- The stored run should record the segment count, so a user can see when a
-  sheet left the exact path and why.
+- The stored run should record the segment count.
+- **Segment count alone would mislead.** A one-segment sheet driven by a Sine
+  source is already carrying 3.642e-02 at `dt = 0.1` — more than a cut costs —
+  so "1 segment" must not be rendered as a promise of exactness. Whatever T4
+  displays has to key off *both* the segment count and whether every source on
+  the sheet is piecewise constant.
 
 ## The realize seam
 
@@ -265,6 +385,18 @@ discrete transfer function, say — realizes a discrete `controlsys.System` at
 its own `Dt` inside the closure and steps it with `Simulate`. That is the
 block's business, not a seam change.
 
+**The single `float64` return is a deliberate narrowing, and it forecloses
+multi-output step blocks.** Every signal on a sheet is scalar today and every
+block has one output port, so a scalar closure matches the model exactly and
+keeps the driver's per-sample bookkeeping trivial. The cost is that a
+Demux, a multi-output Switch, or any block returning a vector cannot be
+expressed through this hook — it would need the return widened to
+`[]float64` and the driver taught to fan out. That is a deliberate deferral,
+not an oversight: widening later is a mechanical change to one signature and
+one loop, whereas designing for multi-output now would put vector plumbing in
+every scalar block's way. Row 7 of the family table (State-Space and MIMO
+ports) is where that bill comes due.
+
 ## Mixed sample-time policy
 
 Fact 1 forecloses the obvious approach: two sample times cannot coexist
@@ -282,8 +414,12 @@ unset. The UI question is exactly one new numeric field, "Sample time", with
 `0 = inherit` in its help text — no new editor machinery.
 
 **A declared sample time must be a positive integer multiple of the base
-step.** `Ts / baseStep` is rounded; a relative error above 1e-9 is a refusal.
-The tolerance matches `controlsys`'s own `discreteDelaySamples` rule.
+step.** Compute `Ts / baseStep`, round it, and refuse if the rounding moved it
+by more than 1e-9. That is an *absolute* tolerance on the sample count, not a
+relative one on `Ts` — which is what `controlsys`'s own
+`discreteDelaySamples` does (`time_domain.go:59-66`,
+`math.Abs(samples-rounded) > 1e-9`), and adopting the same form keeps one
+rule rather than two that disagree near the limits.
 
 **When they disagree, the compiler refuses.** A domain message names both
 numbers and the nearest legal value:
@@ -312,7 +448,7 @@ Each row needs everything above it.
 
 | # | Family | Needs | Why it is gated there |
 | --- | --- | --- | --- |
-| 1 | Segmenter and hybrid driver, no new blocks | catalog `realize` seam (done) | Everything else is a step closure, and there is nowhere to put one until the driver exists |
+| 1 | Segmenter and hybrid driver, no new blocks | the `step` hook (T1), which does not exist yet | The catalog's `realize` seam is done, but nothing can be a step block until `step` exists, and there is nowhere to put a closure until the driver does |
 | 2 | Memoryless nonlinear: Saturation, Dead Zone, Abs, Sign, Product, Divide, Min/Max, trigonometric | 1 | Pure functions of the current sample. No state, no rate, no new arity — Product and Min/Max reuse the existing `variadic` flag |
 | 3 | Sample-time policy and Unit Delay | 1 | Unit Delay is the smallest block that carries state and needs a rate, so it is the right one to land the policy on |
 | 4 | Discrete Transfer Function, Discrete State-Space, discrete filters | 3 | Need the rate policy for their `Ts` and the driver for stepping. Realized as a discrete `controlsys.System` and stepped with `Simulate` |
@@ -350,13 +486,13 @@ so nothing was written to it.
 | Task | Depends on | Deliverable |
 | --- | --- | --- |
 | T1 Add the `step` hook and `isStepBlock` to the catalog | — | Two fields and one predicate in `catalog.go`; the exactly-one-of and not-a-source rules checked over `blockDefinitions`; no kind sets `step` yet |
-| T2 Partition `compileFlow` into segments | T1 | `compiledFlow` grows a segment list; with no step blocks it holds exactly one segment. Every existing test passes untouched |
-| T3 Per-step driver behind the single-segment fast path | T2 | Multi-segment sheets step through `Simulate` carrying `XFinal`; single-segment sheets keep the batch `Lsim` call. Test asserts the two paths agree bit-for-bit on a single-segment sheet (measured max diff 0.000e+00) |
-| T4 Surface segment count in the run record and dock | T3 | Sheet says when it left the exact path and what the sample time now controls |
-| T5 Saturation block | T3 | First step block. Numeric check against the analytic response of a saturating first-order loop; refusal test that nothing linearizes |
+| T2 Partition `compileFlow` into step-depth segments | T1 | Depth computed in the existing topological pass; segments are depth classes, not connected components. Property test on random acyclic graphs asserting the segment/step graph is always acyclic, with the Sum-branch counterexample as a named case. With no step blocks it holds exactly one segment and every existing test passes untouched |
+| T3 Per-step driver behind the single-segment fast path | T2 | Segments `DiscretizeZOH(baseStep)`-ed once at compile time, then stepped through `Simulate` carrying `XFinal` (nil for stateless segments); single-segment sheets keep the batch `Lsim` call. Test asserts the two paths agree bit-for-bit on a single-segment sheet (measured max diff 0.000e+00) |
+| T4 Report simulation fidelity in the run record and dock | T3 | Segment count *and* whether every source is piecewise constant. A Sine sheet must not be shown as exact — it already carries 3.642e-02 at `dt = 0.1`. Blocks T5 because shipping a nonlinear block without the disclosure puts users on a different accuracy regime silently |
+| T5 Saturation block | T4 | First step block. Numeric check against the analytic response of a saturating first-order loop; refusal test that nothing linearizes |
 | T6 Dead Zone, Abs, Sign, Product, Min/Max | T5 | Remaining memoryless nonlinearities; Product exercises `variadic` through the step path |
 | T7 Sample-time parameter and the integer-multiple rule | T3 | The `Ts` field, the rounding tolerance, the refusal message naming both numbers and the nearest legal value |
-| T8 Unit Delay | T7 | Smallest stateful discrete block; exercises hold-between-updates at `N > 1` |
+| T8 Unit Delay | T7, T4 | Smallest stateful discrete block; exercises hold-between-updates at `N > 1`. Depends on T4 for the same reason T5 does: it is a step block, so it creates segments |
 | T9 Discrete Transfer Function and Discrete State-Space | T8 | Realized as a discrete `controlsys.System` at `Ts`, stepped with `Simulate` |
 | T10 Port-list arity, then Switch and Relay | T6 | Extends `inputArity` past none/one/variadic without adding a fourth enum value |
 | T11 Logic and comparison blocks | T10 | States the 0/1 boolean convention in the docs |
@@ -370,14 +506,24 @@ so nothing was written to it.
   wrong regardless of how close the numbers come out.
 - **The catalog stays the single authority.** A kind is a step block because
   its definition sets `step`, and nowhere else states it.
-- **Nothing calls `controlsys.Linearize`.** It returns a zero model for a
-  saturated operating point with a nil error.
-- **Nonlinear blocks do not arrive before the driver.** Rows 2 through 6 of
-  the family table are all blocked on T3, and the ordering of rows 3 to 6 is
-  the ordering their tasks must be scheduled in.
+- **Nothing calls `controlsys.Linearize`**, even though it computes correct
+  Jacobians. A linearized saturation is not a saturation, and swapping one for
+  the other is what the no-silent-linearization rule forbids.
+- **Segments are step-depth classes, not connected components.** The
+  connected-component rule produces a cyclic segment graph on 18.3% of random
+  acyclic sheets, including a Saturation on one branch of a Sum.
+- **"Exact" means exact for piecewise-constant sources.** A Sine sheet is
+  already stair-stepped by `Lsim` and is not on the exact path today. Do not
+  write interface copy that promises otherwise.
+- **Nonlinear blocks do not arrive before the driver or the disclosure.**
+  Rows 2 through 6 of the family table are blocked on T3, and every task that
+  registers a step block is additionally blocked on T4.
 - **State-Space and MIMO are not blocked by any of this** and can be
   scheduled independently whenever the editor gains matrix fields.
 
 Unresolved questions: whether a cycle containing a delay can be ordered and
-run (T12); whether sample-time offset is ever wanted; whether the segment
-count belongs in the stored run JSON or is recomputed for display.
+run (T12); whether sample-time offset is ever wanted; whether the fidelity
+summary belongs in the stored run JSON or is recomputed for display; and
+whether a Sine source should gain a first-order-hold option, since the
+measurement above shows it, not the segment cut, is the largest error on a
+sheet that mixes the two.
