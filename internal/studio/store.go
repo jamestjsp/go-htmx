@@ -263,10 +263,17 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	case err != nil:
 		return Snapshot{}, fmt.Errorf("load simulation: %w", err)
 	default:
-		run.CreatedAt, _ = time.Parse(time.RFC3339Nano, runCreated)
+		runID := run.ID
+		runTime, _ := time.Parse(time.RFC3339Nano, runCreated)
+		duration := run.Duration
+		sampleTime := run.SampleTime
 		if err := json.Unmarshal([]byte(runJSON), &run); err != nil {
 			return Snapshot{}, fmt.Errorf("decode simulation: %w", err)
 		}
+		run.ID = runID
+		run.CreatedAt = runTime
+		run.Duration = duration
+		run.SampleTime = sampleTime
 		snapshot.LastRun = &run
 	}
 	return snapshot, nil

@@ -2,7 +2,11 @@ module github.com/jamestjsp/go-htmx
 
 go 1.26.3
 
-require modernc.org/sqlite v1.54.0
+require (
+	github.com/jamestjsp/controlsys v1.2.0
+	gonum.org/v1/gonum v0.15.0
+	modernc.org/sqlite v1.54.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -15,3 +19,5 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+replace gonum.org/v1/gonum => github.com/jamestjsp/gonum v0.17.7-fork
