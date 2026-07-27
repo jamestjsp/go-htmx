@@ -21,7 +21,7 @@ func (s *Studio) CurrentWorkspace(ctx context.Context) (Workspace, error) {
 		SELECT projects.id, flows.id
 		FROM projects
 		JOIN flows ON flows.project_id = projects.id
-		ORDER BY projects.id, flows.id
+		ORDER BY projects.id, flows.position, flows.id
 		LIMIT 1`,
 	).Scan(&projectID, &flowID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -39,7 +39,7 @@ func (s *Studio) ProjectWorkspace(ctx context.Context, projectID int64) (Workspa
 		SELECT id
 		FROM flows
 		WHERE project_id = ?
-		ORDER BY name COLLATE NOCASE, id
+		ORDER BY position, id
 		LIMIT 1`,
 		projectID,
 	).Scan(&flowID)
@@ -180,11 +180,14 @@ func (s *Studio) RenameFlow(ctx context.Context, flowID int64, name string) (Wor
 	return s.Workspace(ctx, projectID, flowID)
 }
 
+// insertFlow appends the new flowsheet to the end of its project's tab strip.
 func insertFlow(ctx context.Context, tx *sql.Tx, projectID int64, name, now string) (int64, error) {
 	result, err := tx.ExecContext(ctx, `
-		INSERT INTO flows(project_id, name, created_at, updated_at, model_updated_at)
-		VALUES(?, ?, ?, ?, ?)`,
-		projectID, name, now, now, now,
+		INSERT INTO flows(project_id, name, created_at, updated_at, model_updated_at, position)
+		VALUES(?, ?, ?, ?, ?, (
+			SELECT COALESCE(MAX(position) + 1, 0) FROM flows WHERE project_id = ?
+		))`,
+		projectID, name, now, now, now, projectID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create flowsheet: %w", err)
@@ -227,12 +230,23 @@ func (s *Studio) projects(ctx context.Context) ([]Project, error) {
 	return projects, nil
 }
 
+// projectFlows lists one project's tab strip. NeedsRun compares the two
+// RFC3339Nano timestamps as raw text, exactly as `snapshot` does when it picks
+// the run behind the chart; converting either side to a datetime here is how
+// the amber dot and the dock would start to disagree.
 func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, project_id, name, created_at, updated_at, model_updated_at
+		SELECT
+			flows.id, flows.project_id, flows.name,
+			flows.created_at, flows.updated_at, flows.model_updated_at,
+			NOT EXISTS (
+				SELECT 1 FROM simulation_runs
+				WHERE simulation_runs.flow_id = flows.id
+					AND simulation_runs.created_at >= flows.model_updated_at
+			) AS needs_run
 		FROM flows
-		WHERE project_id = ?
-		ORDER BY name COLLATE NOCASE, id`,
+		WHERE flows.project_id = ?
+		ORDER BY flows.position, flows.id`,
 		projectID,
 	)
 	if err != nil {
@@ -245,6 +259,7 @@ func (s *Studio) projectFlows(ctx context.Context, projectID int64) ([]Flow, err
 		var created, updated, modelUpdated string
 		if err := rows.Scan(
 			&flow.ID, &flow.ProjectID, &flow.Name, &created, &updated, &modelUpdated,
+			&flow.NeedsRun,
 		); err != nil {
 			return nil, fmt.Errorf("scan project flow: %w", err)
 		}

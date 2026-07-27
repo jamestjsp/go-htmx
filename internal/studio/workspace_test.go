@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -101,6 +102,115 @@ func TestProjectWorkspaceLifecycle(t *testing.T) {
 	}
 	if persisted.Project.Name != "Batch studies" || persisted.Snapshot.Flow.Name != "Warm startup" {
 		t.Fatalf("persisted workspace = %q / %q", persisted.Project.Name, persisted.Snapshot.Flow.Name)
+	}
+}
+
+func TestFlowListsFollowPositionRatherThanName(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, filepath.Join(t.TempDir(), "order.db"))
+	seeded, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectID := seeded.Project.ID
+	seededName := seeded.Snapshot.Flow.Name
+
+	// Names chosen so alphabetical order disagrees with creation order.
+	if _, err := service.CreateFlow(ctx, projectID, "Zulu"); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := service.CreateFlow(ctx, projectID, "Alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{seededName, "Zulu", "Alpha"}
+	if got := flowNames(appended.Flows); !slices.Equal(got, want) {
+		t.Fatalf("flow order = %v, want %v", got, want)
+	}
+	if got, want := flowPositions(t, service, projectID), []int{0, 1, 2}; !slices.Equal(got, want) {
+		t.Fatalf("positions = %v, want %v", got, want)
+	}
+
+	// A reordered strip, as a drag will later write it, decides both the list
+	// order and which flowsheet the project opens on.
+	if _, err := service.db.ExecContext(ctx,
+		"UPDATE flows SET position = 3 - position WHERE project_id = ?", projectID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := service.ProjectWorkspace(ctx, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"Alpha", "Zulu", seededName}
+	if got := flowNames(reordered.Flows); !slices.Equal(got, want) {
+		t.Fatalf("reordered flows = %v, want %v", got, want)
+	}
+	if reordered.Snapshot.Flow.Name != "Alpha" {
+		t.Fatalf("project opened %q, want the first tab", reordered.Snapshot.Flow.Name)
+	}
+	current, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Snapshot.Flow.Name != "Alpha" {
+		t.Fatalf("current workspace opened %q, want the first tab", current.Snapshot.Flow.Name)
+	}
+
+	// Each project counts its own tabs from zero.
+	other, err := service.CreateProject(ctx, "Batch studies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := flowPositions(t, service, other.Project.ID), []int{0}; !slices.Equal(got, want) {
+		t.Fatalf("new project positions = %v, want %v", got, want)
+	}
+}
+
+func TestFlowNeedsRunFollowsModelEditsAndRuns(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, ":memory:")
+	workspace, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := workspace.Snapshot.Flow.ID
+	if !workspace.Flows[0].NeedsRun {
+		t.Fatal("a flowsheet that has never been simulated does not need a run")
+	}
+
+	if _, err := service.Run(ctx, flowID, SimulationRequest{Duration: 5, SampleTime: 0.1}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Flows[0].NeedsRun {
+		t.Fatal("a freshly simulated flowsheet still needs a run")
+	}
+	if workspace.Snapshot.Flow.NeedsRun != (workspace.Snapshot.LastRun == nil) {
+		t.Fatalf("tab dot and chart disagree: NeedsRun = %t, LastRun = %#v",
+			workspace.Snapshot.Flow.NeedsRun, workspace.Snapshot.LastRun)
+	}
+
+	lag := findKind(t, workspace.Snapshot.Blocks, BlockLag)
+	if _, err := service.UpdateBlock(ctx, lag.ID, BlockUpdate{
+		Name:       lag.Name,
+		Parameters: map[string]string{"time_constant": "6.5"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err = service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !workspace.Flows[0].NeedsRun {
+		t.Fatal("an edited flowsheet does not need a run")
+	}
+	if workspace.Snapshot.Flow.NeedsRun != (workspace.Snapshot.LastRun == nil) {
+		t.Fatalf("tab dot and chart disagree after an edit: NeedsRun = %t, LastRun = %#v",
+			workspace.Snapshot.Flow.NeedsRun, workspace.Snapshot.LastRun)
 	}
 }
 

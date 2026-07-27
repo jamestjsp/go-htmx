@@ -107,12 +107,18 @@ type Project struct {
 }
 
 type Flow struct {
-	ID             int64
-	ProjectID      int64
-	Name           string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID        int64
+	ProjectID int64
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	// ModelUpdatedAt moves whenever the flowsheet's model changes, so a
+	// simulation older than it is stale.
 	ModelUpdatedAt time.Time
+	// NeedsRun is that staleness as the interface states it: no simulation
+	// run exists at or after ModelUpdatedAt. The tab dot and the simulation
+	// dock read the same flag so they cannot disagree.
+	NeedsRun bool
 }
 
 type Block struct {

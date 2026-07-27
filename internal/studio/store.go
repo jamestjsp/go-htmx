@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS flows (
 	name TEXT NOT NULL,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
-	model_updated_at TEXT NOT NULL
+	model_updated_at TEXT NOT NULL,
+	position INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS blocks (
 	id INTEGER PRIMARY KEY,
@@ -63,12 +65,14 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
 CREATE INDEX IF NOT EXISTS connections_flow_id_idx ON connections(flow_id);
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);
+CREATE INDEX IF NOT EXISTS simulation_runs_flow_id_created_at_idx
+	ON simulation_runs(flow_id, created_at);
 `
 
 const defaultProjectName = "Process Lab project"
 
 func Open(ctx context.Context, path string) (*Studio, error) {
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", dataSourceName(path))
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -93,6 +97,12 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		db.Close()
 		return nil, err
 	}
+	// After ensureProjects, so every flow already belongs to a project and the
+	// backfill can number each project's tabs separately.
+	if err := ensureFlowPositions(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	studio := &Studio{db: db, now: time.Now}
 	if err := studio.seed(ctx); err != nil {
@@ -100,6 +110,18 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		return nil, err
 	}
 	return studio, nil
+}
+
+// dataSourceName asks the driver for foreign key enforcement on every
+// connection it opens. Deleting a project destroys rows in five tables through
+// ON DELETE CASCADE, and leaving that to the PRAGMA in the schema statement
+// would make it depend on the pool staying pinned to one connection.
+func dataSourceName(path string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + "_pragma=foreign_keys(1)"
 }
 
 func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
@@ -181,6 +203,39 @@ func ensureProjects(ctx context.Context, db *sql.DB) error {
 		"CREATE INDEX IF NOT EXISTS flows_project_id_idx ON flows(project_id)",
 	); err != nil {
 		return fmt.Errorf("index flows by project: %w", err)
+	}
+	return nil
+}
+
+// ensureFlowPositions gives flowsheets an order a user can change. Databases
+// written before the column open with their tabs in the order the old menu
+// showed them, numbered from zero within each project.
+func ensureFlowPositions(ctx context.Context, db *sql.DB) error {
+	found, err := tableHasColumn(ctx, db, "flows", "position")
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		"ALTER TABLE flows ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+	); err != nil {
+		return fmt.Errorf("add flow position: %w", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE flows SET position = (
+			SELECT ordered.position
+			FROM (
+				SELECT id, ROW_NUMBER() OVER (
+					PARTITION BY project_id ORDER BY name COLLATE NOCASE, id
+				) - 1 AS position
+				FROM flows
+			) AS ordered
+			WHERE ordered.id = flows.id
+		)`,
+	); err != nil {
+		return fmt.Errorf("order legacy flows: %w", err)
 	}
 	return nil
 }
@@ -438,6 +493,9 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 		run.SampleTime = sampleTime
 		snapshot.LastRun = &run
 	}
+	// The dock and the tab dot answer the same question from the same query:
+	// a flowsheet needs a run exactly when no run survived the filter above.
+	snapshot.Flow.NeedsRun = snapshot.LastRun == nil
 	return snapshot, nil
 }
 
