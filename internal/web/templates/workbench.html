@@ -1,5 +1,5 @@
 {{define "workbench"}}
-<main id="workbench" class="workbench" data-flow-id="{{.Snapshot.Flow.ID}}" data-selected-id="{{if .Selected}}{{.Selected.ID}}{{end}}">
+<main id="workbench" class="workbench" data-flow-id="{{.Snapshot.Flow.ID}}" data-selected-id="{{if .Selected}}{{.Selected.ID}}{{end}}" data-rail-left="expanded" data-rail-right="expanded" data-dock="expanded">
   <header class="topbar">
     <a class="brand" href="/" aria-label="Process Lab home">
       <span class="brand-mark"><i></i><i></i><i></i></span>
@@ -11,6 +11,20 @@
     <div class="project-heading">
       <span class="eyebrow">Active flowsheet</span>
       <h1>{{.Snapshot.Flow.Name}}</h1>
+    </div>
+    <div class="shell-toggles" role="group" aria-label="Workspace panels">
+      <button type="button" class="shell-toggle" data-rail-toggle="left" aria-controls="palette-rail" aria-expanded="true" title="Collapse the block library">
+        <span class="shell-toggle-glyph" aria-hidden="true">▤</span>
+        <span class="shell-toggle-label">Library</span>
+      </button>
+      <button type="button" class="shell-toggle" data-dock-toggle aria-controls="simulation-results" aria-expanded="true" title="Collapse the simulation dock">
+        <span class="shell-toggle-glyph" aria-hidden="true">▤</span>
+        <span class="shell-toggle-label">Dock</span>
+      </button>
+      <button type="button" class="shell-toggle" data-rail-toggle="right" aria-controls="inspector-rail" aria-expanded="true" title="Collapse the inspector">
+        <span class="shell-toggle-glyph" aria-hidden="true">▤</span>
+        <span class="shell-toggle-label">Inspector</span>
+      </button>
     </div>
     <div class="project-facts">
       <span><b>{{.BlockCount}}</b> blocks</span>
@@ -28,7 +42,12 @@
   {{end}}
 
   <div class="studio-grid">
-    <aside class="palette-panel">
+    <aside class="palette-panel" id="palette-rail">
+      <div class="rail-head">
+        <button type="button" class="rail-toggle" data-rail-toggle="left" aria-controls="palette-rail" aria-expanded="true" title="Collapse the block library">
+          <span class="rail-chevron" aria-hidden="true">«</span>
+        </button>
+      </div>
       <div class="panel-heading">
         <span class="eyebrow">Library</span>
         <h2>Model blocks</h2>
@@ -40,9 +59,9 @@
           <input type="hidden" name="kind" value="{{.Kind}}">
           <input type="hidden" name="x" value="{{.X}}">
           <input type="hidden" name="y" value="{{.Y}}">
-          <button class="palette-item palette-{{.Kind}}" type="submit">
+          <button class="palette-item palette-{{.Kind}}" type="submit" title="Add {{.Label}}" aria-label="Add {{.Label}} block">
             <span class="palette-glyph">{{.Glyph}}</span>
-            <span>
+            <span class="palette-text">
               <small class="palette-category">{{.Category}}</small>
               <strong>{{.Label}}</strong>
               <small>{{.Description}}</small>
@@ -73,42 +92,56 @@
             <span class="canvas-hint" id="canvas-hint">Select an output port to start wiring</span>
           </div>
           <div class="canvas-actions">
-            <button type="button" class="tool-button" data-fit-view title="Center the flowsheet">◎ <span>Fit</span></button>
-            <span class="zoom-readout">100%</span>
+            <div class="zoom-cluster" role="group" aria-label="Zoom">
+              <button type="button" class="tool-button zoom-step" data-zoom-out title="Zoom out (Ctrl -)" aria-label="Zoom out">−</button>
+              <button type="button" class="zoom-readout" id="zoom-readout" data-zoom-reset title="Reset to 100% (Ctrl 0)">100%</button>
+              <button type="button" class="tool-button zoom-step" data-zoom-in title="Zoom in (Ctrl +)" aria-label="Zoom in">+</button>
+            </div>
+            <button type="button" class="tool-button" data-fit-view title="Fit the flowsheet to the window (Shift 1)">◎ <span>Fit</span></button>
           </div>
         </div>
 
-        <div id="flow-canvas" class="flow-canvas" data-flow-id="{{.Snapshot.Flow.ID}}">
-          <svg class="connections-layer" viewBox="0 0 1240 590" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
-                <path d="M0,0 L8,3 L0,6 Z"></path>
-              </marker>
-            </defs>
-            {{range .Connections}}
-            <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
-            <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
-            {{end}}
-            <path id="draft-edge" class="draft-edge" d=""></path>
-          </svg>
+        <div
+          id="flow-canvas"
+          class="flow-canvas"
+          data-flow-id="{{.Snapshot.Flow.ID}}"
+          data-sheet-width="{{.Sheet.Width}}"
+          data-sheet-height="{{.Sheet.Height}}"
+          data-sheet-grid="{{.Sheet.Grid}}"
+          data-block-width="{{.Sheet.BlockWidth}}"
+          data-block-height="{{.Sheet.BlockHeight}}">
+          <div id="sheet" class="sheet" style="width:{{.Sheet.Width}}px;height:{{.Sheet.Height}}px">
+            <svg class="connections-layer" width="{{.Sheet.Width}}" height="{{.Sheet.Height}}" aria-hidden="true">
+              <defs>
+                <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                  <path d="M0,0 L8,3 L0,6 Z"></path>
+                </marker>
+              </defs>
+              {{range .Connections}}
+              <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
+              <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
+              {{end}}
+              <path id="draft-edge" class="draft-edge" d=""></path>
+            </svg>
 
-          {{range .Blocks}}
-          <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
-            {{if .Definition.HasInput}}
-            <button type="button" class="port port-input" data-input-port="{{.ID}}" aria-label="Connect to {{.Name}}"></button>
+            {{range .Blocks}}
+            <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
+              {{if .Definition.HasInput}}
+              <button type="button" class="port port-input" data-input-port="{{.ID}}" aria-label="Connect to {{.Name}}"></button>
+              {{end}}
+              <button
+                class="block-body"
+                type="button">
+                <span class="block-kind">{{.Definition.Tag}}</span>
+                <strong>{{.Name}}</strong>
+                <small>{{.ParameterText}}</small>
+              </button>
+              {{if .Definition.HasOutput}}
+              <button type="button" class="port port-output" data-output-port="{{.ID}}" data-output-name="{{.Name}}" aria-label="Connect from {{.Name}}"></button>
+              {{end}}
+            </article>
             {{end}}
-            <button
-              class="block-body"
-              type="button">
-              <span class="block-kind">{{.Definition.Tag}}</span>
-              <strong>{{.Name}}</strong>
-              <small>{{.ParameterText}}</small>
-            </button>
-            {{if .Definition.HasOutput}}
-            <button type="button" class="port port-output" data-output-port="{{.ID}}" data-output-name="{{.Name}}" aria-label="Connect from {{.Name}}"></button>
-            {{end}}
-          </article>
-          {{end}}
+          </div>
 
           <div class="canvas-legend">
             <span><i class="legend-port"></i> signal port</span>
@@ -117,11 +150,27 @@
         </div>
       </div>
 
-      <section class="results-card{{if .Chart.Present}} has-results{{end}}" id="simulation-results">
-        <header class="results-header">
-          <div>
-            <span class="eyebrow">Numerical experiment</span>
-            <h2>Simulation output</h2>
+      <div
+        class="dock-resizer"
+        data-dock-resizer
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize simulation dock"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow="50"
+        tabindex="0"><i aria-hidden="true"></i></div>
+
+      <section class="results-card sim-dock{{if .Chart.Present}} has-results{{end}}" id="simulation-results">
+        <header class="results-header dock-header">
+          <div class="dock-title">
+            <button type="button" class="dock-toggle" data-dock-toggle aria-controls="simulation-results" aria-expanded="true" title="Collapse the simulation dock">
+              <span class="rail-chevron" aria-hidden="true">▾</span>
+            </button>
+            <div>
+              <span class="eyebrow">Numerical experiment</span>
+              <h2>Simulation output</h2>
+            </div>
           </div>
           <form class="run-form" id="run-form" hx-post="/flows/{{.Snapshot.Flow.ID}}/simulations" hx-target="#workbench" hx-swap="outerHTML" hx-disabled-elt="button">
             {{if .Selected}}<input type="hidden" name="selected_id" value="{{.Selected.ID}}">{{end}}
@@ -135,6 +184,7 @@
           </form>
         </header>
 
+        <div class="dock-body">
         {{if .Chart.Present}}
         <div class="results-body">
           <div class="visualization-stack">
@@ -201,10 +251,18 @@
           <span class="empty-arrow">→</span>
         </div>
         {{end}}
+        </div>
       </section>
     </section>
 
-    <aside class="inspector-panel">
+    <aside class="inspector-panel" id="inspector-rail">
+      <div class="rail-head">
+        <button type="button" class="rail-toggle" data-rail-toggle="right" aria-controls="inspector-rail" aria-expanded="true" title="Collapse the inspector">
+          <span class="rail-chevron" aria-hidden="true">»</span>
+        </button>
+      </div>
+      <div class="rail-label" aria-hidden="true">Inspector</div>
+      <div class="inspector-body">
       {{if .Selected}}
       <div class="inspector-heading">
         <div>
@@ -292,12 +350,46 @@
           {{end}}
         </ol>
       </section>
+      </div>
     </aside>
   </div>
 
-  <footer class="statusbar">
-    <div><span class="status-ready">READY</span><span>SQLite connected</span><span>controlsys v1.2.0</span></div>
-    <div><span id="interaction-status">Tip: click an output dot, then an input dot</span><kbd>esc</kbd> cancel wire <kbd>⌘ enter</kbd> run</div>
+  <footer class="statusbar" id="readout-rail" aria-label="Flowsheet readout">
+    <div class="readout-group">
+      <div class="readout readout-solver" id="readout-solver-field" data-state="{{if .Chart.Present}}solved{{else}}idle{{end}}">
+        <i class="readout-lamp" aria-hidden="true"></i>
+        <span class="readout-key">Solver</span>
+        <span class="readout-value readout-state" id="readout-solver">{{if .Chart.Present}}SOLVED{{else}}IDLE{{end}}</span>
+      </div>
+      <div class="readout">
+        <span class="readout-key">Cursor</span>
+        <span class="readout-value" id="readout-cursor"><span class="readout-axis" id="readout-cursor-x">····</span><span class="readout-comma">,</span><span class="readout-axis" id="readout-cursor-y">····</span></span>
+      </div>
+      <div class="readout">
+        <span class="readout-key">Zoom</span>
+        <span class="readout-value" id="readout-zoom">100%</span>
+      </div>
+      <div class="readout readout-rank-3">
+        <span class="readout-key">Grid</span>
+        <span class="readout-value" id="readout-grid">{{.Sheet.Grid}}</span><span class="readout-unit">px</span>
+      </div>
+      <div class="readout readout-rank-1">
+        <span class="readout-key">Sel</span>
+        <span class="readout-value" id="readout-selection" data-count="0">0</span>
+      </div>
+      <div class="readout readout-rank-2">
+        <span class="readout-key">Blocks</span>
+        <span class="readout-value" id="readout-blocks">{{.BlockCount}}</span>
+      </div>
+      <div class="readout readout-rank-2">
+        <span class="readout-key">Signals</span>
+        <span class="readout-value" id="readout-signals">{{.ConnectionCount}}</span>
+      </div>
+    </div>
+    <div class="readout-group readout-group-message">
+      <p class="readout-message" id="interaction-status" role="status">Drag an output port to an input port to wire a signal</p>
+      <span class="readout-hints"><kbd>esc</kbd> cancel wire <kbd>⌘ ⏎</kbd> run</span>
+    </div>
   </footer>
 </main>
 {{end}}
