@@ -40,6 +40,7 @@ func TestPageRendersTheRegister(t *testing.T) {
 		`href="/projects/1/flows/1"`,
 		`hx-post="/projects"`,
 		`hx-put="/projects/1/name"`,
+		`href="/assets/tokens.css"`,
 		`href="/assets/register.css"`,
 		`src="/assets/register.js"`,
 		"htmx.org@2.0.10",
@@ -230,6 +231,7 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		"Process Lab project",
 		"Reactor temperature loop",
 		"Feed setpoint",
+		`href="/assets/tokens.css"`,
 		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
 		"htmx.org@2.0.10",
@@ -616,7 +618,7 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{
 		"/assets/app.css", "/assets/app.js", "/assets/menu.js", "/assets/tabs.js",
-		"/assets/register.css", "/assets/register.js",
+		"/assets/register.css", "/assets/register.js", "/assets/tokens.css",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {

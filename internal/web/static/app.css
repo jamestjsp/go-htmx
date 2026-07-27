@@ -6,73 +6,35 @@
    vellum lit inside that housing. Numbers are the hero and are
    always monospace with tabular figures so digits never jitter.
 
-   Every value below is derived from the tokens in :root.
+   The palette and type scale shared with the drawing register live
+   in tokens.css, linked before this file. The :root block below
+   holds only what the workbench alone needs: signal wiring and the
+   per-category block accents, neither of which a register has any
+   use for.
    =============================================================== */
 
 :root {
-  color-scheme: light;
-
-  /* --- Lit surfaces -------------------------------------------- */
-  --sheet: #eef1ef;           /* cool drafting vellum */
-  --sheet-card: #fff;         /* block cards, chart panels */
-  --sheet-sunk: #e2e8e5;      /* wells and inset chips on light */
-  --sheet-line: #ccd6d2;
-  --sheet-line-soft: #dde4e1;
-
-  /* --- Machined housing ---------------------------------------- */
-  --housing: #16201e;
-  --housing-raised: #1f2c29;
-  --housing-deep: #0f1817;    /* bezel gap behind the lit displays */
-  --housing-line: #2c3b37;
-  --housing-line-strong: #3c4f4a;
-  --housing-glint: rgb(255 255 255 / 6%);
-
-  /* --- Ink ------------------------------------------------------ */
-  --ink: #101a18;             /* 15.6:1 on vellum */
-  --ink-muted: #4a5b56;       /*  6.3:1 on vellum */
-  --ink-inverse: #e8efec;     /* 14.3:1 on housing */
-  --ink-inverse-muted: #93a8a2; /* 6.6:1 on housing, 5.8:1 on raised */
-
-  /* --- Reserved semantics --------------------------------------- */
+  /* --- Reserved semantics, workbench-only ------------------------
+     --probe, --caution and --alarm-deep are shared (tokens.css).
+     --signal marks wires and output ports; a register has none. */
   --signal: #e2673a;          /* signal wires and output ports ONLY */
   --signal-lit: #ef8a5e;      /* the same hue raised to AA for text on housing */
   --signal-glow: rgb(226 103 58 / 22%);
-  --probe: #35b39c;           /* interactive + valid target, on housing */
-  --probe-deep: #0d6156;      /* the same affordance on vellum */
-  --probe-glow: rgb(53 179 156 / 20%);
-  --caution: #d9a441;         /* sum blocks and warnings */
-  --caution-deep: #8a6410;
-  --alarm: #ef7f6a;           /* faults and destructive actions */
-  --alarm-deep: #a3341c;
+  --alarm: #ef7f6a;           /* faults and destructive actions, on housing */
 
   /* --- Block category accents ----------------------------------
      Bright pair reads on the housing, deep pair reads on vellum.
      These encode block category and are kept from the old palette
      except gain, which moved off orange so orange can mean signal
-     and nothing else. ------------------------------------------- */
+     and nothing else. A register has no blocks, so no accents. --- */
   --cat-source: #3fbfa6;  --cat-source-deep: #10756a;
   --cat-math: #a189e0;    --cat-math-deep: #5b40a8;
   --cat-sum: #d9a441;     --cat-sum-deep: #8a6410;
   --cat-cont: #7aa8de;    --cat-cont-deep: #33629b;
   --cat-sink: #93b8ae;    --cat-sink-deep: #3c6058;
 
-  /* --- Focus, per surface --------------------------------------- */
-  --focus: var(--probe-deep);
-
-  /* --- Type ----------------------------------------------------- */
-  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --fs-100: 11px;   /* keys, eyebrows, legends — the floor */
-  --fs-200: 12px;   /* secondary body */
-  --fs-300: 13px;   /* body */
-  --fs-400: 15px;   /* subheads, block names, readout values */
-  --fs-500: 19px;   /* panel headings */
+  /* --- Type, workbench-only -------------------------------------- */
   --fs-600: 24px;   /* hero figures */
-
-  --radius: 7px;
-  --radius-sm: 5px;
-
-  font-family: var(--font-ui);
 }
 
 * {
