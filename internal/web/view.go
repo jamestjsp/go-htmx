@@ -89,18 +89,6 @@ func newRegisterView(register studio.Register) registerView {
 	return view
 }
 
-// row is the register's line for one project, which is what a rename answers
-// with. It reports whether the project is on the register at all, so a rename
-// racing a delete answers 404 rather than a blank line.
-func (v registerView) row(projectID int64) (registerRowView, bool) {
-	for _, row := range v.Projects {
-		if row.ID == projectID {
-			return row, true
-		}
-	}
-	return registerRowView{}, false
-}
-
 func plural(count int, one, many string) string {
 	if count == 1 {
 		return one

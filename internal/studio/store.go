@@ -165,85 +165,148 @@ func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
 }
 
 func ensureProjects(ctx context.Context, db *sql.DB) error {
-	hasProjectID, err := tableHasColumn(ctx, db, "flows", "project_id")
-	if err != nil {
-		return err
-	}
-	if !hasProjectID {
-		if _, err := db.ExecContext(ctx,
-			"ALTER TABLE flows ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE",
-		); err != nil {
-			return fmt.Errorf("add flow project: %w", err)
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		hasProjectID, err := tableHasColumn(ctx, tx, "flows", "project_id")
+		if err != nil {
+			return err
 		}
-	}
+		if !hasProjectID {
+			if _, err := tx.ExecContext(ctx,
+				"ALTER TABLE flows ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE",
+			); err != nil {
+				return fmt.Errorf("add flow project: %w", err)
+			}
+		}
 
-	var unassigned int
-	if err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM flows WHERE project_id IS NULL",
-	).Scan(&unassigned); err != nil {
-		return fmt.Errorf("count unassigned flows: %w", err)
-	}
-	if unassigned > 0 {
-		now := time.Now().UTC().Format(time.RFC3339Nano)
-		result, err := db.ExecContext(ctx,
-			"INSERT INTO projects(name, created_at, updated_at) VALUES(?, ?, ?)",
-			defaultProjectName, now, now,
-		)
-		if err != nil {
-			return fmt.Errorf("create legacy project: %w", err)
+		var unassigned int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM flows WHERE project_id IS NULL",
+		).Scan(&unassigned); err != nil {
+			return fmt.Errorf("count unassigned flows: %w", err)
 		}
-		projectID, err := result.LastInsertId()
-		if err != nil {
-			return fmt.Errorf("read legacy project id: %w", err)
+		if unassigned > 0 {
+			projectID, err := emptyDefaultProject(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if projectID == 0 {
+				now := time.Now().UTC().Format(time.RFC3339Nano)
+				result, err := tx.ExecContext(ctx,
+					"INSERT INTO projects(name, created_at, updated_at) VALUES(?, ?, ?)",
+					defaultProjectName, now, now,
+				)
+				if err != nil {
+					return fmt.Errorf("create legacy project: %w", err)
+				}
+				projectID, err = result.LastInsertId()
+				if err != nil {
+					return fmt.Errorf("read legacy project id: %w", err)
+				}
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE flows SET project_id = ? WHERE project_id IS NULL", projectID,
+			); err != nil {
+				return fmt.Errorf("assign legacy flows: %w", err)
+			}
 		}
-		if _, err := db.ExecContext(ctx,
-			"UPDATE flows SET project_id = ? WHERE project_id IS NULL", projectID,
+		if _, err := tx.ExecContext(ctx,
+			"CREATE INDEX IF NOT EXISTS flows_project_id_idx ON flows(project_id)",
 		); err != nil {
-			return fmt.Errorf("assign legacy flows: %w", err)
+			return fmt.Errorf("index flows by project: %w", err)
 		}
+		return nil
+	})
+}
+
+func emptyDefaultProject(ctx context.Context, tx *sql.Tx) (int64, error) {
+	var projectID int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT projects.id
+		FROM projects
+		LEFT JOIN flows ON flows.project_id = projects.id
+		WHERE projects.name = ?
+		GROUP BY projects.id
+		HAVING COUNT(flows.id) = 0
+		ORDER BY projects.id
+		LIMIT 1`,
+		defaultProjectName,
+	).Scan(&projectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
 	}
-	if _, err := db.ExecContext(ctx,
-		"CREATE INDEX IF NOT EXISTS flows_project_id_idx ON flows(project_id)",
-	); err != nil {
-		return fmt.Errorf("index flows by project: %w", err)
+	if err != nil {
+		return 0, fmt.Errorf("find interrupted legacy project: %w", err)
 	}
-	return nil
+	return projectID, nil
 }
 
 // ensureFlowPositions gives flowsheets an order a user can change. Databases
 // written before the column open with their tabs in the order the old menu
-// showed them, numbered from zero within each project.
+// showed them, numbered from zero within each project. It also repairs the
+// duplicate default positions left by an interrupted older migration while
+// preserving every valid user-defined order.
 func ensureFlowPositions(ctx context.Context, db *sql.DB) error {
-	found, err := tableHasColumn(ctx, db, "flows", "position")
-	if err != nil {
-		return err
-	}
-	if found {
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		found, err := tableHasColumn(ctx, tx, "flows", "position")
+		if err != nil {
+			return err
+		}
+		if !found {
+			if _, err := tx.ExecContext(ctx,
+				"ALTER TABLE flows ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+			); err != nil {
+				return fmt.Errorf("add flow position: %w", err)
+			}
+		}
+
+		invalid, err := hasInvalidFlowPositions(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if found && !invalid {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE flows SET position = (
+				SELECT ordered.position
+				FROM (
+					SELECT id, ROW_NUMBER() OVER (
+						PARTITION BY project_id
+						ORDER BY position, name COLLATE NOCASE, id
+					) - 1 AS position
+					FROM flows
+				) AS ordered
+				WHERE ordered.id = flows.id
+			)`,
+		); err != nil {
+			return fmt.Errorf("order legacy flows: %w", err)
+		}
 		return nil
-	}
-	if _, err := db.ExecContext(ctx,
-		"ALTER TABLE flows ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
-	); err != nil {
-		return fmt.Errorf("add flow position: %w", err)
-	}
-	if _, err := db.ExecContext(ctx, `
-		UPDATE flows SET position = (
-			SELECT ordered.position
-			FROM (
-				SELECT id, ROW_NUMBER() OVER (
-					PARTITION BY project_id ORDER BY name COLLATE NOCASE, id
-				) - 1 AS position
-				FROM flows
-			) AS ordered
-			WHERE ordered.id = flows.id
-		)`,
-	); err != nil {
-		return fmt.Errorf("order legacy flows: %w", err)
-	}
-	return nil
+	})
 }
 
-func tableHasColumn(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+func hasInvalidFlowPositions(ctx context.Context, tx *sql.Tx) (bool, error) {
+	var invalid int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM flows
+			GROUP BY project_id
+			HAVING MIN(position) <> 0
+				OR MAX(position) <> COUNT(*) - 1
+				OR COUNT(DISTINCT position) <> COUNT(*)
+		)`,
+	).Scan(&invalid); err != nil {
+		return false, fmt.Errorf("validate flow positions: %w", err)
+	}
+	return invalid != 0, nil
+}
+
+type schemaQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func tableHasColumn(ctx context.Context, db schemaQueryer, table, column string) (bool, error) {
 	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
 	if err != nil {
 		return false, fmt.Errorf("inspect %s schema: %w", table, err)
@@ -360,7 +423,11 @@ func (s *Studio) seed(ctx context.Context) error {
 }
 
 func (s *Studio) inTx(ctx context.Context, action func(*sql.Tx) error) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	return inDBTx(ctx, s.db, action)
+}
+
+func inDBTx(ctx context.Context, db *sql.DB, action func(*sql.Tx) error) error {
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}

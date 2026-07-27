@@ -287,6 +287,82 @@ func TestOpenBackfillsFlowPositionsPerProject(t *testing.T) {
 	}
 }
 
+// A process can stop after an older migration added its columns but before it
+// assigned the legacy project or numbered the tabs. Open must finish that
+// partial state rather than creating a second default project or accepting
+// duplicate zero positions as a user-defined order.
+func TestOpenResumesInterruptedProjectAndPositionMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "interrupted.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE projects (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE flows (
+			id INTEGER PRIMARY KEY,
+			project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+			name TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			model_updated_at TEXT NOT NULL,
+			position INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO projects(id, name, created_at, updated_at)
+		VALUES(7, 'Process Lab project', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO flows(
+			id, project_id, name, created_at, updated_at, model_updated_at, position
+		) VALUES
+			(1, NULL, 'zeta loop', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 0),
+			(2, NULL, 'Alpha loop', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 0),
+			(3, NULL, 'beta loop', '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z', '2026-01-03T00:00:00Z', 0);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	workspace, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Project.ID != 7 {
+		t.Fatalf("legacy project id = %d, want reused project 7", workspace.Project.ID)
+	}
+	if got, want := flowNames(workspace.Flows), []string{"Alpha loop", "beta loop", "zeta loop"}; !slices.Equal(got, want) {
+		t.Fatalf("resumed order = %v, want %v", got, want)
+	}
+	if got, want := flowPositions(t, service, 7), []int{0, 1, 2}; !slices.Equal(got, want) {
+		t.Fatalf("resumed positions = %v, want %v", got, want)
+	}
+	var projects, unassigned int
+	if err := service.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM projects").Scan(&projects); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM flows WHERE project_id IS NULL",
+	).Scan(&unassigned); err != nil {
+		t.Fatal(err)
+	}
+	if projects != 1 || unassigned != 0 {
+		t.Fatalf("projects = %d, unassigned flows = %d; want 1, 0", projects, unassigned)
+	}
+}
+
 // Deleting a project will lean on ON DELETE CASCADE, so foreign keys must be
 // on for every connection, not only the one the schema statement ran on.
 func TestOpenEnforcesForeignKeys(t *testing.T) {

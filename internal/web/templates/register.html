@@ -48,11 +48,7 @@
       </div>
 
       <div class="register-rows" id="register-rows">
-        {{range .Projects}}{{template "register-row" .}}{{else}}
-        <p class="register-empty">
-          Nothing on the register yet. Name a project on the line below to start one.
-        </p>
-        {{end}}
+        {{template "register-rows" .}}
       </div>
 
       <form class="register-new" hx-post="/projects" hx-swap="none">
@@ -71,6 +67,14 @@
   </main>
 </body>
 </html>
+{{end}}
+
+{{define "register-rows"}}
+{{range .Projects}}{{template "register-row" .}}{{else}}
+<p class="register-empty">
+  Nothing on the register yet. Name a project on the line below to start one.
+</p>
+{{end}}
 {{end}}
 
 {{define "register-row"}}
@@ -100,8 +104,8 @@
         hidden
         hx-put="/projects/{{.ID}}/name"
         hx-trigger="register:rename"
-        hx-target="closest .register-row"
-        hx-swap="outerHTML">
+        hx-target="#register-rows"
+        hx-swap="innerHTML">
     </span>
     <span class="line-sheets">
       <b>{{.SheetCount}}</b><span class="visually-hidden"> sheets</span>

@@ -140,11 +140,12 @@ func TestRegisterHidesDeleteForASingleProject(t *testing.T) {
 	}
 }
 
-// TestRenameProjectAnswersWithTheRegisterRow pins the seam. RenameProject
+// TestRenameProjectAnswersWithOrderedRegisterRows pins the seam. RenameProject
 // hands back the project's FIRST flowsheet, so answering with the workbench
 // fragment would move a caller on any other sheet — and would hand the
-// register a whole workbench it has no place to put.
-func TestRenameProjectAnswersWithTheRegisterRow(t *testing.T) {
+// register a whole workbench it has no place to put. Answering with only the
+// renamed row would also leave a name-sorted register in its old order.
+func TestRenameProjectAnswersWithOrderedRegisterRows(t *testing.T) {
 	server, service := openTestServer(t)
 	ctx := context.Background()
 	workspace, err := service.CurrentWorkspace(ctx)
@@ -153,10 +154,13 @@ func TestRenameProjectAnswersWithTheRegisterRow(t *testing.T) {
 	}
 	projectID := workspace.Project.ID
 	addFlow(t, service, projectID, "Startup")
+	if _, err := service.CreateProject(ctx, "Alpha unit"); err != nil {
+		t.Fatal(err)
+	}
 
 	response := request(t, server, http.MethodPut,
 		fmt.Sprintf("/projects/%d/name", projectID),
-		url.Values{"name": {"Cracker unit"}},
+		url.Values{"name": {"Zulu unit"}},
 	)
 	if response.Code != http.StatusOK {
 		t.Fatalf("rename status = %d, body = %s", response.Code, response.Body.String())
@@ -167,7 +171,8 @@ func TestRenameProjectAnswersWithTheRegisterRow(t *testing.T) {
 	}
 	for _, expected := range []string{
 		`<details class="register-row"`,
-		"Cracker unit",
+		"Alpha unit",
+		"Zulu unit",
 		"Startup",
 		fmt.Sprintf(`hx-put="/projects/%d/name"`, projectID),
 	} {
@@ -175,7 +180,13 @@ func TestRenameProjectAnswersWithTheRegisterRow(t *testing.T) {
 			t.Errorf("row does not contain %q", expected)
 		}
 	}
-	// The row re-renders its own figures, so a renamed line cannot go stale.
+	if alpha, zulu := strings.Index(body, "Alpha unit"), strings.Index(body, "Zulu unit"); alpha < 0 || zulu < 0 || alpha >= zulu {
+		t.Errorf("renamed rows are not in canonical order: %s", body)
+	}
+	if rows := strings.Count(body, `<details class="register-row"`); rows != 2 {
+		t.Errorf("rename returned %d register rows, want 2", rows)
+	}
+	// The collection re-renders each row's figures, so a renamed line cannot go stale.
 	if !strings.Contains(body, ">2<") {
 		t.Errorf("row does not carry the two-sheet count: %s", body)
 	}

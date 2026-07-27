@@ -34,8 +34,8 @@ import (
 // exist; these handlers answer the domain's own message with a status the
 // client can branch on.
 
-// renameProject renames a project and answers with that project's line of the
-// register.
+// renameProject renames a project and answers with the register's complete row
+// collection.
 //
 // It used to answer with the `workbench` fragment, which was a trap. The
 // workspace RenameProject returns opens the project's *first* flowsheet,
@@ -45,12 +45,10 @@ import (
 // workbench at all, had nothing it could do with the response but pick it
 // apart with `hx-select`.
 //
-// The register row is the one piece of markup whose subject is exactly a
-// project: its name, its sheet count, when it was last edited, and the sheets
-// it expands to reveal. Answering with it makes the response match the thing
-// the request changed, and it re-renders the row's figures from the same read
-// the register itself is drawn from, so a renamed line cannot drift from the
-// rest of the page. Nothing else calls this route.
+// Projects are listed by name, so replacing only the renamed row would leave
+// it in its old position until reload. Answering with all rows preserves the
+// canonical order while still avoiding the register shell and its totals,
+// neither of which a rename changes. Nothing else calls this route.
 func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathID(w, r, "projectID")
 	if !ok {
@@ -64,29 +62,20 @@ func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
 		refuse(w, err)
 		return
 	}
-	s.renderRegisterRow(w, r, projectID)
+	s.renderRegisterRows(w, r)
 }
 
-// renderRegisterRow writes one project's line of the register.
-//
-// It reads the whole register rather than that project alone, because the row
-// needs two things only the whole register knows: the project's own figures,
-// and whether it is the last project standing — which is what decides that the
-// row offers Delete at all. Register is two queries whatever the number of
-// projects, so this is a fixed cost rather than one that grows with the page.
-func (s *Server) renderRegisterRow(w http.ResponseWriter, r *http.Request, projectID int64) {
+// renderRegisterRows writes the name-ordered rows inside #register-rows.
+// Register is two queries whatever the number of projects, so replacing the
+// ordered collection has the same database cost as selecting one row from it.
+func (s *Server) renderRegisterRows(w http.ResponseWriter, r *http.Request) {
 	register, err := s.studio.Register(r.Context())
 	if err != nil {
 		http.Error(w, "Process Lab could not load the register.", http.StatusInternalServerError)
 		return
 	}
-	row, ok := newRegisterView(register).row(projectID)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "register-row", row); err != nil {
+	if err := s.templates.ExecuteTemplate(w, "register-rows", newRegisterView(register)); err != nil {
 		http.Error(w, "Process Lab could not render the register.", http.StatusInternalServerError)
 	}
 }
