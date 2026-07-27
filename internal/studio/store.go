@@ -12,8 +12,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Foreign keys are enabled by the DSN, not here. A PRAGMA in this string would
+// run on whichever connection executes it, which makes enforcement depend on
+// the pool staying pinned to one connection — and would mask a broken DSN, so
+// TestOpenEnforcesForeignKeys would pass while proving nothing.
 const schema = `
-PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS projects (
 	id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL,
