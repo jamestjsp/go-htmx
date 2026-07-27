@@ -5,6 +5,9 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 type BlockDefinition struct {
@@ -83,6 +86,28 @@ type blockDefinition struct {
 	BlockDefinition
 	Defaults   Parameters
 	Parameters []parameterDefinition
+	// role is the block's part in compileFlow's structural rules: at least
+	// one roleSource and one roleSink block must be present before
+	// simulating, and a roleSource block may not accept a connection. The
+	// zero value, roleDynamic, covers every block that is neither — Gain,
+	// Sum, Lag, Integrator, Transfer, PID, and Delay all take one input and
+	// produce one output like any other interior block.
+	role blockRole
+	// realize builds the block's controlsys realization from its own
+	// parameters and the number of incoming connections. nil means the
+	// block has no dynamics of its own: every source and sink realizes as a
+	// unit gain, and realizeSystem supplies that default rather than each of
+	// the five repeating it.
+	realize func(Block, int) (*controlsys.System, error)
+	// waveform evaluates a roleSource block's signal at time t. nil for
+	// every other role.
+	waveform func(Parameters, float64) float64
+	// spectrum is true for the one sink kind whose output is a frequency
+	// spectrum instead of a time series and settling metric. It is a
+	// property of this specific kind, not the source/dynamic/sink
+	// structural role above, so it is its own field rather than a fourth
+	// role value.
+	spectrum bool
 	// validate carries the rules that are not one field's own bound:
 	// transfer-function properness and order limits, the sign alphabet and
 	// length, the Padé integer range. nil for kinds with no such rule.
@@ -91,6 +116,39 @@ type blockDefinition struct {
 	// valid for a registered kind — every entry in blockOrder sets one.
 	summary func(Parameters) string
 }
+
+// blockRole is source | dynamic | sink: see the role field's comment on
+// blockDefinition for what each value governs. roleDynamic is the zero
+// value because most registered kinds are it.
+type blockRole int
+
+const (
+	roleDynamic blockRole = iota
+	roleSource
+	roleSink
+)
+
+// realizeSystem builds the block's controlsys realization, defaulting to a
+// unit gain when the definition sets no realize of its own. Every source and
+// every sink shares that pass-through behavior, so it is stated once here
+// instead of five block entries repeating the same three lines.
+func (d blockDefinition) realizeSystem(block Block, inputs int) (*controlsys.System, error) {
+	if d.realize != nil {
+		return d.realize(block, inputs)
+	}
+	return controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
+}
+
+// isSource and isSink read a block's structural role, replacing the two
+// kind-list functions that used to enumerate source and sink kinds by hand
+// in simulate.go. The catalog is now the only place a kind's role is stated.
+func (k BlockKind) isSource() bool { return blockDefinitions[k].role == roleSource }
+func (k BlockKind) isSink() bool   { return blockDefinitions[k].role == roleSink }
+
+// isSpectrumSink reports whether a sink's output is a frequency spectrum
+// rather than a time series and settling metric — see the spectrum field's
+// comment on blockDefinition for why this is not folded into role.
+func (k BlockKind) isSpectrumSink() bool { return blockDefinitions[k].spectrum }
 
 // minApproximation and maxApproximation bound the transport delay's Padé
 // order: the one place that states the range, read by both the editor's
@@ -128,6 +186,13 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
 			numberField("step_time", "Step time", "step time", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
 		},
+		role: roleSource,
+		waveform: func(parameters Parameters, t float64) float64 {
+			if t < parameters.StepTime {
+				return parameters.InitialValue
+			}
+			return parameters.Amplitude
+		},
 		summary: func(parameters Parameters) string {
 			if parameters.StepTime == 0 {
 				return fmt.Sprintf("%.3g step", parameters.Amplitude)
@@ -145,6 +210,8 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("value", "Value", "value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Value }),
 		},
+		role:     roleSource,
+		waveform: func(parameters Parameters, t float64) float64 { return parameters.Value },
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("%.3g constant", parameters.Value)
 		},
@@ -162,6 +229,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("frequency", "Frequency", "frequency", "0.05", 0, 1000, "rad/s", func(p *Parameters) *float64 { return &p.Frequency }),
 			numberField("phase", "Phase", "phase", "0.05", -1000, 1000, "rad", func(p *Parameters) *float64 { return &p.Phase }),
 		},
+		role: roleSource,
+		waveform: func(parameters Parameters, t float64) float64 {
+			return parameters.Bias + parameters.Amplitude*math.Sin(parameters.Frequency*t+parameters.Phase)
+		},
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("%.3g sin(%.3gt)", parameters.Amplitude, parameters.Frequency)
 		},
@@ -175,6 +246,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Defaults: Parameters{Gain: 1},
 		Parameters: []parameterDefinition{
 			numberField("gain", "Gain", "gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Gain }),
+		},
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			return controlsys.NewGain(mat.NewDense(1, 1, []float64{block.Parameters.Gain}), 0)
 		},
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("K = %.3g", parameters.Gain)
@@ -196,6 +270,22 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			},
 			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
+		// realize builds one gain per connected input, broadcasting the
+		// single sign to every input when only one is given (a shorthand the
+		// signs field's own Help text documents). Matching the sign count
+		// against the actual input count is compileFlow's arity walk, not
+		// this hook's job — that rule is Task 6's to consolidate.
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			gains := make([]float64, inputs)
+			for i := range gains {
+				signIndex := min(i, len(block.Parameters.Signs)-1)
+				gains[i] = 1
+				if block.Parameters.Signs[signIndex] == '-' {
+					gains[i] = -1
+				}
+			}
+			return controlsys.NewGain(mat.NewDense(1, len(gains), gains), 0)
+		},
 		validate: func(parameters Parameters) error {
 			if len(parameters.Signs) == 0 || len(parameters.Signs) > 16 {
 				return invalid("input signs must contain 1 to 16 plus or minus signs")
@@ -221,6 +311,16 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("time_constant", "Time constant", "time constant", "0.05", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
 		},
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			tau := block.Parameters.TimeConstant
+			return controlsys.New(
+				mat.NewDense(1, 1, []float64{-1 / tau}),
+				mat.NewDense(1, 1, []float64{1 / tau}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{0}),
+				0,
+			)
+		},
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("τ = %.3g s", parameters.TimeConstant)
 		},
@@ -230,6 +330,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Kind: BlockIntegrator, Label: "Integrator", Category: "Continuous",
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
 			HasInput: true, HasOutput: true,
+		},
+		realize: func(Block, int) (*controlsys.System, error) {
+			return controlsys.New(
+				mat.NewDense(1, 1, []float64{0}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{0}),
+				0,
+			)
 		},
 		summary: func(Parameters) string { return "1 / s" },
 	},
@@ -243,6 +352,16 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			coefficientField("numerator", "Numerator coefficients", "1, 3", func(p *Parameters) *[]float64 { return &p.Numerator }),
 			coefficientField("denominator", "Denominator coefficients", "1, 2, 1", func(p *Parameters) *[]float64 { return &p.Denominator }),
+		},
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			result, err := (&controlsys.TransferFunc{
+				Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
+				Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
+			}).StateSpace(nil)
+			if err != nil {
+				return nil, err
+			}
+			return result.Sys, nil
 		},
 		validate: func(parameters Parameters) error {
 			if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
@@ -276,6 +395,14 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
 			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
 		},
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			return controlsys.NewPID(
+				block.Parameters.Proportional,
+				block.Parameters.Integral,
+				block.Parameters.Derivative,
+				controlsys.WithFilter(block.Parameters.FilterTime),
+			).System()
+		},
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
 				parameters.Proportional, parameters.Integral, parameters.Derivative)
@@ -304,6 +431,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 			},
 		},
+		realize: func(block Block, inputs int) (*controlsys.System, error) {
+			return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
+		},
 		validate: func(parameters Parameters) error {
 			if parameters.Approximation < minApproximation || parameters.Approximation > maxApproximation {
 				return invalid("Padé order must be between %d and %d", minApproximation, maxApproximation)
@@ -320,6 +450,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Plot a signal", Glyph: "⌁", Tag: "OUTPUT",
 			HasInput: true,
 		},
+		role:    roleSink,
 		summary: func(Parameters) string { return "trend output" },
 	},
 	BlockSpectrum: {
@@ -328,7 +459,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Hann-windowed FFT", Glyph: "FFT", Tag: "DSP SINK",
 			HasInput: true,
 		},
-		summary: func(Parameters) string { return "frequency output" },
+		role:     roleSink,
+		spectrum: true,
+		summary:  func(Parameters) string { return "frequency output" },
 	},
 }
 

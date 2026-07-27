@@ -101,16 +101,15 @@ func simulate(blocks []Block, connections []Connection, request SimulationReques
 		for sample := range steps {
 			values[sample] = response.Y.At(output, sample)
 		}
-		switch sink.Kind {
-		case BlockScope:
+		if sink.Kind.isSpectrumSink() {
+			run.Spectra = append(run.Spectra, spectrumFor(sink, values, request.SampleTime))
+		} else {
 			run.Series = append(run.Series, Series{
 				BlockID: sink.ID,
 				Name:    sink.Name,
 				Values:  values,
 			})
 			run.Metrics = append(run.Metrics, metricFor(sink.Name, times, values))
-		case BlockSpectrum:
-			run.Spectra = append(run.Spectra, spectrumFor(sink, values, request.SampleTime))
 		}
 	}
 	return run, nil
@@ -136,9 +135,9 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		blockByID[block.ID] = block
 		indegree[block.ID] = 0
 		switch {
-		case isSource(block.Kind):
+		case block.Kind.isSource():
 			sources = append(sources, block)
-		case isSink(block.Kind):
+		case block.Kind.isSink():
 			sinks = append(sinks, block)
 		}
 	}
@@ -190,7 +189,7 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	for _, block := range blocks {
 		inputs := incoming[block.ID]
 		switch {
-		case isSource(block.Kind):
+		case block.Kind.isSource():
 			if len(inputs) != 0 {
 				return compiledFlow{}, invalid("%s cannot accept an input", block.Name)
 			}
@@ -261,68 +260,21 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	return compiledFlow{system: system, sources: sources, sinks: sinks}, nil
 }
 
+// realizeBlock defers to the block's own definition for the controlsys
+// realization (blockDefinition.realizeSystem), keeping only what is the
+// compiler's concern here: naming the realized system's ports so
+// controlsys.ConnectByName can wire it to the rest of the flowsheet.
 func realizeBlock(block Block, incoming []Connection) (*controlsys.System, error) {
-	var system *controlsys.System
-	var err error
-	switch block.Kind {
-	case BlockSource, BlockConstant, BlockSine, BlockScope, BlockSpectrum:
-		system, err = controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
-	case BlockGain:
-		system, err = controlsys.NewGain(mat.NewDense(1, 1, []float64{block.Parameters.Gain}), 0)
-	case BlockSum:
-		gains := make([]float64, len(incoming))
-		for i := range gains {
-			signIndex := min(i, len(block.Parameters.Signs)-1)
-			gains[i] = 1
-			if block.Parameters.Signs[signIndex] == '-' {
-				gains[i] = -1
-			}
-		}
-		system, err = controlsys.NewGain(mat.NewDense(1, len(gains), gains), 0)
-	case BlockLag:
-		tau := block.Parameters.TimeConstant
-		system, err = controlsys.New(
-			mat.NewDense(1, 1, []float64{-1 / tau}),
-			mat.NewDense(1, 1, []float64{1 / tau}),
-			mat.NewDense(1, 1, []float64{1}),
-			mat.NewDense(1, 1, []float64{0}),
-			0,
-		)
-	case BlockIntegrator:
-		system, err = controlsys.New(
-			mat.NewDense(1, 1, []float64{0}),
-			mat.NewDense(1, 1, []float64{1}),
-			mat.NewDense(1, 1, []float64{1}),
-			mat.NewDense(1, 1, []float64{0}),
-			0,
-		)
-	case BlockTransfer:
-		result, transferErr := (&controlsys.TransferFunc{
-			Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
-			Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
-		}).StateSpace(nil)
-		if transferErr != nil {
-			err = transferErr
-		} else {
-			system = result.Sys
-		}
-	case BlockPID:
-		system, err = controlsys.NewPID(
-			block.Parameters.Proportional,
-			block.Parameters.Integral,
-			block.Parameters.Derivative,
-			controlsys.WithFilter(block.Parameters.FilterTime),
-		).System()
-	case BlockDelay:
-		system, err = controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
-	default:
+	definition, ok := blockDefinitions[block.Kind]
+	if !ok {
 		return nil, invalid("%s has an unsupported block type", block.Name)
 	}
+	system, err := definition.realizeSystem(block, len(incoming))
 	if err != nil {
 		return nil, fmt.Errorf("realize %s: %w", block.Name, err)
 	}
 
-	if isSource(block.Kind) {
+	if block.Kind.isSource() {
 		system.InputName = []string{sourceSignalName(block.ID)}
 	} else if block.Kind == BlockSum {
 		system.InputName = make([]string, len(incoming))
@@ -336,29 +288,16 @@ func realizeBlock(block Block, incoming []Connection) (*controlsys.System, error
 	return system, nil
 }
 
-func isSource(kind BlockKind) bool {
-	return kind == BlockSource || kind == BlockConstant || kind == BlockSine
-}
-
-func isSink(kind BlockKind) bool {
-	return kind == BlockScope || kind == BlockSpectrum
-}
-
+// sourceValue defers to the source's own waveform hook. A roleSource kind
+// with no waveform set (which registering a new source without one would
+// produce) is silent rather than a panic here, matching the old switch's
+// default case.
 func sourceValue(source Block, t float64) float64 {
-	switch source.Kind {
-	case BlockSource:
-		if t < source.Parameters.StepTime {
-			return source.Parameters.InitialValue
-		}
-		return source.Parameters.Amplitude
-	case BlockConstant:
-		return source.Parameters.Value
-	case BlockSine:
-		return source.Parameters.Bias +
-			source.Parameters.Amplitude*math.Sin(source.Parameters.Frequency*t+source.Parameters.Phase)
-	default:
+	waveform := blockDefinitions[source.Kind].waveform
+	if waveform == nil {
 		return 0
 	}
+	return waveform(source.Parameters, t)
 }
 
 func sourceSignalName(id int64) string {
