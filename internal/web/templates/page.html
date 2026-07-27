@@ -9,12 +9,17 @@
   <link rel="stylesheet" href="/assets/tokens.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.10/dist/htmx.min.js" integrity="sha384-H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" crossorigin="anonymous"></script>
-  <!-- menu.js defines window.ProcessLab.menu, which app.js registers against. -->
+  <!-- menu.js defines window.ProcessLab.menu, which the canvas modules
+       register against. -->
   <script src="/assets/menu.js" defer></script>
-  <script src="/assets/app.js" defer></script>
-  <!-- tabs.js after app.js: it registers a second menu region and claims
-       Ctrl/Cmd + Shift + arrows, both of which read as additions to the
-       canvas layer rather than replacements for it. -->
+  <!-- No defer on the module: type="module" is deferred by definition, and
+       deferred classic scripts and module scripts share one execution list
+       ordered by document position. The three below therefore still run in
+       the order they are written, which is the order they depend on. -->
+  <script type="module" src="/assets/js/main.js"></script>
+  <!-- tabs.js after the canvas modules: it registers a second menu region
+       and claims Ctrl/Cmd + Shift + arrows, both of which read as additions
+       to the canvas layer rather than replacements for it. -->
   <script src="/assets/tabs.js" defer></script>
 </head>
 <body>

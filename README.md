@@ -310,4 +310,4 @@ by-name order, every new operation worked on it, and a second open did not
 re-sort the strip — 46 checks. Rendering was confirmed at 1440, 1280, 860, and
 620px on both pages.
 
-Note that templates and static assets are `go:embed`-ed into the binary, so a change to `app.js` or `app.css` needs a rebuild before the server serves it.
+Note that templates and static assets are `go:embed`-ed into the binary, so a change to `static/js/*.js` or `app.css` needs a rebuild before the server serves it.

@@ -617,7 +617,7 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{
-		"/assets/app.css", "/assets/app.js", "/assets/menu.js", "/assets/tabs.js",
+		"/assets/app.css", "/assets/menu.js", "/assets/tabs.js",
 		"/assets/register.css", "/assets/register.js", "/assets/tokens.css",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)
@@ -627,6 +627,51 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 		if response.Body.Len() < 1000 {
 			t.Fatalf("%s unexpectedly small", path)
 		}
+	}
+}
+
+// The canvas modules sit a directory down. `go:embed static/*` matches the
+// directory and embeds its subtree, but nothing in the build fails if it
+// stops doing so — the binary would simply serve 404s for every script the
+// workbench needs, which no other test would notice.
+func TestCanvasModulesAreEmbedded(t *testing.T) {
+	server, _ := openTestServer(t)
+	for _, path := range []string{
+		"/assets/js/main.js", "/assets/js/dom.js", "/assets/js/geometry.js",
+		"/assets/js/viewport.js", "/assets/js/selection.js", "/assets/js/dragging.js",
+		"/assets/js/wiring.js", "/assets/js/shell.js", "/assets/js/shortcuts.js",
+		"/assets/js/contextmenu.js", "/assets/js/input.js", "/assets/js/reapply.js",
+	} {
+		response := request(t, server, http.MethodGet, path, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, response.Code)
+		}
+		if response.Body.Len() == 0 {
+			t.Fatalf("%s is empty", path)
+		}
+	}
+}
+
+// Every module main.js pulls in has to be served, so a page that loads only
+// the entry point has to be able to reach the rest by relative path.
+func TestPageLoadsTheCanvasEntryPointAsAModule(t *testing.T) {
+	server, _ := openTestServer(t)
+	body := request(t, server, http.MethodGet, "/flows/1/workbench", nil).Body.String()
+	if strings.Contains(body, "/assets/js/") {
+		t.Error("the workbench fragment loads scripts; only the page shell should")
+	}
+	page := request(t, server, http.MethodGet, "/projects/1/flows/1", nil).Body.String()
+	if !strings.Contains(page, `<script type="module" src="/assets/js/main.js"></script>`) {
+		t.Error("the page does not load the canvas entry point as a module")
+	}
+	// menu.js before it, tabs.js after it: the canvas registers against the
+	// namespace menu.js defines, and tabs.js layers a second menu region and
+	// its own arrow chord over the canvas bindings.
+	menu := strings.Index(page, "/assets/menu.js")
+	main := strings.Index(page, "/assets/js/main.js")
+	tabs := strings.Index(page, "/assets/tabs.js")
+	if menu < 0 || main < 0 || tabs < 0 || !(menu < main && main < tabs) {
+		t.Errorf("script order is menu=%d main=%d tabs=%d", menu, main, tabs)
 	}
 }
 
