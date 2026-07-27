@@ -604,7 +604,7 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{
-		"/assets/app.css", "/assets/app.js", "/assets/menu.js",
+		"/assets/app.css", "/assets/app.js", "/assets/menu.js", "/assets/tabs.js",
 		"/assets/register.css", "/assets/register.js",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)

@@ -2227,6 +2227,9 @@ body.is-resizing-dock .studio-grid {
 }
 
 .tab-list {
+  /* The insertion marker is placed against this, so it scrolls with the
+     tabs rather than hanging over a track that has moved underneath it. */
+  position: relative;
   height: 100%;
   width: max-content;
   display: flex;
@@ -2249,6 +2252,9 @@ body.is-resizing-dock .studio-grid {
   font-size: var(--fs-200);
   font-weight: 550;
   letter-spacing: .005em;
+  /* A tab is dragged, so a drag must not select its name instead. */
+  -webkit-user-select: none;
+  user-select: none;
   transition: background 120ms ease, color 120ms ease;
 }
 
@@ -2288,6 +2294,96 @@ body.is-resizing-dock .studio-grid {
   border-radius: 50%;
   background: var(--caution);
   box-shadow: 0 0 5px rgb(217 164 65 / 55%);
+}
+
+/* Renaming. The legend is out of its window and the name is being cut
+   fresh in the empty channel: the tab drops to the recessed colour and
+   the field carries a teal scribe frame — the lamp colour struck as an
+   outline rather than a bar, so a tab can be lit and editable at once
+   without the two states fighting over the same edge. */
+.flow-tab[data-renaming] {
+  background: var(--housing-deep);
+}
+
+.flow-tab-input {
+  min-width: 0;
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 3px;
+  outline: 0;
+  color: var(--ink-inverse);
+  background: var(--housing);
+  box-shadow: inset 0 0 0 1px var(--probe);
+  caret-color: var(--probe);
+  color-scheme: dark;
+  font-size: var(--fs-200);
+  font-weight: 550;
+  letter-spacing: .005em;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.flow-tab-input::selection {
+  color: var(--housing);
+  background: var(--probe);
+}
+
+/* Dragging. What shows where the tab was is the milled channel it seats
+   in, with the name ghosted at the bottom of the well so the sheet in
+   your hand is still legible. */
+.tab-strip[data-dragging] {
+  cursor: grabbing;
+}
+
+.tab-strip[data-dragging] .flow-tab:not([aria-current="page"]):hover {
+  color: var(--ink-inverse-muted);
+  background: var(--housing);
+}
+
+.flow-tab[data-dragging],
+.flow-tab[data-dragging]:hover {
+  color: var(--housing-line-strong);
+  background: var(--housing-deep);
+  box-shadow: inset 0 0 0 1px var(--housing-line);
+  cursor: grabbing;
+}
+
+.flow-tab[data-dragging] .flow-tab-dot {
+  background: var(--housing-line-strong);
+  box-shadow: none;
+}
+
+/* Where the tab would land: a scribe caret standing in the channel,
+   capped top and bottom the way a centre mark is struck on a drawing. */
+.tab-insert {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--probe);
+  box-shadow: 0 0 7px rgb(53 179 156 / 55%);
+  pointer-events: none;
+}
+
+.tab-insert::before,
+.tab-insert::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  width: 6px;
+  height: 2px;
+  background: var(--probe);
+}
+
+.tab-insert::before {
+  top: 0;
+}
+
+.tab-insert::after {
+  bottom: 0;
 }
 
 .tab-scroll {

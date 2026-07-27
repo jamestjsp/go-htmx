@@ -11,6 +11,10 @@
   <!-- menu.js defines window.ProcessLab.menu, which app.js registers against. -->
   <script src="/assets/menu.js" defer></script>
   <script src="/assets/app.js" defer></script>
+  <!-- tabs.js after app.js: it registers a second menu region and claims
+       Ctrl/Cmd + Shift + arrows, both of which read as additions to the
+       canvas layer rather than replacements for it. -->
+  <script src="/assets/tabs.js" defer></script>
 </head>
 <body>
   {{template "workbench" .Workbench}}

@@ -1,5 +1,10 @@
 {{define "tabs"}}
-<nav class="tab-strip" id="flow-tabs" aria-label="Flowsheets" data-overflow="false">
+<nav
+  class="tab-strip"
+  id="flow-tabs"
+  aria-label="Flowsheets"
+  data-overflow="false"
+  data-project-id="{{.Workspace.Project.ID}}">
   <button
     type="button"
     class="tab-scroll tab-scroll-back"
@@ -11,10 +16,13 @@
   <div class="tab-track" id="flow-tab-track">
     <div class="tab-list">
       {{range .Tabs}}
+      <!-- draggable="false": a link is natively draggable, and Chrome's own
+           drag would cancel the pointer stream tabs.js reorders with. -->
       <a
         class="flow-tab"
         href="{{.Href}}"
         data-flow-tab="{{.ID}}"
+        draggable="false"
         {{if .Active}}aria-current="page"{{end}}
         title="{{.Name}}"
         hx-get="{{.Fragment}}"

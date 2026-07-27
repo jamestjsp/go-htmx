@@ -40,13 +40,20 @@
   // than "0": the canvas is reached by clicking it or by leaving a menu or
   // the shortcut sheet, never by tabbing to it, and a positive value would
   // insert a stop in the tab order between the toolbar and the dock.
+  //
+  // A host that already takes focus is left alone. A flowsheet tab is an
+  // <a href>, and stamping tabindex="-1" on it to hand focus back would
+  // quietly drop that tab out of the tab order for good — the menu would
+  // make the thing it was raised over unreachable by keyboard.
+  const FOCUSABLE = 'a[href], button, input, select, textarea, [tabindex]'
+
   function restoreFocusTo(region, host) {
     if (region && region.restoreFocus) {
       region.restoreFocus(host)
       return
     }
     if (!host || !host.isConnected) return
-    if (!host.hasAttribute('tabindex')) host.tabIndex = -1
+    if (!host.matches(FOCUSABLE)) host.tabIndex = -1
     host.focus()
   }
 
