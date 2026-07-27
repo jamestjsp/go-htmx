@@ -13,3 +13,8 @@
 {"type":"state","ts":"2026-07-27T00:22:06.373102Z","data":{"id":"UZQ5YH","state":"done","ts":"2026-07-27T00:22:06.373102Z"}}
 {"type":"claim","ts":"2026-07-27T00:22:06.377231Z","data":{"id":"6UTV3F","agent_id":"gpt-5@codex","ts":"2026-07-27T00:22:06.377231Z"}}
 {"type":"state","ts":"2026-07-27T00:22:06.377231Z","data":{"id":"6UTV3F","state":"doing","ts":"2026-07-27T00:22:06.377231Z"}}
+{"type":"message","ts":"2026-07-27T00:24:16.23833Z","data":{"task_id":"6UTV3F","kind":"done","text":"Compiled arbitrary acyclic flows into state-space models, simulated with controlsys, persisted results, and verified branched/static/error cases","ts":"2026-07-27T00:24:16.23833Z"}}
+{"type":"unclaim","ts":"2026-07-27T00:24:16.23833Z","data":{"id":"6UTV3F","ts":"2026-07-27T00:24:16.23833Z"}}
+{"type":"state","ts":"2026-07-27T00:24:16.23833Z","data":{"id":"6UTV3F","state":"done","ts":"2026-07-27T00:24:16.23833Z"}}
+{"type":"claim","ts":"2026-07-27T00:24:16.241946Z","data":{"id":"RCLZCZ","agent_id":"gpt-5@codex","ts":"2026-07-27T00:24:16.241946Z"}}
+{"type":"state","ts":"2026-07-27T00:24:16.241946Z","data":{"id":"RCLZCZ","state":"doing","ts":"2026-07-27T00:24:16.241946Z"}}

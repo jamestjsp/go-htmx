@@ -101,6 +101,41 @@ func TestSimulationRoundTripsThroughSQLite(t *testing.T) {
 	}
 }
 
+func TestModelChangeHidesStaleSimulationButMoveDoesNot(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = studio.Run(ctx, snapshot.Flow.ID, SimulationRequest{
+		Duration: 12, SampleTime: 0.2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LastRun == nil {
+		t.Fatal("run was not saved")
+	}
+	if err := studio.MoveBlock(ctx, snapshot.Blocks[0].ID, Point{X: 44, Y: 55}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LastRun == nil {
+		t.Fatal("layout move hid a still-valid simulation")
+	}
+	snapshot, _, err = studio.AddBlock(ctx, snapshot.Flow.ID, BlockGain, Point{X: 40, Y: 40})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.LastRun != nil {
+		t.Fatal("model change kept a stale simulation visible")
+	}
+}
+
 func TestCompileRejectsMissingScope(t *testing.T) {
 	blocks := []Block{
 		{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},

@@ -1,0 +1,275 @@
+{{define "workbench"}}
+<main id="workbench" class="workbench" data-flow-id="{{.Snapshot.Flow.ID}}" data-selected-id="{{if .Selected}}{{.Selected.ID}}{{end}}">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Process Lab home">
+      <span class="brand-mark"><i></i><i></i><i></i></span>
+      <span>
+        <strong>Process Lab</strong>
+        <small>Dynamic systems workbench</small>
+      </span>
+    </a>
+    <div class="project-heading">
+      <span class="eyebrow">Active flowsheet</span>
+      <h1>{{.Snapshot.Flow.Name}}</h1>
+    </div>
+    <div class="project-facts">
+      <span><b>{{.BlockCount}}</b> blocks</span>
+      <span><b>{{.ConnectionCount}}</b> signals</span>
+      <span class="saved-state"><i></i> saved {{.Updated}}</span>
+    </div>
+  </header>
+
+  {{if .Error}}
+  <section class="error-banner" role="alert">
+    <span>!</span>
+    <div><strong>Flowsheet needs attention</strong><p>{{.Error}}</p></div>
+    <button type="button" data-dismiss-error aria-label="Dismiss error">×</button>
+  </section>
+  {{end}}
+
+  <div class="studio-grid">
+    <aside class="palette-panel">
+      <div class="panel-heading">
+        <span class="eyebrow">Library</span>
+        <h2>Model blocks</h2>
+        <p>Add a block, then wire output ports to inputs.</p>
+      </div>
+      <div class="palette-list">
+        {{range .Palette}}
+        <form hx-post="/flows/{{$.Snapshot.Flow.ID}}/blocks" hx-target="#workbench" hx-swap="outerHTML">
+          <input type="hidden" name="kind" value="{{.Kind}}">
+          <input type="hidden" name="x" value="{{.X}}">
+          <input type="hidden" name="y" value="{{.Y}}">
+          <button class="palette-item palette-{{.Kind}}" type="submit">
+            <span class="palette-glyph">{{.Glyph}}</span>
+            <span><strong>{{.Label}}</strong><small>{{.Description}}</small></span>
+            <span class="add-glyph">+</span>
+          </button>
+        </form>
+        {{end}}
+      </div>
+      <div class="palette-tip">
+        <kbd>drag</kbd>
+        <span>Move blocks anywhere on the sheet. Positions save automatically.</span>
+      </div>
+      <div class="stack-card">
+        <span class="eyebrow">Demo stack</span>
+        <div><b>HTMX</b><span>server components</span></div>
+        <div><b>Go</b><span>domain + simulation</span></div>
+        <div><b>SQLite</b><span>flows + run history</span></div>
+      </div>
+    </aside>
+
+    <section class="main-stage">
+      <div class="canvas-card">
+        <div class="canvas-toolbar">
+          <div>
+            <span class="live-dot"></span>
+            <strong>Flowsheet</strong>
+            <span class="canvas-hint" id="canvas-hint">Select an output port to start wiring</span>
+          </div>
+          <div class="canvas-actions">
+            <button type="button" class="tool-button" data-fit-view title="Center the flowsheet">◎ <span>Fit</span></button>
+            <span class="zoom-readout">100%</span>
+          </div>
+        </div>
+
+        <div id="flow-canvas" class="flow-canvas" data-flow-id="{{.Snapshot.Flow.ID}}">
+          <svg class="connections-layer" viewBox="0 0 1240 590" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+                <path d="M0,0 L8,3 L0,6 Z"></path>
+              </marker>
+            </defs>
+            {{range .Connections}}
+            <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
+            <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
+            {{end}}
+            <path id="draft-edge" class="draft-edge" d=""></path>
+          </svg>
+
+          {{range .Blocks}}
+          <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
+            {{if .Kind.HasInput}}
+            <button type="button" class="port port-input" data-input-port="{{.ID}}" aria-label="Connect to {{.Name}}"></button>
+            {{end}}
+            <button
+              class="block-body"
+              type="button">
+              <span class="block-kind">
+                {{if eq .Kind "source"}}STEP{{else if eq .Kind "gain"}}GAIN{{else if eq .Kind "lag"}}DYNAMIC{{else if eq .Kind "sum"}}MATH{{else}}OUTPUT{{end}}
+              </span>
+              <strong>{{.Name}}</strong>
+              <small>{{.ParameterText}}</small>
+            </button>
+            {{if .Kind.HasOutput}}
+            <button type="button" class="port port-output" data-output-port="{{.ID}}" data-output-name="{{.Name}}" aria-label="Connect from {{.Name}}"></button>
+            {{end}}
+          </article>
+          {{end}}
+
+          <div class="canvas-legend">
+            <span><i class="legend-port"></i> signal port</span>
+            <span><i class="legend-line"></i> computed path</span>
+          </div>
+        </div>
+      </div>
+
+      <section class="results-card{{if .Chart.Present}} has-results{{end}}" id="simulation-results">
+        <header class="results-header">
+          <div>
+            <span class="eyebrow">Numerical experiment</span>
+            <h2>Simulation output</h2>
+          </div>
+          <form class="run-form" id="run-form" hx-post="/flows/{{.Snapshot.Flow.ID}}/simulations" hx-target="#workbench" hx-swap="outerHTML" hx-disabled-elt="button">
+            {{if .Selected}}<input type="hidden" name="selected_id" value="{{.Selected.ID}}">{{end}}
+            <label>Duration <span><input name="duration" type="number" min="1" max="120" step="1" value="{{if .Chart.Present}}{{.Chart.Duration}}{{else}}20{{end}}"> s</span></label>
+            <label>Sample <span><input name="sample_time" type="number" min=".01" max="2" step=".01" value="{{if .Chart.Present}}{{.Chart.SampleTime}}{{else}}0.10{{end}}"> s</span></label>
+            <button class="run-button" type="submit">
+              <span class="run-icon">▶</span>
+              <span class="run-label">Run model</span>
+              <span class="htmx-indicator">Running…</span>
+            </button>
+          </form>
+        </header>
+
+        {{if .Chart.Present}}
+        <div class="results-body">
+          <div class="trend-panel">
+            <div class="trend-legend">
+              {{range .Chart.Paths}}<span><i style="background:{{.Color}}"></i>{{.Name}}</span>{{end}}
+              <small>Last run {{.Chart.CreatedAt}}</small>
+            </div>
+            <svg class="trend-chart" viewBox="0 0 780 228" role="img" aria-label="Simulation trend">
+              {{range .Chart.YGrid}}
+              <line x1="48" x2="762" y1="{{.Position}}" y2="{{.Position}}" class="chart-grid"></line>
+              <text x="40" y="{{.Position}}" class="chart-label y-label">{{.Label}}</text>
+              {{end}}
+              {{range .Chart.XGrid}}
+              <line x1="{{.Position}}" x2="{{.Position}}" y1="18" y2="196" class="chart-grid chart-grid-x"></line>
+              <text x="{{.Position}}" y="218" class="chart-label x-label">{{.Label}}</text>
+              {{end}}
+              {{range .Chart.Paths}}
+              <path d="{{.D}}" fill="none" stroke="{{.Color}}" class="trend-path"></path>
+              {{end}}
+              <text x="760" y="218" class="axis-title">seconds</text>
+            </svg>
+          </div>
+          <div class="metric-panel">
+            {{range .Chart.Metrics}}
+            <article class="metric-card">
+              <span>{{.Name}}</span>
+              <strong>{{printf "%.3f" .Final}}</strong>
+              <dl>
+                <div><dt>Peak</dt><dd>{{printf "%.3f" .Peak}}</dd></div>
+                <div><dt>Settling</dt><dd>{{if .Settled}}{{printf "%.2f s" .SettleTime}}{{else}}not settled{{end}}</dd></div>
+              </dl>
+            </article>
+            {{end}}
+            <div class="solver-badge">
+              <span>STATE SPACE</span>
+              <b>controlsys</b>
+              <small>{{.Chart.SampleTime}} s sample</small>
+            </div>
+          </div>
+        </div>
+        {{else}}
+        <div class="empty-results">
+          <span class="empty-wave">⌁</span>
+          <div><strong>No run yet</strong><p>Wire the model, then run a time-domain simulation.</p></div>
+          <span class="empty-arrow">→</span>
+        </div>
+        {{end}}
+      </section>
+    </section>
+
+    <aside class="inspector-panel">
+      {{if .Selected}}
+      <div class="inspector-heading">
+        <div>
+          <span class="eyebrow">Inspector</span>
+          <h2>{{.Selected.Kind.Label}}</h2>
+        </div>
+        <span class="object-id">#{{.Selected.ID}}</span>
+      </div>
+      <form class="property-form" hx-put="/blocks/{{.Selected.ID}}" hx-target="#workbench" hx-swap="outerHTML">
+        <label>
+          <span>Block name</span>
+          <input type="text" name="name" value="{{.Selected.Name}}" maxlength="48" required>
+        </label>
+        {{if .Selected.ParameterLabel}}
+        <label>
+          <span>{{.Selected.ParameterLabel}}</span>
+          <div class="unit-input">
+            <input type="number" name="parameter" value="{{.Selected.ParameterValue}}" step="0.05" required>
+            <small>{{if eq .Selected.Kind "lag"}}sec{{else}}scalar{{end}}</small>
+          </div>
+        </label>
+        {{else}}
+        <input type="hidden" name="parameter" value="0">
+        {{end}}
+        <div class="property-readout">
+          <div><span>Type</span><b>{{.Selected.Kind}}</b></div>
+          <div><span>Position</span><b>{{.Selected.Position.X}}, {{.Selected.Position.Y}}</b></div>
+        </div>
+        <button class="save-button" type="submit">Apply changes</button>
+      </form>
+
+      <section class="signal-section">
+        <div class="section-title"><h3>Signal connections</h3><span>{{len .SelectedLinks}}</span></div>
+        {{if .SelectedLinks}}
+        <div class="signal-list">
+          {{range .SelectedLinks}}
+          <div>
+            <span class="direction-pill">{{.Direction}}</span>
+            <strong>{{.OtherName}}</strong>
+            <button
+              type="button"
+              hx-delete="/connections/{{.ID}}?selected={{$.Selected.ID}}"
+              hx-target="#workbench"
+              hx-swap="outerHTML"
+              hx-confirm="Remove this signal connection?"
+              aria-label="Remove connection">×</button>
+          </div>
+          {{end}}
+        </div>
+        {{else}}
+        <p class="empty-copy">No signal wires on this block yet.</p>
+        {{end}}
+      </section>
+
+      <button
+        class="delete-button"
+        type="button"
+        hx-delete="/blocks/{{.Selected.ID}}"
+        hx-target="#workbench"
+        hx-swap="outerHTML"
+        hx-confirm="Delete {{.Selected.Name}} and its signal wires?">
+        Delete block
+      </button>
+      {{else}}
+      <div class="inspector-empty">
+        <span class="selection-illustration"><i></i><i></i><i></i></span>
+        <span class="eyebrow">Inspector</span>
+        <h2>Select a block</h2>
+        <p>Choose any model block to tune parameters, inspect its signal wiring, or remove it.</p>
+      </div>
+      {{end}}
+
+      <section class="activity-section">
+        <div class="section-title"><h3>Recent activity</h3><span>SQLite</span></div>
+        <ol>
+          {{range .Snapshot.Events}}
+          <li><i></i><span><strong>{{.Message}}</strong><small>{{.CreatedAt.Local.Format "15:04:05"}}</small></span></li>
+          {{end}}
+        </ol>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <div><span class="status-ready">READY</span><span>SQLite connected</span><span>controlsys v1.2.0</span></div>
+    <div><span id="interaction-status">Tip: click an output dot, then an input dot</span><kbd>esc</kbd> cancel wire <kbd>⌘ enter</kbd> run</div>
+  </footer>
+</main>
+{{end}}

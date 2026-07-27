@@ -53,11 +53,15 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 		).Scan(&count); err != nil {
 			return err
 		}
+		placed, err := openPosition(ctx, tx, flowID, position)
+		if err != nil {
+			return err
+		}
 		name := fmt.Sprintf("%s %d", kind.Label(), count+1)
 		result, err := tx.ExecContext(ctx, `
 			INSERT INTO blocks(flow_id, kind, name, x, y, amplitude, gain, time_constant)
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-			flowID, kind, name, position.X, position.Y,
+			flowID, kind, name, placed.X, placed.Y,
 			parameters.Amplitude, parameters.Gain, parameters.TimeConstant,
 		)
 		if err != nil {
@@ -68,7 +72,10 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 			return fmt.Errorf("read block id: %w", err)
 		}
 		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?", now, flowID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Added %s", name))
@@ -129,7 +136,10 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 			return fmt.Errorf("update block: %w", err)
 		}
 		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?", now, flowID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Updated %s", block.Name))
@@ -152,7 +162,10 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 			return fmt.Errorf("delete block: %w", err)
 		}
 		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?", now, flowID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Deleted %s", block.Name))
@@ -226,7 +239,10 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 			return fmt.Errorf("connect blocks: %w", err)
 		}
 		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?", now, flowID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Connected %s → %s", source.Name, target.Name))
@@ -258,7 +274,10 @@ func (s *Studio) Disconnect(ctx context.Context, connectionID int64) (Snapshot, 
 			return fmt.Errorf("disconnect blocks: %w", err)
 		}
 		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?", now, flowID); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+			now, now, flowID,
+		); err != nil {
 			return err
 		}
 		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Disconnected %s → %s", sourceName, targetName))
@@ -267,6 +286,53 @@ func (s *Studio) Disconnect(ctx context.Context, connectionID int64) (Snapshot, 
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) (Point, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT x, y FROM blocks WHERE flow_id = ?", flowID)
+	if err != nil {
+		return Point{}, fmt.Errorf("load block positions: %w", err)
+	}
+	var occupied []Point
+	for rows.Next() {
+		var point Point
+		if err := rows.Scan(&point.X, &point.Y); err != nil {
+			rows.Close()
+			return Point{}, fmt.Errorf("scan block position: %w", err)
+		}
+		occupied = append(occupied, point)
+	}
+	if err := rows.Close(); err != nil {
+		return Point{}, fmt.Errorf("close block positions: %w", err)
+	}
+
+	available := func(candidate Point) bool {
+		for _, point := range occupied {
+			if abs(candidate.X-point.X) < 172 && abs(candidate.Y-point.Y) < 84 {
+				return false
+			}
+		}
+		return true
+	}
+	if available(desired) {
+		return desired, nil
+	}
+	for _, y := range []int{90, 220, 350, 470} {
+		for _, x := range []int{30, 210, 390, 570, 750, 930} {
+			candidate := Point{X: x, Y: y}
+			if available(candidate) {
+				return candidate, nil
+			}
+		}
+	}
+	return desired, invalid("the flowsheet is full; move a block to make room")
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connection, error) {

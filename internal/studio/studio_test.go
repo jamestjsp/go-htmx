@@ -150,6 +150,25 @@ func TestDeleteBlockCascadesConnections(t *testing.T) {
 	}
 }
 
+func TestAddBlockChoosesOpenPosition(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	occupied := snapshot.Blocks[0].Position
+
+	snapshot, blockID, err := studio.AddBlock(ctx, snapshot.Flow.ID, BlockGain, occupied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := findBlock(t, snapshot.Blocks, blockID)
+	if added.Position == occupied {
+		t.Fatalf("new block was placed on occupied position %#v", occupied)
+	}
+}
+
 func openTestStudio(t *testing.T, path string) *Studio {
 	t.Helper()
 	studio, err := Open(context.Background(), path)

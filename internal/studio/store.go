@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS flows (
 	id INTEGER PRIMARY KEY,
 	name TEXT NOT NULL,
 	created_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL
+	updated_at TEXT NOT NULL,
+	model_updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS blocks (
 	id INTEGER PRIMARY KEY,
@@ -70,6 +71,10 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate sqlite: %w", err)
 	}
+	if err := ensureModelUpdatedAt(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
 
 	studio := &Studio{db: db, now: time.Now}
 	if err := studio.seed(ctx); err != nil {
@@ -77,6 +82,43 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		return nil, err
 	}
 	return studio, nil
+}
+
+func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(flows)")
+	if err != nil {
+		return fmt.Errorf("inspect flows schema: %w", err)
+	}
+	found := false
+	for rows.Next() {
+		var index, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue any
+		if err := rows.Scan(&index, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan flows schema: %w", err)
+		}
+		if name == "model_updated_at" {
+			found = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close flows schema: %w", err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx,
+		"ALTER TABLE flows ADD COLUMN model_updated_at TEXT NOT NULL DEFAULT ''",
+	); err != nil {
+		return fmt.Errorf("add model revision: %w", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		"UPDATE flows SET model_updated_at = updated_at WHERE model_updated_at = ''",
+	); err != nil {
+		return fmt.Errorf("initialize model revision: %w", err)
+	}
+	return nil
 }
 
 func (s *Studio) Close() error {
@@ -95,8 +137,8 @@ func (s *Studio) seed(ctx context.Context) error {
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		now := s.now().UTC().Format(time.RFC3339Nano)
 		result, err := tx.ExecContext(ctx,
-			"INSERT INTO flows(name, created_at, updated_at) VALUES(?, ?, ?)",
-			"Reactor temperature loop", now, now,
+			"INSERT INTO flows(name, created_at, updated_at, model_updated_at) VALUES(?, ?, ?, ?)",
+			"Reactor temperature loop", now, now, now,
 		)
 		if err != nil {
 			return fmt.Errorf("seed flow: %w", err)
@@ -113,14 +155,14 @@ func (s *Studio) seed(ctx context.Context) error {
 			p    Parameters
 		}
 		seeds := []seedBlock{
-			{BlockSource, "Feed setpoint", 50, 90, Parameters{Amplitude: 1}},
-			{BlockGain, "Valve gain", 260, 90, Parameters{Gain: 1.8}},
-			{BlockLag, "Reactor", 470, 90, Parameters{TimeConstant: 2.2}},
-			{BlockSource, "Disturbance", 50, 350, Parameters{Amplitude: 0.3}},
-			{BlockLag, "Jacket lag", 260, 350, Parameters{TimeConstant: 4}},
-			{BlockGain, "Heat loss", 470, 350, Parameters{Gain: -0.7}},
-			{BlockSum, "Energy balance", 680, 220, Parameters{}},
-			{BlockScope, "Temperature", 890, 220, Parameters{}},
+			{BlockSource, "Feed setpoint", 30, 90, Parameters{Amplitude: 1}},
+			{BlockGain, "Valve gain", 210, 90, Parameters{Gain: 1.8}},
+			{BlockLag, "Reactor", 390, 90, Parameters{TimeConstant: 2.2}},
+			{BlockSource, "Disturbance", 30, 350, Parameters{Amplitude: 0.3}},
+			{BlockLag, "Jacket lag", 210, 350, Parameters{TimeConstant: 4}},
+			{BlockGain, "Heat loss", 390, 350, Parameters{Gain: -0.7}},
+			{BlockSum, "Energy balance", 570, 220, Parameters{}},
+			{BlockScope, "Temperature", 750, 220, Parameters{}},
 		}
 
 		ids := make([]int64, len(seeds))
@@ -178,10 +220,10 @@ func insertEvent(ctx context.Context, tx *sql.Tx, flowID int64, now, message str
 
 func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	var snapshot Snapshot
-	var created, updated string
+	var created, updated, modelUpdated string
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, name, created_at, updated_at FROM flows WHERE id = ?", flowID,
-	).Scan(&snapshot.Flow.ID, &snapshot.Flow.Name, &created, &updated)
+		"SELECT id, name, created_at, updated_at, model_updated_at FROM flows WHERE id = ?", flowID,
+	).Scan(&snapshot.Flow.ID, &snapshot.Flow.Name, &created, &updated, &modelUpdated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Snapshot{}, ErrNotFound
 	}
@@ -190,6 +232,7 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	}
 	snapshot.Flow.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	snapshot.Flow.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	snapshot.Flow.ModelUpdatedAt, _ = time.Parse(time.RFC3339Nano, modelUpdated)
 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant
@@ -256,7 +299,10 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	var run Simulation
 	err = s.db.QueryRowContext(ctx, `
 		SELECT id, created_at, duration, sample_time, result_json
-		FROM simulation_runs WHERE flow_id = ? ORDER BY id DESC LIMIT 1`, flowID,
+		FROM simulation_runs
+		WHERE flow_id = ? AND created_at >= ?
+		ORDER BY id DESC LIMIT 1`,
+		flowID, snapshot.Flow.ModelUpdatedAt.UTC().Format(time.RFC3339Nano),
 	).Scan(&run.ID, &runCreated, &run.Duration, &run.SampleTime, &runJSON)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
