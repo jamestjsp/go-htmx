@@ -185,8 +185,18 @@ func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
 			}
 			legacy = append(legacy, block)
 		}
-		if err := rows.Close(); err != nil {
+		// rows.Close alone would miss this: it reports the driver's own
+		// close-time error, not an iteration failure that ended Next early.
+		// Only rows.Err reports that, and a truncated read here would commit
+		// a partial backfill — the rest of legacy's rows silently keep
+		// decoding to catalog defaults for the life of the process, since
+		// decodeParameters no longer has a fallback to catch them.
+		if err := rows.Err(); err != nil {
+			rows.Close()
 			return fmt.Errorf("read legacy block parameters: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close legacy block parameters: %w", err)
 		}
 		for _, block := range legacy {
 			parameters := defaultParameters(block.kind)

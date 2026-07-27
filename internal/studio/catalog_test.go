@@ -233,20 +233,39 @@ func TestOpenBackfillsBlockParametersFromLegacyColumns(t *testing.T) {
 	if got := legacyColumn(t, service, "amplitude", "Feed"); got != 1.75 {
 		t.Fatalf("legacy amplitude column = %v, want 1.75 to survive untouched", got)
 	}
+
+	// Diverge parameters_json from what the legacy columns would regenerate,
+	// simulating a user editing this block after the first Open already
+	// backfilled it. amplitude stays 1.75 — only the JSON changes, the way
+	// UpdateBlock leaves it after a real edit. A backfill that re-derives from
+	// the legacy columns on every Open, instead of skipping rows its own
+	// WHERE clause says are already done, would silently revert this edit
+	// and lose it — encodeParameters is deterministic, so comparing against
+	// the unedited `encoded` from before could never catch that regression.
+	const edited = `{"amplitude":9.5}`
+	if _, err := service.db.ExecContext(ctx,
+		"UPDATE blocks SET parameters_json = ? WHERE name = ?", edited, "Feed",
+	); err != nil {
+		t.Fatal(err)
+	}
 	if err := service.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	// Reopening must not rewrite a row the first Open already backfilled: the
-	// WHERE parameters_json = '' clause is what makes this safe to run on
-	// every startup rather than only the first one.
 	reopened, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reopened.Close() })
-	if got := blockParametersJSON(t, reopened, "Feed"); got != encoded {
-		t.Fatalf("parameters_json after reopen = %q, want unchanged %q", got, encoded)
+	if got := blockParametersJSON(t, reopened, "Feed"); got != edited {
+		t.Fatalf("parameters_json after reopen = %q, want the edit %q preserved untouched", got, edited)
+	}
+	snapshotAfterReopen, err := reopened.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockNamed(t, snapshotAfterReopen.Blocks, "Feed").Parameters.Amplitude; got != 9.5 {
+		t.Fatalf("amplitude after reopen = %v, want the edited 9.5, not the stale legacy 1.75", got)
 	}
 }
 
