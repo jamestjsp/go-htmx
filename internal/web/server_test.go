@@ -330,7 +330,7 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
-	for _, path := range []string{"/assets/app.css", "/assets/app.js"} {
+	for _, path := range []string{"/assets/app.css", "/assets/app.js", "/assets/menu.js"} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, response.Code)

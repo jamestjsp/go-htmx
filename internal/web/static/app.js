@@ -961,19 +961,13 @@
   }
 
   // =================================================================
-  // Context menus.
+  // Canvas context menu.
   //
-  // The native menu is suppressed only over the sheet; over the rails and
+  // menu.js owns construction, placement, dismissal, and the keyboard;
+  // this file only says where the menu applies and what is in it. The
+  // native menu is suppressed only over the sheet; over the rails and
   // the dock the browser's own menu stays available, where it is useful.
   // =================================================================
-  let contextMenu = null
-
-  function closeContextMenu() {
-    if (!contextMenu) return
-    contextMenu.remove()
-    contextMenu = null
-  }
-
   function menuItems(node, point) {
     if (node) {
       const plural = selection.size > 1 ? ` ${selection.size} blocks` : ''
@@ -1041,95 +1035,16 @@
     if (status()) status().textContent = 'Signal wires removed'
   }
 
-  function buildMenu(items, x, y) {
-    const menu = document.createElement('div')
-    menu.dataset.contextMenu = ''
-    menu.setAttribute('role', 'menu')
-    menu.style.cssText = [
-      'position:fixed', 'z-index:180', 'min-width:190px', 'max-height:60vh', 'overflow:auto',
-      'padding:5px', 'border:1px solid var(--housing-line-strong,#3c4f4a)', 'border-radius:8px',
-      'background:var(--housing,#16201e)', 'color:var(--ink-inverse,#e8efec)',
-      'box-shadow:0 18px 40px rgb(6 12 11 / 44%)', 'font-size:12px'
-    ].join(';')
-
-    items.forEach((item) => {
-      if (item.submenu) {
-        const group = document.createElement('div')
-        group.style.cssText = 'padding:5px 9px 3px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--probe,#35b39c)'
-        group.textContent = item.label
-        menu.appendChild(group)
-        item.submenu.forEach((choice) => menu.appendChild(menuButton(choice)))
-        return
-      }
-      menu.appendChild(menuButton(item))
-    })
-    document.body.appendChild(menu)
-
-    // Flip near a viewport edge so the menu is never clipped.
-    const box = menu.getBoundingClientRect()
-    const left = x + box.width > window.innerWidth - 8 ? Math.max(8, x - box.width) : x
-    const top = y + box.height > window.innerHeight - 8 ? Math.max(8, y - box.height) : y
-    menu.style.left = `${left}px`
-    menu.style.top = `${top}px`
-    return menu
-  }
-
-  function menuButton(item) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.setAttribute('role', 'menuitem')
-    button.textContent = item.label
-    button.style.cssText = [
-      'display:block', 'width:100%', 'padding:7px 9px', 'border:0', 'border-radius:5px',
-      'background:transparent', 'color:' + (item.danger ? 'var(--alarm,#ef7f6a)' : 'inherit'),
-      'cursor:pointer', 'font-size:12px', 'text-align:left'
-    ].join(';')
-    button.addEventListener('mouseenter', () => button.focus())
-    button.addEventListener('focus', () => { button.style.background = 'var(--housing-raised,#1f2c29)' })
-    button.addEventListener('blur', () => { button.style.background = 'transparent' })
-    button.addEventListener('click', () => {
-      closeContextMenu()
-      item.run()
-    })
-    return button
-  }
-
-  function openContextMenu(event) {
-    const withinSheet = event.target.closest('#flow-canvas')
-    if (!withinSheet) return
-    event.preventDefault()
-    closeContextMenu()
-    const node = event.target.closest('.block-card')
-    // Right-clicking outside the current selection re-targets it; inside
-    // it, the existing selection and its plural actions are kept.
-    if (node && !selection.has(node.dataset.blockId)) setSelection([node.dataset.blockId])
-    if (!node) setSelection([])
-    const point = screenToSheet(event.clientX, event.clientY)
-    contextMenu = buildMenu(menuItems(node, point), event.clientX, event.clientY)
-    const first = contextMenu.querySelector('button')
-    if (first) first.focus()
-  }
-
-  document.addEventListener('contextmenu', openContextMenu)
-  document.addEventListener('pointerdown', (event) => {
-    if (contextMenu && !event.target.closest('[data-context-menu]')) closeContextMenu()
-  }, true)
-  document.addEventListener('htmx:beforeSwap', closeContextMenu)
-  document.addEventListener('wheel', closeContextMenu, { passive: true })
-  document.addEventListener('keydown', (event) => {
-    if (!contextMenu) return
-    const buttons = Array.from(contextMenu.querySelectorAll('button'))
-    const index = buttons.indexOf(document.activeElement)
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      closeContextMenu()
-      if (canvas()) canvas().focus()
-    } else if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      buttons[(index + 1) % buttons.length].focus()
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      buttons[(index - 1 + buttons.length) % buttons.length].focus()
+  ProcessLab.menu.register({
+    selector: '#flow-canvas',
+    restoreFocus: () => { if (canvas()) canvas().focus() },
+    items: (event) => {
+      const node = event.target.closest('.block-card')
+      // Right-clicking outside the current selection re-targets it; inside
+      // it, the existing selection and its plural actions are kept.
+      if (node && !selection.has(node.dataset.blockId)) setSelection([node.dataset.blockId])
+      if (!node) setSelection([])
+      return menuItems(node, screenToSheet(event.clientX, event.clientY))
     }
   })
 

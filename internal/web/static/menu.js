@@ -1,0 +1,137 @@
+// =====================================================================
+// Shared context menu.
+//
+// A caller registers a region: a selector saying where the browser's own
+// menu is replaced, and a builder returning that region's items. Menu
+// construction, edge flipping, dismissal, and keyboard navigation live
+// here, so a second menu never needs a second copy of them.
+//
+// Loaded before app.js; a namespace rather than a module because app.js
+// is one long IIFE whose state must stay closed over.
+// =====================================================================
+(() => {
+  const regions = []
+  let contextMenu = null
+  let openRegion = null
+
+  // A region is { selector, items, restoreFocus? }:
+  //   selector     — the menu opens for right-clicks inside a match.
+  //   items(event, host) — the items for this right-click, built fresh
+  //                  each time. Returning an empty list opens nothing.
+  //   restoreFocus() — optional, called after Escape dismisses the menu.
+  function register(region) {
+    regions.push(region)
+  }
+
+  function closeContextMenu() {
+    if (!contextMenu) return
+    contextMenu.remove()
+    contextMenu = null
+    openRegion = null
+  }
+
+  // Both candidates contain the event target, so one always contains the
+  // other: the deepest match wins, whatever order regions registered in.
+  function regionFor(target) {
+    let best = null
+    regions.forEach((region) => {
+      const host = target.closest(region.selector)
+      if (!host) return
+      if (!best || best.host.contains(host)) best = { region, host }
+    })
+    return best
+  }
+
+  function buildMenu(items, x, y) {
+    const menu = document.createElement('div')
+    menu.dataset.contextMenu = ''
+    menu.setAttribute('role', 'menu')
+    menu.style.cssText = [
+      'position:fixed', 'z-index:180', 'min-width:190px', 'max-height:60vh', 'overflow:auto',
+      'padding:5px', 'border:1px solid var(--housing-line-strong,#3c4f4a)', 'border-radius:8px',
+      'background:var(--housing,#16201e)', 'color:var(--ink-inverse,#e8efec)',
+      'box-shadow:0 18px 40px rgb(6 12 11 / 44%)', 'font-size:12px'
+    ].join(';')
+
+    items.forEach((item) => {
+      if (item.submenu) {
+        const group = document.createElement('div')
+        group.style.cssText = 'padding:5px 9px 3px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--probe,#35b39c)'
+        group.textContent = item.label
+        menu.appendChild(group)
+        item.submenu.forEach((choice) => menu.appendChild(menuButton(choice)))
+        return
+      }
+      menu.appendChild(menuButton(item))
+    })
+    document.body.appendChild(menu)
+
+    // Flip near a viewport edge so the menu is never clipped.
+    const box = menu.getBoundingClientRect()
+    const left = x + box.width > window.innerWidth - 8 ? Math.max(8, x - box.width) : x
+    const top = y + box.height > window.innerHeight - 8 ? Math.max(8, y - box.height) : y
+    menu.style.left = `${left}px`
+    menu.style.top = `${top}px`
+    return menu
+  }
+
+  function menuButton(item) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.setAttribute('role', 'menuitem')
+    button.textContent = item.label
+    button.style.cssText = [
+      'display:block', 'width:100%', 'padding:7px 9px', 'border:0', 'border-radius:5px',
+      'background:transparent', 'color:' + (item.danger ? 'var(--alarm,#ef7f6a)' : 'inherit'),
+      'cursor:pointer', 'font-size:12px', 'text-align:left'
+    ].join(';')
+    button.addEventListener('mouseenter', () => button.focus())
+    button.addEventListener('focus', () => { button.style.background = 'var(--housing-raised,#1f2c29)' })
+    button.addEventListener('blur', () => { button.style.background = 'transparent' })
+    button.addEventListener('click', () => {
+      closeContextMenu()
+      item.run()
+    })
+    return button
+  }
+
+  function openContextMenu(event) {
+    const match = regionFor(event.target)
+    if (!match) return
+    event.preventDefault()
+    closeContextMenu()
+    const items = match.region.items(event, match.host) || []
+    if (!items.length) return
+    contextMenu = buildMenu(items, event.clientX, event.clientY)
+    openRegion = match.region
+    const first = contextMenu.querySelector('button')
+    if (first) first.focus()
+  }
+
+  document.addEventListener('contextmenu', openContextMenu)
+  document.addEventListener('pointerdown', (event) => {
+    if (contextMenu && !event.target.closest('[data-context-menu]')) closeContextMenu()
+  }, true)
+  document.addEventListener('htmx:beforeSwap', closeContextMenu)
+  document.addEventListener('wheel', closeContextMenu, { passive: true })
+  document.addEventListener('keydown', (event) => {
+    if (!contextMenu) return
+    const buttons = Array.from(contextMenu.querySelectorAll('button'))
+    const index = buttons.indexOf(document.activeElement)
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      const region = openRegion
+      closeContextMenu()
+      if (region && region.restoreFocus) region.restoreFocus()
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      buttons[(index + 1) % buttons.length].focus()
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      buttons[(index - 1 + buttons.length) % buttons.length].focus()
+    }
+  })
+
+  const namespace = window.ProcessLab || (window.ProcessLab = {})
+  namespace.menu = { register }
+})()
