@@ -153,6 +153,22 @@ func TestValidateBlockUpdateFieldErrorWordingIsUnchanged(t *testing.T) {
 	}
 }
 
+// The Sine block's phase field used to state its range twice and
+// disagree with itself: the editor's Min/Max attributes said -1000..1000,
+// but the old validateParameters switch enforced -10000..10000 against it.
+// Unifying the bound onto the field (task 4) kept the editor's frozen
+// attribute value and tightened enforcement to match it, since a value the
+// UI never let you type could still reach the server as -10000..10000 was
+// no tighter. This pins that resolved number down: if it ever needs to
+// widen again, this test forces that to be a deliberate edit, not a silent
+// drift back to the old inconsistency.
+func TestValidateBlockUpdateRejectsPhaseAboveItsBound(t *testing.T) {
+	err := updateWithOverride(t, BlockSine, "phase", "5000")
+	if want := "phase must be between -1000 and 1000"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
 func TestValidateBlockUpdateRequiresEveryDefinedField(t *testing.T) {
 	block := Block{Kind: BlockGain, Name: "Valve", Parameters: defaultParameters(BlockGain)}
 	_, err := validateBlockUpdate(block, BlockUpdate{Name: "Valve", Parameters: map[string]string{}})
