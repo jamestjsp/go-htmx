@@ -14,6 +14,7 @@ type pageView struct {
 }
 
 type workbenchView struct {
+	Workspace       studio.Workspace
 	Snapshot        studio.Snapshot
 	Blocks          []blockView
 	Connections     []connectionView
@@ -96,8 +97,10 @@ type spectrumView struct {
 	MaxFrequency  string
 }
 
-func newWorkbenchView(snapshot studio.Snapshot, selectedID int64, errorMessage string) workbenchView {
+func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
+	snapshot := workspace.Snapshot
 	view := workbenchView{
+		Workspace:       workspace,
 		Snapshot:        snapshot,
 		Error:           errorMessage,
 		Updated:         relativeTime(snapshot.Flow.UpdatedAt),

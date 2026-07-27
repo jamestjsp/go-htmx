@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,12 @@ import (
 
 func TestPageRendersSeededHTMXWorkbench(t *testing.T) {
 	server, _ := openTestServer(t)
-	response := request(t, server, http.MethodGet, "/", nil)
+	redirect := request(t, server, http.MethodGet, "/", nil)
+	if redirect.Code != http.StatusSeeOther {
+		t.Fatalf("redirect status = %d", redirect.Code)
+	}
+	location := redirect.Header().Get("Location")
+	response := request(t, server, http.MethodGet, location, nil)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
@@ -91,7 +97,8 @@ func TestAddUpdateAndMoveBlockThroughHTTP(t *testing.T) {
 
 func TestCatalogPaletteAndTransferFunctionEditor(t *testing.T) {
 	server, service := openTestServer(t)
-	page := request(t, server, http.MethodGet, "/", nil)
+	redirect := request(t, server, http.MethodGet, "/", nil)
+	page := request(t, server, http.MethodGet, redirect.Header().Get("Location"), nil)
 	for _, expected := range []string{
 		"Constant", "Sine Wave", "Integrator", "Transfer Function",
 		"PID Controller", "Transport Delay", "Spectrum Analyzer",
@@ -138,6 +145,72 @@ func TestCatalogPaletteAndTransferFunctionEditor(t *testing.T) {
 	})
 	if update.Code != http.StatusOK || !strings.Contains(update.Body.String(), "[2, 1] / [1, 3, 2]") {
 		t.Fatalf("update status = %d, body = %s", update.Code, update.Body.String())
+	}
+}
+
+func TestProjectAndFlowLifecycleThroughHTTP(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	initial, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createProject := request(t, server, http.MethodPost, "/projects", url.Values{
+		"name": {"Operations"},
+	})
+	if createProject.Code != http.StatusSeeOther {
+		t.Fatalf("create project status = %d, body = %s", createProject.Code, createProject.Body.String())
+	}
+	projectLocation := createProject.Header().Get("Location")
+	var projectID, defaultFlowID int64
+	if _, err := fmt.Sscanf(
+		projectLocation, "/projects/%d/flows/%d", &projectID, &defaultFlowID,
+	); err != nil {
+		t.Fatalf("project location = %q: %v", projectLocation, err)
+	}
+	projectPage := request(t, server, http.MethodGet, projectLocation, nil)
+	if projectPage.Code != http.StatusOK || !strings.Contains(projectPage.Body.String(), "Untitled flowsheet") {
+		t.Fatalf("project page status = %d, body = %s", projectPage.Code, projectPage.Body.String())
+	}
+
+	createFlow := requestHX(t, server, http.MethodPost,
+		"/projects/"+strconv.FormatInt(projectID, 10)+"/flows",
+		url.Values{"name": {"Startup"}},
+	)
+	if createFlow.Code != http.StatusNoContent {
+		t.Fatalf("create flow status = %d, body = %s", createFlow.Code, createFlow.Body.String())
+	}
+	flowLocation := createFlow.Header().Get("HX-Redirect")
+	var createdProjectID, flowID int64
+	if _, err := fmt.Sscanf(
+		flowLocation, "/projects/%d/flows/%d", &createdProjectID, &flowID,
+	); err != nil {
+		t.Fatalf("flow location = %q: %v", flowLocation, err)
+	}
+	if createdProjectID != projectID {
+		t.Fatalf("flow project = %d, want %d", createdProjectID, projectID)
+	}
+
+	rename := request(t, server, http.MethodPut,
+		"/flows/"+strconv.FormatInt(flowID, 10)+"/name",
+		url.Values{"name": {"Warm startup"}},
+	)
+	if rename.Code != http.StatusOK || !strings.Contains(rename.Body.String(), "Warm startup") {
+		t.Fatalf("rename status = %d, body = %s", rename.Code, rename.Body.String())
+	}
+	reopened := request(t, server, http.MethodGet, flowLocation, nil)
+	if reopened.Code != http.StatusOK || !strings.Contains(reopened.Body.String(), "Warm startup") {
+		t.Fatalf("reopen status = %d, body = %s", reopened.Code, reopened.Body.String())
+	}
+
+	mismatch := request(t, server, http.MethodGet,
+		"/projects/"+strconv.FormatInt(initial.Project.ID, 10)+
+			"/flows/"+strconv.FormatInt(flowID, 10),
+		nil,
+	)
+	if mismatch.Code != http.StatusNotFound {
+		t.Fatalf("mismatch status = %d", mismatch.Code)
 	}
 }
 
@@ -439,6 +512,22 @@ func request(t *testing.T, server *Server, method, path string, values url.Value
 	if values != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+	return response
+}
+
+func requestHX(t *testing.T, server *Server, method, path string, values url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	var body io.Reader
+	if values != nil {
+		body = strings.NewReader(values.Encode())
+	}
+	req := httptest.NewRequest(method, path, body)
+	if values != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	req.Header.Set("HX-Request", "true")
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, req)
 	return response
