@@ -41,6 +41,11 @@ type parameterDefinition struct {
 	Unit        string
 	Placeholder string
 	Help        string
+	// set and text are the field's own read/write: the one place that knows
+	// which Parameters member this name maps to. Nothing outside the
+	// definition switches on Name again.
+	set  func(*Parameters, string) error
+	text func(Parameters) string
 }
 
 type blockDefinition struct {
@@ -73,9 +78,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Amplitude: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Final value", "0.05", "-10000", "10000", "scalar"),
-			numberField("initial_value", "Initial value", "0.05", "-10000", "10000", "scalar"),
-			numberField("step_time", "Step time", "0.05", "0", "120", "sec"),
+			numberField("amplitude", "Final value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("initial_value", "Initial value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
+			numberField("step_time", "Step time", "0.05", "0", "120", "sec", func(p *Parameters) *float64 { return &p.StepTime }),
 		},
 	},
 	BlockConstant: {
@@ -86,7 +91,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Value: 1},
 		Parameters: []parameterDefinition{
-			numberField("value", "Value", "0.05", "-10000", "10000", "scalar"),
+			numberField("value", "Value", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Value }),
 		},
 	},
 	BlockSine: {
@@ -97,10 +102,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Amplitude: 1, Frequency: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Amplitude", "0.05", "-10000", "10000", "scalar"),
-			numberField("bias", "Bias", "0.05", "-10000", "10000", "scalar"),
-			numberField("frequency", "Frequency", "0.05", "0", "1000", "rad/s"),
-			numberField("phase", "Phase", "0.05", "-1000", "1000", "rad"),
+			numberField("amplitude", "Amplitude", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("bias", "Bias", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Bias }),
+			numberField("frequency", "Frequency", "0.05", "0", "1000", "rad/s", func(p *Parameters) *float64 { return &p.Frequency }),
+			numberField("phase", "Phase", "0.05", "-1000", "1000", "rad", func(p *Parameters) *float64 { return &p.Phase }),
 		},
 	},
 	BlockGain: {
@@ -111,7 +116,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Gain: 1},
 		Parameters: []parameterDefinition{
-			numberField("gain", "Gain", "0.05", "-10000", "10000", "scalar"),
+			numberField("gain", "Gain", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Gain }),
 		},
 	},
 	BlockSum: {
@@ -124,6 +129,11 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{{
 			Name: "signs", Label: "Input signs", Type: "text",
 			Placeholder: "+-", Help: "Connection order; one sign broadcasts",
+			set: func(parameters *Parameters, raw string) error {
+				parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
+				return nil
+			},
+			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
 	},
 	BlockLag: {
@@ -134,7 +144,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{TimeConstant: 1},
 		Parameters: []parameterDefinition{
-			numberField("time_constant", "Time constant", "0.05", "0.001", "1000", "sec"),
+			numberField("time_constant", "Time constant", "0.05", "0.001", "1000", "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
 		},
 	},
 	BlockIntegrator: {
@@ -152,14 +162,8 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Numerator: []float64{1}, Denominator: []float64{1, 1}},
 		Parameters: []parameterDefinition{
-			{
-				Name: "numerator", Label: "Numerator coefficients", Type: "text",
-				Placeholder: "1, 3", Help: "Descending powers of s",
-			},
-			{
-				Name: "denominator", Label: "Denominator coefficients", Type: "text",
-				Placeholder: "1, 2, 1", Help: "Descending powers of s",
-			},
+			coefficientField("numerator", "Numerator coefficients", "1, 3", func(p *Parameters) *[]float64 { return &p.Numerator }),
+			coefficientField("denominator", "Denominator coefficients", "1, 2, 1", func(p *Parameters) *[]float64 { return &p.Denominator }),
 		},
 	},
 	BlockPID: {
@@ -170,10 +174,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Proportional: 1, Integral: 0.5, FilterTime: 0.1},
 		Parameters: []parameterDefinition{
-			numberField("proportional", "Proportional Kp", "0.05", "-10000", "10000", "scalar"),
-			numberField("integral", "Integral Ki", "0.05", "-10000", "10000", "1/sec"),
-			numberField("derivative", "Derivative Kd", "0.05", "-10000", "10000", "sec"),
-			numberField("filter_time", "Derivative filter Tf", "0.01", "0.001", "1000", "sec"),
+			numberField("proportional", "Proportional Kp", "0.05", "-10000", "10000", "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "0.05", "-10000", "10000", "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "0.05", "-10000", "10000", "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "0.01", "0.001", "1000", "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
 		},
 	},
 	BlockDelay: {
@@ -184,10 +188,19 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{Delay: 1, Approximation: 3},
 		Parameters: []parameterDefinition{
-			numberField("delay", "Delay", "0.05", "0", "120", "sec"),
+			numberField("delay", "Delay", "0.05", "0", "120", "sec", func(p *Parameters) *float64 { return &p.Delay }),
 			{
 				Name: "approximation", Label: "Padé order", Type: "number",
 				Step: "1", Min: "1", Max: "10", Unit: "order",
+				set: func(parameters *Parameters, raw string) error {
+					value, err := strconv.Atoi(strings.TrimSpace(raw))
+					if err != nil {
+						return invalid("Padé order must be a whole number")
+					}
+					parameters.Approximation = value
+					return nil
+				},
+				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 			},
 		},
 	},
@@ -207,10 +220,44 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 	},
 }
 
-func numberField(name, label, step, min, max, unit string) parameterDefinition {
+// numberField builds a scalar float field from a selector picking its home
+// in Parameters, so the block definition stays the only place that names it.
+func numberField(name, label, step, min, max, unit string, field func(*Parameters) *float64) parameterDefinition {
 	return parameterDefinition{
 		Name: name, Label: label, Type: "number",
 		Step: step, Min: min, Max: max, Unit: unit,
+		set: func(parameters *Parameters, raw string) error {
+			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+			if err != nil {
+				return invalid("%s must be a number", strings.ReplaceAll(name, "_", " "))
+			}
+			*field(parameters) = value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			return strconv.FormatFloat(*field(&parameters), 'g', -1, 64)
+		},
+	}
+}
+
+// coefficientField is numberField's counterpart for the polynomial
+// parameters: same one-selector shape, but parsed and rendered as a
+// comma/space separated coefficient list instead of a single number.
+func coefficientField(name, label, placeholder string, field func(*Parameters) *[]float64) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "text",
+		Placeholder: placeholder, Help: "Descending powers of s",
+		set: func(parameters *Parameters, raw string) error {
+			coefficients, err := parseCoefficients(strings.TrimSpace(raw))
+			if err != nil {
+				return invalid("%s coefficients must be comma or space separated numbers", name)
+			}
+			*field(parameters) = coefficients
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			return coefficientsText(*field(&parameters))
+		},
 	}
 }
 
@@ -245,7 +292,7 @@ func (b Block) EditorFields() []ParameterField {
 	for _, field := range definition.Parameters {
 		fields = append(fields, ParameterField{
 			Name: field.Name, Label: field.Label, Type: field.Type,
-			Value: parameterText(b.Parameters, field.Name),
+			Value: field.text(b.Parameters),
 			Step:  field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
 			Placeholder: field.Placeholder, Help: field.Help,
 		})
@@ -307,7 +354,7 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 		if !exists {
 			return Block{}, invalid("%s is required", strings.ToLower(field.Label))
 		}
-		if err := setParameter(&parameters, field.Name, value); err != nil {
+		if err := field.set(&parameters, value); err != nil {
 			return Block{}, err
 		}
 	}
@@ -400,116 +447,6 @@ func bounded(label string, value, minimum, maximum float64) error {
 		return invalid("%s must be between %g and %g", label, minimum, maximum)
 	}
 	return nil
-}
-
-func setParameter(parameters *Parameters, name, raw string) error {
-	raw = strings.TrimSpace(raw)
-	switch name {
-	case "signs":
-		parameters.Signs = strings.ReplaceAll(raw, " ", "")
-		return nil
-	case "numerator", "denominator":
-		coefficients, err := parseCoefficients(raw)
-		if err != nil {
-			return invalid("%s coefficients must be comma or space separated numbers", name)
-		}
-		if name == "numerator" {
-			parameters.Numerator = coefficients
-		} else {
-			parameters.Denominator = coefficients
-		}
-		return nil
-	case "approximation":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return invalid("Padé order must be a whole number")
-		}
-		parameters.Approximation = value
-		return nil
-	}
-
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return invalid("%s must be a number", strings.ReplaceAll(name, "_", " "))
-	}
-	switch name {
-	case "amplitude":
-		parameters.Amplitude = value
-	case "initial_value":
-		parameters.InitialValue = value
-	case "step_time":
-		parameters.StepTime = value
-	case "value":
-		parameters.Value = value
-	case "bias":
-		parameters.Bias = value
-	case "frequency":
-		parameters.Frequency = value
-	case "phase":
-		parameters.Phase = value
-	case "gain":
-		parameters.Gain = value
-	case "time_constant":
-		parameters.TimeConstant = value
-	case "proportional":
-		parameters.Proportional = value
-	case "integral":
-		parameters.Integral = value
-	case "derivative":
-		parameters.Derivative = value
-	case "filter_time":
-		parameters.FilterTime = value
-	case "delay":
-		parameters.Delay = value
-	default:
-		return invalid("unknown parameter %q", name)
-	}
-	return nil
-}
-
-func parameterText(parameters Parameters, name string) string {
-	switch name {
-	case "signs":
-		return parameters.Signs
-	case "numerator":
-		return coefficientsText(parameters.Numerator)
-	case "denominator":
-		return coefficientsText(parameters.Denominator)
-	case "approximation":
-		return strconv.Itoa(parameters.Approximation)
-	}
-	var value float64
-	switch name {
-	case "amplitude":
-		value = parameters.Amplitude
-	case "initial_value":
-		value = parameters.InitialValue
-	case "step_time":
-		value = parameters.StepTime
-	case "value":
-		value = parameters.Value
-	case "bias":
-		value = parameters.Bias
-	case "frequency":
-		value = parameters.Frequency
-	case "phase":
-		value = parameters.Phase
-	case "gain":
-		value = parameters.Gain
-	case "time_constant":
-		value = parameters.TimeConstant
-	case "proportional":
-		value = parameters.Proportional
-	case "integral":
-		value = parameters.Integral
-	case "derivative":
-		value = parameters.Derivative
-	case "filter_time":
-		value = parameters.FilterTime
-	case "delay":
-		value = parameters.Delay
-	}
-	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 func parseCoefficients(raw string) ([]float64, error) {

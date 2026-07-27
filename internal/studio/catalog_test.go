@@ -64,6 +64,70 @@ func TestTransferFunctionUpdateParsesAndValidatesCoefficients(t *testing.T) {
 	}
 }
 
+// updateWithOverride starts from a kind's own defaults, rendered through
+// EditorFields the way the UI would echo them back, then swaps in one bad
+// value. Every other field stays valid, so the returned error can only have
+// come from the field under test.
+func updateWithOverride(t *testing.T, kind BlockKind, field, raw string) error {
+	t.Helper()
+	block := Block{Kind: kind, Name: "Block", Parameters: defaultParameters(kind)}
+	values := make(map[string]string)
+	for _, editorField := range block.EditorFields() {
+		values[editorField.Name] = editorField.Value
+	}
+	values[field] = raw
+	_, err := validateBlockUpdate(block, BlockUpdate{Name: "Block", Parameters: values})
+	return err
+}
+
+// These wordings moved from the setParameter/parameterText switches into
+// per-field closures; this test is the guard that the move didn't paraphrase
+// them along the way.
+func TestValidateBlockUpdateFieldErrorWordingIsUnchanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    BlockKind
+		field   string
+		raw     string
+		wantErr string
+	}{
+		{"malformed number keeps underscores as spaces", BlockSource, "initial_value", "abc", "initial value must be a number"},
+		{"malformed Padé order", BlockDelay, "approximation", "abc", "Padé order must be a whole number"},
+		{"malformed numerator coefficients", BlockTransfer, "numerator", "one, two", "numerator coefficients must be comma or space separated numbers"},
+		{"malformed denominator coefficients", BlockTransfer, "denominator", "?", "denominator coefficients must be comma or space separated numbers"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := updateWithOverride(t, test.kind, test.field, test.raw)
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateBlockUpdateRequiresEveryDefinedField(t *testing.T) {
+	block := Block{Kind: BlockGain, Name: "Valve", Parameters: defaultParameters(BlockGain)}
+	_, err := validateBlockUpdate(block, BlockUpdate{Name: "Valve", Parameters: map[string]string{}})
+	if want := "gain is required"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+func TestValidateBlockUpdateStripsSpacesFromSigns(t *testing.T) {
+	block := Block{Kind: BlockSum, Name: "Balance", Parameters: defaultParameters(BlockSum)}
+	updated, err := validateBlockUpdate(block, BlockUpdate{
+		Name:       "Balance",
+		Parameters: map[string]string{"signs": " + - + "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := updated.Parameters.Signs, "+-+"; got != want {
+		t.Fatalf("signs = %q, want %q", got, want)
+	}
+}
+
 func TestOpenMigratesLegacyBlockParameters(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.db")
