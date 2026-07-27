@@ -116,7 +116,7 @@ kbd {
    Application shell.
    `.workbench` owns every shell dimension as a custom property so
    the `data-rail-left` / `data-rail-right` / `data-dock` attributes
-   applied by app.js drive all sizing from CSS alone.
+   applied by js/shell.js drive all sizing from CSS alone.
    --------------------------------------------------------------- */
 .workbench {
   --rail-expanded-left: 244px;
@@ -1094,7 +1094,7 @@ body.is-resizing-dock .studio-grid {
    inside it. The grid is painted here rather than on the sheet so
    it can extend past the sheet bounds without a 6000x4000 element.
    The --pan-x / --pan-y / --zoom / --grid-* properties and the
-   data-zoom-band switch are written by app.js every frame.
+   data-zoom-band switch are written by js/viewport.js every frame.
    --------------------------------------------------------------- */
 .flow-canvas {
   position: relative;
@@ -2506,7 +2506,8 @@ body.is-resizing-dock .studio-grid {
    Readout rail. The signature element: a live monospace instrument
    strip across the bottom of the housing. Keys are grotesque and
    quiet; values are mono, bright and tabular so nothing shifts as
-   the numbers change. IDs here are the contract app.js populates.
+   the numbers change. IDs here are the contract js/viewport.js (zoom,
+   cursor, grid) and js/selection.js (the selection count) populate.
    --------------------------------------------------------------- */
 .statusbar {
   grid-row: 5;
@@ -2643,8 +2644,8 @@ body.is-resizing-dock .studio-grid {
   50% { opacity: .25; }
 }
 
-/* The selection cell lights up when anything is selected. app.js sets
-   textContent for the number and, optionally, data-count for the lamp. */
+/* The selection cell lights up when anything is selected. js/selection.js
+   sets textContent for the number and, optionally, data-count for the lamp. */
 #readout-selection[data-count]:not([data-count="0"]) {
   color: var(--probe);
   font-weight: 700;

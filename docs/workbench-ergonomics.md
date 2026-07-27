@@ -1,9 +1,18 @@
 # Workbench ergonomics
 
 How the Process Lab canvas behaves, and why. Read this before changing
-`internal/web/static/app.js`, `internal/web/static/tabs.js`,
+`internal/web/static/js/` (the canvas modules), `internal/web/static/tabs.js`,
 `internal/web/static/menu.js`, `internal/web/static/app.css`, or the sheet
 constants in `internal/studio/model.go`.
+
+The canvas modules divide by the state they own: `viewport.js` (pan, zoom,
+fit), `selection.js` (the selection set and the marquee), `dragging.js` (the
+block drag, its guides and the nudge), `wiring.js` (the armed port and the
+draft edge), `shell.js` (rails and dock), `shortcuts.js` (the reference
+sheet), `contextmenu.js` (the canvas menu region), `geometry.js` and `dom.js`
+(shared, stateless), `input.js` (every canvas binding, kept together because
+they share precedence rather than state), `reapply.js` (the one htmx re-apply
+entry point) and `main.js` (which names the order the canvas is rebuilt in).
 
 Before this work the sheet was a fixed 590px box on a scrolling page,
 positions were clamped to 1040×500, and there was no pan, no zoom, no
@@ -185,10 +194,10 @@ the user connects on purpose. The shortcut sheet says so.
 
 ## Context menus
 
-The menu primitives live in `menu.js`, not `app.js`: the canvas and the tab
-strip both open one, and a second implementation would have drifted on edge
-flipping, arrow keys, and focus restore. `app.js` and `tabs.js` each supply
-their own items and keep nothing else.
+The menu primitives live in `menu.js`, not in the canvas modules: the canvas
+and the tab strip both open one, and a second implementation would have
+drifted on edge flipping, arrow keys, and focus restore. `js/contextmenu.js`
+and `tabs.js` each supply their own items and keep nothing else.
 
 The native menu is suppressed **only** over the sheet and the tab strip, so
 the browser's own menu still works over the rails and the dock. Right-clicking
@@ -354,9 +363,9 @@ gofmt -l . && go vet ./... && go test ./...
 ```
 
 Interaction behaviour cannot be covered that way. **Templates and static
-assets are `go:embed`-ed into the binary, so editing `app.js`, `tabs.js`,
-`menu.js`, or either stylesheet changes nothing the server serves — rebuild
-before any browser check.** During this work six CDP suites drove real
+assets are `go:embed`-ed into the binary, so editing anything under `js/`,
+`tabs.js`, `menu.js`, or either stylesheet changes nothing the server serves
+— rebuild before any browser check.** During this work six CDP suites drove real
 gestures against a headless Chrome, 88 checks in total, covering: viewport
 (18), snapping (13), selection (15), keyboard (16), context menus (15) and
 wiring (11).

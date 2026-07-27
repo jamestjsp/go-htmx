@@ -38,7 +38,7 @@ export function screenToSheet(clientX, clientY) {
   }
 }
 
-export function applyViewport(animate = false) {
+function applyViewport(animate = false) {
   const root = canvas()
   const layer = sheet()
   if (!root || !layer) return

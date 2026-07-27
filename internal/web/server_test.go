@@ -50,8 +50,10 @@ func TestPageRendersTheRegister(t *testing.T) {
 		}
 	}
 	// The register is a different shell. Pulling the workbench stylesheet or
-	// its scripts onto it would undo the point of the separation.
-	for _, unwanted := range []string{"/assets/app.css", "/assets/app.js", "/assets/menu.js"} {
+	// its scripts onto it would undo the point of the separation. The canvas
+	// modules are named by their directory: they assume a #workbench to act on,
+	// so any one of them arriving here is the same mistake.
+	for _, unwanted := range []string{"/assets/app.css", "/assets/js/", "/assets/menu.js"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the register loads %q", unwanted)
 		}
@@ -646,8 +648,8 @@ func TestCanvasModulesAreEmbedded(t *testing.T) {
 		if response.Code != http.StatusOK {
 			t.Fatalf("%s status = %d", path, response.Code)
 		}
-		if response.Body.Len() == 0 {
-			t.Fatalf("%s is empty", path)
+		if response.Body.Len() < 1000 {
+			t.Fatalf("%s unexpectedly small", path)
 		}
 	}
 }

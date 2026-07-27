@@ -26,7 +26,7 @@ export function geometry() {
 // and this redraws them during a drag, so the two curves have to be the
 // same curve; changing the bend here alone would make a wire jump the
 // moment it is touched.
-export function edgePath(source, target) {
+function edgePath(source, target) {
   const { blockWidth, blockHeight } = geometry()
   const startX = source.offsetLeft + blockWidth
   const startY = source.offsetTop + blockHeight / 2

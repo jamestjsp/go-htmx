@@ -6,8 +6,12 @@
 // construction, edge flipping, dismissal, and keyboard navigation live
 // here, so a second menu never needs a second copy of them.
 //
-// Loaded before app.js; a namespace rather than a module because app.js
-// is one long IIFE whose state must stay closed over.
+// Loaded before the canvas modules and before tabs.js, each of which
+// registers a region with it. A namespace on window rather than an ES
+// module because tabs.js is a classic script and cannot import one; a
+// deferred classic script and a module script share a single execution
+// list ordered by document position, so the order of the tags in page.html
+// is what guarantees this file runs first.
 // =====================================================================
 (() => {
   const regions = []

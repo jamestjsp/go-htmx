@@ -21,7 +21,7 @@ let marquee = null
 export const selectionSize = () => selection.size
 export const isSelected = (id) => selection.has(id)
 
-export function blockNodes() {
+function blockNodes() {
   const layer = sheet()
   return layer ? Array.from(layer.querySelectorAll('.block-card')) : []
 }
