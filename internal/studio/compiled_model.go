@@ -17,10 +17,13 @@ const (
 )
 
 type compiledSignal struct {
-	Name    string
-	BlockID int64
-	Port    int
-	Role    compiledSignalRole
+	Name        string
+	BlockID     int64
+	Port        int
+	Channel     int
+	ChannelName string
+	Width       int
+	Role        compiledSignalRole
 }
 
 type compiledPort struct {
@@ -131,24 +134,27 @@ func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, erro
 	if len(probes) == 0 {
 		return nil, invalid("select at least one output signal")
 	}
-	outputByPort := make(map[compiledPort]compiledOutput, len(m.outputs))
+	outputByPort := make(map[compiledPort][]compiledOutput, len(m.outputs))
 	for _, output := range m.outputs {
-		outputByPort[compiledPort{blockID: output.signal.BlockID, port: output.signal.Port}] = output
+		port := compiledPort{blockID: output.signal.BlockID, port: output.signal.Port}
+		outputByPort[port] = append(outputByPort[port], output)
 	}
 
 	unique := uniqueModelProbes(probes)
-	outputs := make([]compiledOutput, len(unique))
-	names := make([]string, len(unique))
-	for i, probe := range unique {
-		output, ok := outputByPort[compiledPort{blockID: probe.BlockID, port: probe.OutputPort}]
+	var outputs []compiledOutput
+	var names []string
+	for _, probe := range unique {
+		portOutputs, ok := outputByPort[compiledPort{blockID: probe.BlockID, port: probe.OutputPort}]
 		if !ok {
 			return nil, invalid(
 				"block %d output port %d was not exposed during compilation",
 				probe.BlockID, probe.OutputPort,
 			)
 		}
-		outputs[i] = output
-		names[i] = output.signal.Name
+		for _, output := range portOutputs {
+			outputs = append(outputs, output)
+			names = append(names, output.signal.Name)
+		}
 	}
 
 	system, err := m.system.SelectByName(m.system.InputName, names)
@@ -206,7 +212,9 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		inputData := make([]float64, steps*len(m.inputs))
 		for sample := range steps {
 			for inputIndex, input := range m.inputs {
-				inputData[inputIndex*steps+sample] = sourceValue(input.source, times[sample])
+				inputData[inputIndex*steps+sample] = sourceValue(
+					input.source, input.signal.Channel, times[sample],
+				)
 			}
 		}
 		response, err := discrete.Simulate(
@@ -228,7 +236,9 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		inputData := make([]float64, steps*len(m.inputs))
 		for sample := range steps {
 			for inputIndex, input := range m.inputs {
-				inputData[inputIndex*steps+sample] = sourceValue(input.source, times[sample])
+				inputData[inputIndex*steps+sample] = sourceValue(
+					input.source, input.signal.Channel, times[sample],
+				)
 			}
 		}
 		response, err := simulateSystemByStep(
@@ -248,7 +258,9 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 	inputData := make([]float64, steps*len(m.inputs))
 	for i := range steps {
 		for inputIndex, input := range m.inputs {
-			inputData[i*len(m.inputs)+inputIndex] = sourceValue(input.source, times[i])
+			inputData[i*len(m.inputs)+inputIndex] = sourceValue(
+				input.source, input.signal.Channel, times[i],
+			)
 		}
 	}
 	input := mat.NewDense(steps, len(m.inputs), inputData)

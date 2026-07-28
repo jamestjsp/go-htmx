@@ -166,7 +166,7 @@
                 <small>{{.ParameterText}}</small>
               </button>
               {{range .OutputPorts}}
-              <button type="button" class="port port-output" data-output-block="{{$block.ID}}" data-output-port="{{.Index}}" data-output-name="{{$block.Name}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect from {{$block.Name}} {{.Name}}"></button>
+              <button type="button" class="port port-output" data-output-block="{{$block.ID}}" data-output-port="{{.Index}}" data-output-name="{{$block.Name}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect from {{$block.Name}} {{.Name}}">{{if .Label}}<span class="port-label" aria-hidden="true">{{.Label}}</span>{{end}}</button>
               {{end}}
             </article>
             {{end}}

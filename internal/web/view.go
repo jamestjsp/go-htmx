@@ -162,6 +162,8 @@ type portView struct {
 	Size      int
 	Label     string
 	Name      string
+	Width     int
+	Channels  []string
 }
 
 type connectionView struct {
@@ -316,13 +318,19 @@ func inputPortViews(block studio.Block) []portView {
 		center := portCenterOffset(len(ports), index)
 		size := portSize(len(ports))
 		label := ""
-		if block.Kind == studio.BlockSum && index < len(block.Parameters.Signs) {
+		if (block.Kind == studio.BlockSum || block.Kind == studio.BlockVectorSum) &&
+			index < len(block.Parameters.Signs) {
 			label = string(block.Parameters.Signs[index])
+		}
+		schema, _ := block.InputPort(index)
+		if schema.Width > 1 {
+			label = fmt.Sprintf("%d", schema.Width)
 		}
 		ports[index] = portView{
 			Index: index, Top: portTop(center, size), Center: center,
 			HitHeight: portHitHeight(len(ports)), Size: size,
 			Label: label, Name: inputPortName(block, index),
+			Width: schema.Width, Channels: schema.Channels,
 		}
 	}
 	return ports
@@ -333,24 +341,50 @@ func outputPortViews(block studio.Block) []portView {
 	for index := range ports {
 		center := portCenterOffset(len(ports), index)
 		size := portSize(len(ports))
+		schema, _ := block.OutputPort(index)
+		label := ""
+		if schema.Width > 1 {
+			label = fmt.Sprintf("%d", schema.Width)
+		}
 		ports[index] = portView{
 			Index: index, Top: portTop(center, size), Center: center,
 			HitHeight: portHitHeight(len(ports)), Size: size,
-			Name: outputPortName(block, index),
+			Label: label, Name: outputPortName(block, index),
+			Width: schema.Width, Channels: schema.Channels,
 		}
 	}
 	return ports
 }
 
 func inputPortName(block studio.Block, port int) string {
-	if block.Kind == studio.BlockSum && port >= 0 && port < len(block.Parameters.Signs) {
+	if (block.Kind == studio.BlockSum || block.Kind == studio.BlockVectorSum) &&
+		port >= 0 && port < len(block.Parameters.Signs) {
 		return fmt.Sprintf("input %s (port %d)", string(block.Parameters.Signs[port]), port+1)
 	}
-	return fmt.Sprintf("input port %d", port+1)
+	return portName("input", block, port)
 }
 
-func outputPortName(_ studio.Block, port int) string {
-	return fmt.Sprintf("output port %d", port+1)
+func outputPortName(block studio.Block, port int) string {
+	return portName("output", block, port)
+}
+
+func portName(direction string, block studio.Block, port int) string {
+	var (
+		schema studio.SignalPort
+		ok     bool
+	)
+	if direction == "input" {
+		schema, ok = block.InputPort(port)
+	} else {
+		schema, ok = block.OutputPort(port)
+	}
+	if !ok || schema.Width == 1 {
+		return fmt.Sprintf("%s port %d", direction, port+1)
+	}
+	return fmt.Sprintf(
+		"%s port %d (%d channels: %s)",
+		direction, port+1, schema.Width, strings.Join(schema.Channels, ", "),
+	)
 }
 
 func connectionPortName(source studio.Block, sourcePort int, target studio.Block, targetPort int) string {

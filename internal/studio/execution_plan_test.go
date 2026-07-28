@@ -40,7 +40,7 @@ func TestExecutionPartitionIncludesEverySumBranchBoundary(t *testing.T) {
 		{ID: 1, Kind: BlockSource, Name: "Step"},
 		{ID: 2, Kind: BlockGain, Name: "Gain"},
 		{ID: 3, Kind: BlockGain, Name: "Synthetic saturation"},
-		{ID: 4, Kind: BlockSum, Name: "Sum"},
+		{ID: 4, Kind: BlockSum, Name: "Sum", Parameters: Parameters{Signs: "++"}},
 		{ID: 5, Kind: BlockScope, Name: "Scope"},
 	}
 	connections := []Connection{

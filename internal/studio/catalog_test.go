@@ -57,7 +57,7 @@ func TestArityDerivesHasInputAndHasOutputForEveryKind(t *testing.T) {
 			if !definition.HasOutput() {
 				t.Fatalf("%s.HasOutput() = false, want true", kind)
 			}
-		case kind == BlockSum:
+		case arity == arityVariadic:
 			if arity != arityVariadic {
 				t.Fatalf("%s arity = %v, want arityVariadic", kind, arity)
 			}

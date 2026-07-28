@@ -146,6 +146,9 @@ type blockDefinition struct {
 	// sign on every wire, so repeating it names each port and sums exactly
 	// the same signals.
 	declareWiredPorts func(Parameters, int) (Parameters, bool)
+	// portSchema derives terminal widths and channel names from validated
+	// parameters. nil uses the scalar arity defaults.
+	portSchema func(Parameters) blockPortSchema
 	// realize builds the block's controlsys realization from its own
 	// parameters and the input ports its wires land on: ascending, distinct,
 	// and never negative, which compileModel establishes before calling so a
@@ -166,7 +169,7 @@ type blockDefinition struct {
 	step func(Block, float64) (stepEvaluator, error)
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
-	waveform func(Parameters, float64) float64
+	waveform func(Parameters, int, float64) float64
 	// spectrum is true for the one sink kind whose output is a frequency
 	// spectrum instead of a time series and settling metric. It is a
 	// property of this specific kind, not the source/dynamic/sink
@@ -268,33 +271,30 @@ func (k BlockKind) arity() inputArity { return blockDefinitions[k].arity() }
 // that would shrink it past a wired port, and the workbench draws exactly
 // this many glyphs — so a port a user can see is always a port the wiring
 // rules accept, and one they cannot see can never be wired behind their back.
-func (d blockDefinition) inputPortCount(parameters Parameters) int {
+func (d blockDefinition) ports(parameters Parameters) blockPortSchema {
+	if d.portSchema != nil {
+		return d.portSchema(parameters)
+	}
+	inputs := 1
 	switch d.arity() {
 	case arityNone:
-		return 0
+		inputs = 0
 	case arityVariadic:
-		return d.inputPorts(parameters)
-	default:
-		return 1
+		inputs = d.inputPorts(parameters)
 	}
-}
-
-// outputPortCount is its counterpart. Every kind but a sink drives exactly one
-// output today; a sink drives none, which is the same fact HasOutput states
-// for the canvas.
-func (d blockDefinition) outputPortCount() int {
+	outputs := 1
 	if d.role == roleSink {
-		return 0
+		outputs = 0
 	}
-	return 1
+	return scalarPortSchema(inputs, outputs)
 }
 
 // InputPortCount and OutputPortCount are a placed block's own terminals, as
 // its parameters currently stand. They are the workbench's and the wiring
 // rules' shared window onto the derivation above, so the canvas cannot draw a
 // port Connect would refuse.
-func (b Block) InputPortCount() int  { return blockDefinitions[b.Kind].inputPortCount(b.Parameters) }
-func (b Block) OutputPortCount() int { return blockDefinitions[b.Kind].outputPortCount() }
+func (b Block) InputPortCount() int  { return len(b.portSchema().inputs) }
+func (b Block) OutputPortCount() int { return len(b.portSchema().outputs) }
 
 func (b Block) hasInputPort(port int) bool  { return port >= 0 && port < b.InputPortCount() }
 func (b Block) hasOutputPort(port int) bool { return port >= 0 && port < b.OutputPortCount() }
@@ -326,18 +326,78 @@ func normalizedDelayMode(parameters Parameters) string {
 // rather than the two agreeing by coincidence.
 const maxInputSigns = 16
 
+func identityDense(width int) *mat.Dense {
+	values := make([]float64, width*width)
+	for channel := range width {
+		values[channel*width+channel] = 1
+	}
+	return mat.NewDense(width, width, values)
+}
+
+func defaultMatrixGainParameters() Parameters {
+	matrix, err := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
+	if err != nil {
+		panic(err)
+	}
+	inputs, err := NewChannelNames([]string{"u1", "u2"})
+	if err != nil {
+		panic(err)
+	}
+	outputs, err := NewChannelNames([]string{"y1", "y2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{D: &matrix, InputNames: &inputs, OutputNames: &outputs}
+}
+
+func defaultVectorConstantParameters() Parameters {
+	values, err := NewVectorValue([]float64{1, 0})
+	if err != nil {
+		panic(err)
+	}
+	outputs, err := NewChannelNames([]string{"u1", "u2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{Vector: &values, OutputNames: &outputs}
+}
+
+func defaultVectorScopeParameters() Parameters {
+	inputs, err := NewChannelNames([]string{"y1", "y2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{InputNames: &inputs}
+}
+
+func defaultVectorSumParameters() Parameters {
+	inputs, err := NewChannelNames([]string{"x1", "x2"})
+	if err != nil {
+		panic(err)
+	}
+	outputs, err := NewChannelNames([]string{"y1", "y2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{Signs: "+-", InputNames: &inputs, OutputNames: &outputs}
+}
+
 var blockOrder = []BlockKind{
 	BlockSource,
 	BlockConstant,
+	BlockVectorConstant,
 	BlockSine,
 	BlockGain,
+	BlockMatrixGain,
 	BlockSum,
+	BlockVectorSum,
 	BlockLag,
 	BlockIntegrator,
 	BlockTransfer,
 	BlockPID,
 	BlockDelay,
 	BlockScope,
+	BlockVectorScope,
 	BlockSpectrum,
 }
 
@@ -354,7 +414,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("step_time", "Step time", "step time", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
 		},
 		role: roleSource,
-		waveform: func(parameters Parameters, t float64) float64 {
+		waveform: func(parameters Parameters, _ int, t float64) float64 {
 			if t < parameters.StepTime {
 				return parameters.InitialValue
 			}
@@ -377,9 +437,54 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("value", "Value", "value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Value }),
 		},
 		role:     roleSource,
-		waveform: func(parameters Parameters, t float64) float64 { return parameters.Value },
+		waveform: func(parameters Parameters, _ int, _ float64) float64 { return parameters.Value },
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("%.3g constant", parameters.Value)
+		},
+	},
+	BlockVectorConstant: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockVectorConstant, Label: "Vector Constant", Category: "Sources",
+			Description: "Named constant vector", Glyph: "Cv", Tag: "MIMO SOURCE",
+		},
+		Defaults: defaultVectorConstantParameters(),
+		Parameters: []parameterDefinition{
+			vectorField("vector", "Values", func(parameters *Parameters) **VectorValue {
+				return &parameters.Vector
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		role: roleSource,
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.Vector == nil || parameters.OutputNames == nil {
+				return blockPortSchema{}
+			}
+			output, _ := newSignalPort(parameters.Vector.Len(), parameters.OutputNames.Names())
+			return blockPortSchema{outputs: []SignalPort{output}}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			width := block.Parameters.Vector.Len()
+			return controlsys.NewGain(identityDense(width), 0)
+		},
+		waveform: func(parameters Parameters, channel int, _ float64) float64 {
+			return parameters.Vector.values[channel]
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.Vector == nil || parameters.OutputNames == nil {
+				return invalid("vector values and output channel names are required")
+			}
+			if parameters.Vector.Len() != parameters.OutputNames.Len() {
+				return invalid(
+					"vector has %d values but %d output channel names",
+					parameters.Vector.Len(), parameters.OutputNames.Len(),
+				)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%d-channel constant", parameters.Vector.Len())
 		},
 	},
 	BlockSine: {
@@ -395,7 +500,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("phase", "Phase", "phase", "0.05", -1000, 1000, "rad", func(p *Parameters) *float64 { return &p.Phase }),
 		},
 		role: roleSource,
-		waveform: func(parameters Parameters, t float64) float64 {
+		waveform: func(parameters Parameters, _ int, t float64) float64 {
 			return parameters.Bias + parameters.Amplitude*math.Sin(parameters.Frequency*t+parameters.Phase)
 		},
 		summary: func(parameters Parameters) string {
@@ -416,6 +521,68 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("K = %.3g", parameters.Gain)
+		},
+	},
+	BlockMatrixGain: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockMatrixGain, Label: "Matrix Gain", Category: "Math",
+			Description: "Named vector gain y = Du", Glyph: "D", Tag: "MIMO",
+		},
+		Defaults: defaultMatrixGainParameters(),
+		Parameters: []parameterDefinition{
+			matrixField("d", "Gain matrix D", func(parameters *Parameters) **MatrixValue {
+				return &parameters.D
+			}),
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.D == nil || parameters.InputNames == nil || parameters.OutputNames == nil {
+				return blockPortSchema{}
+			}
+			rows, columns := parameters.D.Dims()
+			input, _ := newSignalPort(columns, parameters.InputNames.Names())
+			output, _ := newSignalPort(rows, parameters.OutputNames.Names())
+			return blockPortSchema{
+				inputs: []SignalPort{input}, outputs: []SignalPort{output},
+			}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			rows, columns := block.Parameters.D.Dims()
+			return controlsys.NewGain(
+				mat.NewDense(rows, columns, block.Parameters.D.Values()),
+				0,
+			)
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.D == nil || parameters.InputNames == nil || parameters.OutputNames == nil {
+				return invalid("gain matrix and input/output channel names are required")
+			}
+			rows, columns := parameters.D.Dims()
+			if parameters.InputNames.Len() != columns {
+				return invalid(
+					"gain matrix has %d columns but %d input channel names",
+					columns, parameters.InputNames.Len(),
+				)
+			}
+			if parameters.OutputNames.Len() != rows {
+				return invalid(
+					"gain matrix has %d rows but %d output channel names",
+					rows, parameters.OutputNames.Len(),
+				)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			if parameters.D == nil {
+				return "invalid matrix"
+			}
+			rows, columns := parameters.D.Dims()
+			return fmt.Sprintf("%d×%d named gain", rows, columns)
 		},
 	},
 	BlockSum: {
@@ -499,6 +666,102 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		summary: func(parameters Parameters) string {
 			return "signs " + parameters.Signs
+		},
+	},
+	BlockVectorSum: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockVectorSum, Label: "Vector Sum", Category: "Math",
+			Description: "Signed sum of named vectors", Glyph: "Σv", Tag: "MIMO",
+		},
+		Defaults: defaultVectorSumParameters(),
+		Parameters: []parameterDefinition{
+			{
+				Name: "signs", Label: "Input signs", Type: "text",
+				Placeholder: "+-", Help: "One sign per vector input port, in order",
+				set: func(parameters *Parameters, raw string) error {
+					parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
+					return nil
+				},
+				text: func(parameters Parameters) string { return parameters.Signs },
+			},
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		variadic:   true,
+		inputPorts: func(parameters Parameters) int { return len(parameters.Signs) },
+		declareWiredPorts: func(parameters Parameters, wired int) (Parameters, bool) {
+			if len(parameters.Signs) != 1 || wired > maxInputSigns {
+				return parameters, false
+			}
+			parameters.Signs = strings.Repeat(parameters.Signs, wired)
+			return parameters, true
+		},
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.InputNames == nil || parameters.OutputNames == nil {
+				return blockPortSchema{}
+			}
+			inputs := make([]SignalPort, len(parameters.Signs))
+			for port := range inputs {
+				inputs[port], _ = newSignalPort(
+					parameters.InputNames.Len(), parameters.InputNames.Names(),
+				)
+			}
+			output, _ := newSignalPort(
+				parameters.OutputNames.Len(), parameters.OutputNames.Names(),
+			)
+			return blockPortSchema{inputs: inputs, outputs: []SignalPort{output}}
+		},
+		realize: func(block Block, ports []int) (*controlsys.System, error) {
+			width := block.Parameters.InputNames.Len()
+			values := make([]float64, width*width*len(ports))
+			for inputIndex, port := range ports {
+				signIndex := min(port, len(block.Parameters.Signs)-1)
+				gain := 1.0
+				if block.Parameters.Signs[signIndex] == '-' {
+					gain = -1
+				}
+				for channel := range width {
+					values[channel*(width*len(ports))+inputIndex*width+channel] = gain
+				}
+			}
+			return controlsys.NewGain(
+				mat.NewDense(width, width*len(ports), values),
+				0,
+			)
+		},
+		validate: func(parameters Parameters) error {
+			if len(parameters.Signs) == 0 || len(parameters.Signs) > maxInputSigns {
+				return invalid("input signs must contain 1 to %d plus or minus signs", maxInputSigns)
+			}
+			for _, sign := range parameters.Signs {
+				if sign != '+' && sign != '-' {
+					return invalid("input signs may contain only + and -")
+				}
+			}
+			if parameters.InputNames == nil || parameters.OutputNames == nil {
+				return invalid("input and output channel names are required")
+			}
+			if parameters.InputNames.Len() != parameters.OutputNames.Len() {
+				return invalid(
+					"vector sum has %d input channels but %d output channels",
+					parameters.InputNames.Len(), parameters.OutputNames.Len(),
+				)
+			}
+			return nil
+		},
+		checkInputs: func(block Block, inputs int) error {
+			if len(block.Parameters.Signs) != 1 && len(block.Parameters.Signs) != inputs {
+				return invalid("%s has %d input signs for %d connections",
+					block.Name, len(block.Parameters.Signs), inputs)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%d-channel signs %s", parameters.InputNames.Len(), parameters.Signs)
 		},
 	},
 	BlockLag: {
@@ -755,6 +1018,38 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		role:    roleSink,
 		summary: func(Parameters) string { return "trend output" },
 	},
+	BlockVectorScope: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockVectorScope, Label: "Vector Scope", Category: "Sinks",
+			Description: "Plot named vector channels", Glyph: "⌁v", Tag: "MIMO OUTPUT",
+		},
+		Defaults: defaultVectorScopeParameters(),
+		Parameters: []parameterDefinition{
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+		},
+		role: roleSink,
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.InputNames == nil {
+				return blockPortSchema{}
+			}
+			input, _ := newSignalPort(parameters.InputNames.Len(), parameters.InputNames.Names())
+			return blockPortSchema{inputs: []SignalPort{input}}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewGain(identityDense(block.Parameters.InputNames.Len()), 0)
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.InputNames == nil {
+				return invalid("input channel names are required")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%d-channel trend output", parameters.InputNames.Len())
+		},
+	},
 	BlockSpectrum: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSpectrum, Label: "Spectrum Analyzer", Category: "Sinks",
@@ -878,6 +1173,38 @@ func matrixField(
 	}
 }
 
+func vectorField(
+	name, label string,
+	field func(*Parameters) **VectorValue,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "text",
+		Placeholder: "1, 0",
+		set: func(parameters *Parameters, raw string) error {
+			value, err := ParseVectorValue(raw)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			return 1, value.Len()
+		},
+	}
+}
+
 func channelNamesField(
 	name, label string,
 	field func(*Parameters) **ChannelNames,
@@ -940,6 +1267,7 @@ func cloneParameters(parameters Parameters) Parameters {
 	parameters.InputNames = cloneChannelNames(parameters.InputNames)
 	parameters.OutputNames = cloneChannelNames(parameters.OutputNames)
 	parameters.StateNames = cloneChannelNames(parameters.StateNames)
+	parameters.Vector = cloneVectorValue(parameters.Vector)
 	return parameters
 }
 

@@ -266,6 +266,17 @@ func cloneMatrixValue(value *MatrixValue) *MatrixValue {
 	return &cloned
 }
 
+func cloneVectorValue(value *VectorValue) *VectorValue {
+	if value == nil {
+		return nil
+	}
+	cloned, err := NewVectorValue(value.values)
+	if err != nil {
+		panic(fmt.Sprintf("clone validated vector: %v", err))
+	}
+	return &cloned
+}
+
 func cloneChannelNames(value *ChannelNames) *ChannelNames {
 	if value == nil {
 		return nil

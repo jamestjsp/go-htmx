@@ -254,6 +254,54 @@ func TestWorkbenchRendersValidatedParameterShapes(t *testing.T) {
 	}
 }
 
+func TestWorkbenchRendersNamedVectorPortWidth(t *testing.T) {
+	server, _ := openTestServer(t)
+	workspace := studio.Workspace{
+		Project: studio.Project{ID: 1, Name: "Test"},
+		Flows:   []studio.Flow{{ID: 1, ProjectID: 1, Name: "MIMO"}},
+		Snapshot: studio.Snapshot{
+			Flow: studio.Flow{ID: 1, ProjectID: 1, Name: "MIMO"},
+		},
+	}
+	matrixSnapshot, matrixID, err := func() (studio.Snapshot, int64, error) {
+		temporary, err := studio.Open(context.Background(), ":memory:")
+		if err != nil {
+			return studio.Snapshot{}, 0, err
+		}
+		defer temporary.Close()
+		current, err := temporary.Current(context.Background())
+		if err != nil {
+			return studio.Snapshot{}, 0, err
+		}
+		return temporary.AddBlock(
+			context.Background(), current.Flow.ID,
+			studio.BlockMatrixGain, studio.Point{X: 100, Y: 100},
+		)
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.Snapshot.Blocks = []studio.Block{matrixSnapshot.Blocks[len(matrixSnapshot.Blocks)-1]}
+	workspace.Snapshot.Blocks[0].ID = matrixID
+
+	view := newWorkbenchView(workspace, matrixID, "")
+	var page strings.Builder
+	if err := server.templates.ExecuteTemplate(&page, "workbench", view); err != nil {
+		t.Fatal(err)
+	}
+	body := page.String()
+	for _, want := range []string{
+		`input port 1 (2 channels: u1, u2)`,
+		`output port 1 (2 channels: y1, y2)`,
+		`class="field-shape">2 × 2`,
+		`name="d"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered matrix gain does not contain %q", want)
+		}
+	}
+}
+
 // TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
 // `/` no longer leads to it.
 func TestWorkbenchPageRendersTheShell(t *testing.T) {

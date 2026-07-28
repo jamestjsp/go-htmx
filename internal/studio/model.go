@@ -23,18 +23,22 @@ func invalid(format string, args ...any) error {
 type BlockKind string
 
 const (
-	BlockSource     BlockKind = "source"
-	BlockConstant   BlockKind = "constant"
-	BlockSine       BlockKind = "sine"
-	BlockGain       BlockKind = "gain"
-	BlockSum        BlockKind = "sum"
-	BlockLag        BlockKind = "lag"
-	BlockIntegrator BlockKind = "integrator"
-	BlockTransfer   BlockKind = "transfer"
-	BlockPID        BlockKind = "pid"
-	BlockDelay      BlockKind = "delay"
-	BlockScope      BlockKind = "scope"
-	BlockSpectrum   BlockKind = "spectrum"
+	BlockSource         BlockKind = "source"
+	BlockConstant       BlockKind = "constant"
+	BlockVectorConstant BlockKind = "vector_constant"
+	BlockSine           BlockKind = "sine"
+	BlockGain           BlockKind = "gain"
+	BlockMatrixGain     BlockKind = "matrix_gain"
+	BlockSum            BlockKind = "sum"
+	BlockVectorSum      BlockKind = "vector_sum"
+	BlockLag            BlockKind = "lag"
+	BlockIntegrator     BlockKind = "integrator"
+	BlockTransfer       BlockKind = "transfer"
+	BlockPID            BlockKind = "pid"
+	BlockDelay          BlockKind = "delay"
+	BlockScope          BlockKind = "scope"
+	BlockSpectrum       BlockKind = "spectrum"
+	BlockVectorScope    BlockKind = "vector_scope"
 )
 
 func (k BlockKind) Valid() bool {
@@ -86,6 +90,7 @@ type Parameters struct {
 	InputNames     *ChannelNames `json:"inputNames,omitempty"`
 	OutputNames    *ChannelNames `json:"outputNames,omitempty"`
 	StateNames     *ChannelNames `json:"stateNames,omitempty"`
+	Vector         *VectorValue  `json:"vector,omitempty"`
 }
 
 // Sheet geometry. The flowsheet is a fixed world measured in sheet

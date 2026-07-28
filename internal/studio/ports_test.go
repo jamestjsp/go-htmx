@@ -486,10 +486,8 @@ func TestEveryVariadicKindDerivesItsInputPortsFromParameters(t *testing.T) {
 				t.Fatalf("%s input ports = %d, want 0", kind, got)
 			}
 		case arityVariadic:
-			// Sum's default is one sign, so a fresh one starts with the same
-			// single port every other block has and grows as it is edited.
-			if got := block.InputPortCount(); got != 1 {
-				t.Fatalf("%s input ports at defaults = %d, want 1", kind, got)
+			if got, want := block.InputPortCount(), len(block.Parameters.Signs); got != want {
+				t.Fatalf("%s input ports at defaults = %d, want %d", kind, got, want)
 			}
 			block.Parameters.Signs = "+-+"
 			if got := block.InputPortCount(); got != 3 {

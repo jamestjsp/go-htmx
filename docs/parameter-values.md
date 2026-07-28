@@ -31,4 +31,17 @@ names store a JSON array. Existing numerator and denominator arrays retain
 their original JSON representation and are decoded unchanged; their catalog
 field now delegates to the shared vector parser.
 
+## Port schemas
+
+A block definition derives each terminal's width and ordered channel names
+from these values. Existing terminals derive `{width: 1, channels: ["value"]}`
+without stored migration data. Matrix Gain derives its input width from D
+columns and output width from D rows; vector sources, sums, and scopes derive
+their widths from the same validated vectors and name lists the editor shows.
+
+The database still stores one source port and one target port per connection.
+Width compatibility is checked before insertion and after any parameter edit.
+At compilation, one vector connection expands channel-by-channel into stable
+controlsys signal names while remaining one connection on the canvas.
+
 Unresolved questions: none

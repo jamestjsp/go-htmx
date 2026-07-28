@@ -224,15 +224,19 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | --- | --- | --- | --- |
 | Sources | Step | Configurable initial value, final value, and step time | No input |
 | Sources | Constant | Constant signal | No input |
+| Sources | Vector Constant | Named constant vector | No input |
 | Sources | Sine Wave | Biased sinusoid with amplitude, angular frequency, and phase | No input |
 | Math | Gain | Multiplies its input by `K` | Exactly one |
+| Math | Matrix Gain | Named vector relation `y = Du` | One vector input |
 | Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One input port per sign |
+| Math | Vector Sum | Adds or subtracts named vectors | One vector input port per sign |
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
 | Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
 | Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
 | Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
+| Sinks | Vector Scope | Plots named vector channels | One vector input |
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
 Flows may branch, merge, and close feedback loops. Named interconnections are
@@ -240,6 +244,14 @@ passed to `controlsys.ConnectByName`, which resolves dynamic feedback and
 rejects only an unsolvable algebraic loop. Every source owns a separate
 external input channel, so Step, Constant, and Sine Wave blocks remain
 independent when a model branches or merges.
+
+Each terminal has one catalog-derived width and ordered channel-name list.
+Scalar diagrams retain width one and their existing port numbers. A vector is
+one connection, not several unrelated wires: connections reject unequal
+widths before persistence, then the compiler expands compatible vector
+channels into deterministic `ConnectByName` pairs. Matrix Gain, Vector Sum,
+Vector Constant, and Vector Scope exercise the same named MIMO feedback path
+as future state-space and transfer-function blocks.
 
 Transport Delay preserves exact delay metadata through named series and
 feedback composition. Exact time simulation requires the delay to be an

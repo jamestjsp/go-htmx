@@ -161,6 +161,9 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		if err := checkWiredInputPorts(ctx, tx, block); err != nil {
 			return err
 		}
+		if err := checkWiredPortCompatibility(ctx, tx, block); err != nil {
+			return err
+		}
 		flowID = block.FlowID
 		encoded, err := encodeParameters(block.Parameters)
 		if err != nil {
@@ -205,6 +208,59 @@ func checkWiredInputPorts(ctx context.Context, tx *sql.Tx, block Block) error {
 	// The highest wired port is the one named, not the first that would be
 	// orphaned: it is the port that sets how far the edit can shrink.
 	return invalid("%s has a wire on input port %d; disconnect it first", block.Name, port)
+}
+
+func checkWiredPortCompatibility(ctx context.Context, tx *sql.Tx, changed Block) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source_id, source_port, target_id, target_port
+		FROM connections
+		WHERE source_id = ? OR target_id = ?
+		ORDER BY id`,
+		changed.ID, changed.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("read connected port widths: %w", err)
+	}
+	defer rows.Close()
+
+	var wires []Wire
+	for rows.Next() {
+		var wire Wire
+		if err := rows.Scan(
+			&wire.SourceID, &wire.SourcePort, &wire.TargetID, &wire.TargetPort,
+		); err != nil {
+			return fmt.Errorf("scan connected port widths: %w", err)
+		}
+		wires = append(wires, wire)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate connected port widths: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close connected port widths: %w", err)
+	}
+	for _, wire := range wires {
+		source := changed
+		if wire.SourceID != changed.ID {
+			source, err = blockByID(ctx, tx, wire.SourceID)
+			if err != nil {
+				return err
+			}
+		}
+		target := changed
+		if wire.TargetID != changed.ID {
+			target, err = blockByID(ctx, tx, wire.TargetID)
+			if err != nil {
+				return err
+			}
+		}
+		if err := validateConnectionWidth(
+			source, wire.SourcePort, target, wire.TargetPort,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, error) {
@@ -391,6 +447,11 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 		}
 		if !target.hasInputPort(wire.TargetPort) {
 			return invalid("%s has no input port %d", target.Name, wire.TargetPort)
+		}
+		if err := validateConnectionWidth(
+			source, wire.SourcePort, target, wire.TargetPort,
+		); err != nil {
+			return err
 		}
 
 		var duplicate int

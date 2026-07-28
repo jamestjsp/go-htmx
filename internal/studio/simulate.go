@@ -138,6 +138,11 @@ func compileRequestedModel(
 		if !source.Kind.HasOutput() || !target.Kind.HasInput() {
 			return nil, invalid("a connection uses an incompatible port")
 		}
+		if err := validateConnectionWidth(
+			source, connection.SourcePort, target, connection.TargetPort,
+		); err != nil {
+			return nil, err
+		}
 		incoming[target.ID] = append(incoming[target.ID], connection)
 	}
 
@@ -198,9 +203,9 @@ func compileRequestedModel(
 	}
 
 	systems := make([]*controlsys.System, 0, len(blocks))
-	sourceSignals := make(map[int64]compiledSignal, len(sources))
-	inputSignals := make(map[compiledPort]compiledSignal, len(connections))
-	outputSignals := make(map[compiledPort]compiledSignal, len(blocks))
+	sourceSignals := make(map[int64][]compiledSignal, len(sources))
+	inputSignals := make(map[compiledPort][]compiledSignal, len(connections))
+	outputSignals := make(map[compiledPort][]compiledSignal, len(blocks))
 	signals := make([]compiledSignal, 0, len(blocks)+len(connections)+len(sources))
 	for _, block := range orderedBlocks {
 		system, err := realizeBlock(block, wiredPorts[block.ID])
@@ -210,29 +215,54 @@ func compileRequestedModel(
 		systems = append(systems, system)
 
 		if block.Kind.isSource() {
-			signal := compiledSignal{
-				Name: system.InputName[0], BlockID: block.ID,
-				Port: 0, Role: compiledExternalInput,
-			}
-			sourceSignals[block.ID] = signal
-			signals = append(signals, signal)
-		} else {
-			for i, port := range wiredPorts[block.ID] {
+			port, _ := block.OutputPort(0)
+			blockSignals := make([]compiledSignal, port.Width)
+			for channel := range port.Width {
 				signal := compiledSignal{
-					Name: system.InputName[i], BlockID: block.ID,
-					Port: port, Role: compiledBlockInput,
+					Name: system.InputName[channel], BlockID: block.ID,
+					Port: 0, Channel: channel, ChannelName: port.Channels[channel],
+					Width: port.Width, Role: compiledExternalInput,
 				}
-				inputSignals[compiledPort{blockID: block.ID, port: port}] = signal
+				blockSignals[channel] = signal
 				signals = append(signals, signal)
 			}
-		}
-		for port, name := range system.OutputName {
-			signal := compiledSignal{
-				Name: name, BlockID: block.ID,
-				Port: port, Role: compiledBlockOutput,
+			sourceSignals[block.ID] = blockSignals
+		} else {
+			offset := 0
+			for _, portIndex := range wiredPorts[block.ID] {
+				port, _ := resolvedInputPort(block, portIndex)
+				portSignals := make([]compiledSignal, port.Width)
+				for channel := range port.Width {
+					signal := compiledSignal{
+						Name: system.InputName[offset], BlockID: block.ID,
+						Port: portIndex, Channel: channel, ChannelName: port.Channels[channel],
+						Width: port.Width, Role: compiledBlockInput,
+					}
+					offset++
+					portSignals[channel] = signal
+					signals = append(signals, signal)
+				}
+				inputSignals[compiledPort{blockID: block.ID, port: portIndex}] = portSignals
 			}
-			outputSignals[compiledPort{blockID: block.ID, port: port}] = signal
-			signals = append(signals, signal)
+		}
+		outputPorts := block.portSchema().outputs
+		if block.Kind.isSink() {
+			outputPorts = block.portSchema().inputs
+		}
+		offset := 0
+		for portIndex, port := range outputPorts {
+			portSignals := make([]compiledSignal, port.Width)
+			for channel := range port.Width {
+				signal := compiledSignal{
+					Name: system.OutputName[offset], BlockID: block.ID,
+					Port: portIndex, Channel: channel, ChannelName: port.Channels[channel],
+					Width: port.Width, Role: compiledBlockOutput,
+				}
+				offset++
+				portSignals[channel] = signal
+				signals = append(signals, signal)
+			}
+			outputSignals[compiledPort{blockID: block.ID, port: portIndex}] = portSignals
 		}
 	}
 	if err := applyCompiledTimeDomains(orderedBlocks, systems, request.baseStep); err != nil {
@@ -241,7 +271,7 @@ func compileRequestedModel(
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
-		from, ok := outputSignals[compiledPort{
+		fromChannels, ok := outputSignals[compiledPort{
 			blockID: connection.SourceID,
 			port:    connection.SourcePort,
 		}]
@@ -249,7 +279,7 @@ func compileRequestedModel(
 			return nil, invalid("%s has no output port %d",
 				blockByID[connection.SourceID].Name, connection.SourcePort)
 		}
-		to, ok := inputSignals[compiledPort{
+		toChannels, ok := inputSignals[compiledPort{
 			blockID: connection.TargetID,
 			port:    connection.TargetPort,
 		}]
@@ -257,18 +287,26 @@ func compileRequestedModel(
 			return nil, invalid("%s has no input port %d",
 				blockByID[connection.TargetID].Name, connection.TargetPort)
 		}
-		namedConnections = append(namedConnections, controlsys.Connection{
-			From: from.Name,
-			To:   to.Name,
-			Gain: 1,
-		})
+		if len(fromChannels) != len(toChannels) {
+			return nil, invalid("a connection changed width during compilation")
+		}
+		for channel := range fromChannels {
+			namedConnections = append(namedConnections, controlsys.Connection{
+				From: fromChannels[channel].Name,
+				To:   toChannels[channel].Name,
+				Gain: 1,
+			})
+		}
 	}
-	inputs := make([]string, len(sources))
-	compiledInputs := make([]compiledInput, len(sources))
-	for i, source := range sources {
-		signal := sourceSignals[source.ID]
-		inputs[i] = signal.Name
-		compiledInputs[i] = compiledInput{signal: signal, source: originalBlockByID[source.ID]}
+	var inputs []string
+	var compiledInputs []compiledInput
+	for _, source := range sources {
+		for _, signal := range sourceSignals[source.ID] {
+			inputs = append(inputs, signal.Name)
+			compiledInputs = append(compiledInputs, compiledInput{
+				signal: signal, source: originalBlockByID[source.ID],
+			})
+		}
 	}
 	requestedProbes := make([]modelProbe, 0, len(sinks)+len(request.probes))
 	if request.includeSinks {
@@ -281,22 +319,26 @@ func compileRequestedModel(
 	requestedProbes = append(requestedProbes, request.probes...)
 	requestedProbes = uniqueModelProbes(requestedProbes)
 
-	outputs := make([]string, len(requestedProbes))
-	compiledOutputs := make([]compiledOutput, len(requestedProbes))
-	for i, probe := range requestedProbes {
+	var outputs []string
+	var compiledOutputs []compiledOutput
+	for _, probe := range requestedProbes {
 		block, ok := blockByID[probe.BlockID]
 		if !ok {
 			return nil, invalid("an analysis probe references missing block %d", probe.BlockID)
 		}
-		signal, ok := outputSignals[compiledPort{
+		portSignals, ok := outputSignals[compiledPort{
 			blockID: probe.BlockID,
 			port:    probe.OutputPort,
 		}]
 		if !ok {
 			return nil, invalid("%s has no output port %d", block.Name, probe.OutputPort)
 		}
-		outputs[i] = signal.Name
-		compiledOutputs[i] = compiledOutput{signal: signal, block: originalBlockByID[block.ID]}
+		for _, signal := range portSignals {
+			outputs = append(outputs, signal.Name)
+			compiledOutputs = append(compiledOutputs, compiledOutput{
+				signal: signal, block: originalBlockByID[block.ID],
+			})
+		}
 	}
 
 	staticDelays, err := prepareStaticExactDelays(
@@ -615,6 +657,7 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 	if err != nil {
 		return nil, fmt.Errorf("realize %s: %w", block.Name, err)
 	}
+	_, inputs, outputs := system.Dims()
 
 	// A source's one input is the flowsheet's own input, driven by the sampled
 	// waveform rather than by a wire, so it is the one input a port does not
@@ -622,18 +665,66 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 	// in the same order realize built its inputs, so the two agree column for
 	// column.
 	if block.Kind.isSource() {
-		system.InputName = []string{sourceSignalName(block.ID)}
+		schema, ok := block.OutputPort(0)
+		if !ok || inputs != schema.Width {
+			return nil, fmt.Errorf(
+				"realize %s: source realization has %d inputs for output width %d",
+				block.Name, inputs, schema.Width,
+			)
+		}
+		system.InputName = make([]string, schema.Width)
+		for channel := range schema.Width {
+			system.InputName[channel] = sourceChannelSignalName(
+				block.ID, channel, schema.Width,
+			)
+		}
 	} else {
-		system.InputName = make([]string, len(ports))
-		for i, port := range ports {
-			system.InputName[i] = inputSignalName(block.ID, port)
+		expectedInputs := 0
+		for _, port := range ports {
+			schema, ok := resolvedInputPort(block, port)
+			if !ok {
+				return nil, invalid("%s has no input port %d", block.Name, port)
+			}
+			expectedInputs += schema.Width
+		}
+		if inputs != expectedInputs {
+			return nil, fmt.Errorf(
+				"realize %s: controlsys input dimension %d does not match port width %d",
+				block.Name, inputs, expectedInputs,
+			)
+		}
+		system.InputName = make([]string, 0, expectedInputs)
+		for _, port := range ports {
+			schema, _ := resolvedInputPort(block, port)
+			for channel := range schema.Width {
+				system.InputName = append(system.InputName, inputChannelSignalName(
+					block.ID, port, channel, schema.Width,
+				))
+			}
 		}
 	}
-	// Every kind realizes a single output, so it is port 0 — including a sink,
-	// whose output the compiler reads even though the canvas draws no terminal
-	// there. A kind that one day drives more will name each of them here; the
-	// wires already say which one they leave from.
-	system.OutputName = []string{outputSignalName(block.ID, 0)}
+	outputSchemas := block.portSchema().outputs
+	if block.Kind.isSink() {
+		outputSchemas = block.portSchema().inputs
+	}
+	expectedOutputs := 0
+	for _, schema := range outputSchemas {
+		expectedOutputs += schema.Width
+	}
+	if outputs != expectedOutputs {
+		return nil, fmt.Errorf(
+			"realize %s: controlsys output dimension %d does not match port width %d",
+			block.Name, outputs, expectedOutputs,
+		)
+	}
+	system.OutputName = make([]string, 0, expectedOutputs)
+	for port, schema := range outputSchemas {
+		for channel := range schema.Width {
+			system.OutputName = append(system.OutputName, outputChannelSignalName(
+				block.ID, port, channel, schema.Width,
+			))
+		}
+	}
 	return system, nil
 }
 
@@ -641,16 +732,23 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 // with no waveform set (which registering a new source without one would
 // produce) is silent rather than a panic here, matching the old switch's
 // default case.
-func sourceValue(source Block, t float64) float64 {
+func sourceValue(source Block, channel int, t float64) float64 {
 	waveform := blockDefinitions[source.Kind].waveform
 	if waveform == nil {
 		return 0
 	}
-	return waveform(source.Parameters, t)
+	return waveform(source.Parameters, channel, t)
 }
 
 func sourceSignalName(id int64) string {
 	return fmt.Sprintf("block_%d_source", id)
+}
+
+func sourceChannelSignalName(id int64, channel, width int) string {
+	if width == 1 {
+		return sourceSignalName(id)
+	}
+	return fmt.Sprintf("block_%d_source_channel_%d", id, channel)
 }
 
 // inputSignalName and outputSignalName name a terminal, not a block: the port
@@ -663,6 +761,20 @@ func inputSignalName(id int64, port int) string {
 
 func outputSignalName(id int64, port int) string {
 	return fmt.Sprintf("block_%d_output_%d", id, port)
+}
+
+func inputChannelSignalName(id int64, port, channel, width int) string {
+	if width == 1 {
+		return inputSignalName(id, port)
+	}
+	return fmt.Sprintf("block_%d_input_%d_channel_%d", id, port, channel)
+}
+
+func outputChannelSignalName(id int64, port, channel, width int) string {
+	if width == 1 {
+		return outputSignalName(id, port)
+	}
+	return fmt.Sprintf("block_%d_output_%d_channel_%d", id, port, channel)
 }
 
 func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {

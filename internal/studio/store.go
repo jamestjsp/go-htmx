@@ -401,7 +401,7 @@ func ensureDeclaredInputPorts(ctx context.Context, db *sql.DB) error {
 			if err != nil {
 				return fmt.Errorf("decode parameters for block %d: %w", block.id, err)
 			}
-			if definition.inputPortCount(parameters) >= block.ports ||
+			if len(definition.ports(parameters).inputs) >= block.ports ||
 				definition.declareWiredPorts == nil {
 				continue
 			}

@@ -155,10 +155,22 @@ func buildExecutionPartition(
 		for _, blockID := range segment.blockIDs {
 			block := ordered[indexByID[blockID]]
 			if block.Kind.isSource() {
-				segment.inputSignals = append(segment.inputSignals, sourceSignalName(blockID))
+				port, _ := block.OutputPort(0)
+				for channel := range port.Width {
+					segment.inputSignals = append(
+						segment.inputSignals,
+						sourceChannelSignalName(blockID, channel, port.Width),
+					)
+				}
 			}
 			if block.Kind.isSink() {
-				segment.outputSignals = append(segment.outputSignals, outputSignalName(blockID, 0))
+				port, _ := block.InputPort(0)
+				for channel := range port.Width {
+					segment.outputSignals = append(
+						segment.outputSignals,
+						outputChannelSignalName(blockID, 0, channel, port.Width),
+					)
+				}
 			}
 		}
 	}
@@ -170,16 +182,28 @@ func buildExecutionPartition(
 			continue
 		}
 		if toSegment != nil {
-			toSegment.inputSignals = append(
-				toSegment.inputSignals,
-				inputSignalName(connection.TargetID, connection.TargetPort),
-			)
+			target := ordered[indexByID[connection.TargetID]]
+			port, _ := resolvedInputPort(target, connection.TargetPort)
+			for channel := range port.Width {
+				toSegment.inputSignals = append(
+					toSegment.inputSignals,
+					inputChannelSignalName(
+						connection.TargetID, connection.TargetPort, channel, port.Width,
+					),
+				)
+			}
 		}
 		if fromSegment != nil {
-			fromSegment.outputSignals = append(
-				fromSegment.outputSignals,
-				outputSignalName(connection.SourceID, connection.SourcePort),
-			)
+			source := ordered[indexByID[connection.SourceID]]
+			port, _ := source.OutputPort(connection.SourcePort)
+			for channel := range port.Width {
+				fromSegment.outputSignals = append(
+					fromSegment.outputSignals,
+					outputChannelSignalName(
+						connection.SourceID, connection.SourcePort, channel, port.Width,
+					),
+				)
+			}
 		}
 	}
 

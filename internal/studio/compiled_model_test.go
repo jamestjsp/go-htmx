@@ -39,25 +39,25 @@ func TestCompiledModelOwnsNamedChannelsAndProvenance(t *testing.T) {
 	}
 
 	wantInputs := []compiledSignal{
-		{Name: "block_2_source", BlockID: 2, Port: 0, Role: compiledExternalInput},
-		{Name: "block_10_source", BlockID: 10, Port: 0, Role: compiledExternalInput},
+		{Name: "block_2_source", BlockID: 2, Port: 0, ChannelName: "value", Width: 1, Role: compiledExternalInput},
+		{Name: "block_10_source", BlockID: 10, Port: 0, ChannelName: "value", Width: 1, Role: compiledExternalInput},
 	}
 	if got := model.inputChannels(); !reflect.DeepEqual(got, wantInputs) {
 		t.Fatalf("input channels = %#v, want %#v", got, wantInputs)
 	}
 	wantOutputs := []compiledSignal{
-		{Name: "block_15_output_0", BlockID: 15, Port: 0, Role: compiledBlockOutput},
-		{Name: "block_20_output_0", BlockID: 20, Port: 0, Role: compiledBlockOutput},
+		{Name: "block_15_output_0", BlockID: 15, Port: 0, ChannelName: "value", Width: 1, Role: compiledBlockOutput},
+		{Name: "block_20_output_0", BlockID: 20, Port: 0, ChannelName: "value", Width: 1, Role: compiledBlockOutput},
 	}
 	if got := model.outputChannels(); !reflect.DeepEqual(got, wantOutputs) {
 		t.Fatalf("output channels = %#v, want %#v", got, wantOutputs)
 	}
 
 	assertCompiledSignal(t, model.signalChannels(), compiledSignal{
-		Name: "block_5_input_1", BlockID: 5, Port: 1, Role: compiledBlockInput,
+		Name: "block_5_input_1", BlockID: 5, Port: 1, ChannelName: "value", Width: 1, Role: compiledBlockInput,
 	})
 	assertCompiledSignal(t, model.signalChannels(), compiledSignal{
-		Name: "block_7_output_0", BlockID: 7, Port: 0, Role: compiledBlockOutput,
+		Name: "block_7_output_0", BlockID: 7, Port: 0, ChannelName: "value", Width: 1, Role: compiledBlockOutput,
 	})
 
 	provenance := model.modelProvenance()
