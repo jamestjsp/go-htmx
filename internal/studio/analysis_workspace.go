@@ -64,7 +64,7 @@ type LoopAnalysisRecord struct {
 	Result    LoopAnalysis `json:"result"`
 }
 
-type analysisCache struct {
+type analysisRecords struct {
 	input     ChannelRef
 	output    ChannelRef
 	dynamics  *DynamicsAnalysisRecord
@@ -131,6 +131,16 @@ func (s *Studio) RunAnalysis(
 			inputChannels, outputChannels := analysisChannels(snapshot.Blocks)
 			inputs = analysisChannelRefs(inputChannels)
 			outputs = analysisChannelRefs(outputChannels)
+			if len(inputs) > maxAnalysisChannelsPerAxis ||
+				len(outputs) > maxAnalysisChannelsPerAxis ||
+				len(inputs)*len(outputs) > maxFrequencyResponseTraces {
+				return AnalysisWorkspace{}, invalid(
+					"all-channel frequency analysis selects %d inputs and %d outputs (%d traces); limits are %d inputs, %d outputs, and %d traces",
+					len(inputs), len(outputs), len(inputs)*len(outputs),
+					maxAnalysisChannelsPerAxis, maxAnalysisChannelsPerAxis,
+					maxFrequencyResponseTraces,
+				)
+			}
 		}
 		if len(inputs) == 0 {
 			inputs = []ChannelRef{request.Input}
@@ -176,32 +186,11 @@ func (s *Studio) RunAnalysis(
 	); err != nil {
 		return AnalysisWorkspace{}, err
 	}
-
-	s.analysisMu.Lock()
-	if s.analyses == nil {
-		s.analyses = make(map[int64]analysisCache)
+	records, err := s.loadAnalysisRecords(ctx, flowID)
+	if err != nil {
+		return AnalysisWorkspace{}, err
 	}
-	cache := s.analyses[flowID]
-	cache.input = request.Input
-	cache.output = request.Output
-	if len(request.Inputs) > 0 {
-		cache.input = request.Inputs[0]
-	}
-	if len(request.Outputs) > 0 {
-		cache.output = request.Outputs[0]
-	}
-	if dynamicsRecord != nil {
-		cache.dynamics = dynamicsRecord
-	}
-	if frequencyRecord != nil {
-		cache.frequency = frequencyRecord
-	}
-	if loopRecord != nil {
-		cache.loop = loopRecord
-	}
-	s.analyses[flowID] = cache
-	s.analysisMu.Unlock()
-	return s.analysisWorkspace(snapshot), nil
+	return analysisWorkspace(snapshot, records), nil
 }
 
 func (s *Studio) persistAnalysisRecord(
@@ -260,7 +249,10 @@ func (s *Studio) persistAnalysisRecord(
 	})
 }
 
-func (s *Studio) loadAnalysisCache(ctx context.Context, flowID int64) error {
+func (s *Studio) loadAnalysisRecords(
+	ctx context.Context,
+	flowID int64,
+) (analysisRecords, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT intent, request_json, result_json
 		FROM analysis_runs
@@ -269,66 +261,60 @@ func (s *Studio) loadAnalysisCache(ctx context.Context, flowID int64) error {
 		flowID,
 	)
 	if err != nil {
-		return fmt.Errorf("load analysis results: %w", err)
+		return analysisRecords{}, fmt.Errorf("load analysis results: %w", err)
 	}
 	defer rows.Close()
 
-	var cache analysisCache
+	var records analysisRecords
 	for rows.Next() {
 		var intent AnalysisIntent
 		var requestJSON, resultJSON string
 		if err := rows.Scan(&intent, &requestJSON, &resultJSON); err != nil {
-			return fmt.Errorf("scan analysis result: %w", err)
+			return analysisRecords{}, fmt.Errorf("scan analysis result: %w", err)
 		}
 		var request AnalysisWorkspaceRequest
 		if err := json.Unmarshal([]byte(requestJSON), &request); err != nil {
-			return fmt.Errorf("decode %s analysis request: %w", intent, err)
+			return analysisRecords{}, fmt.Errorf(
+				"decode %s analysis request: %w", intent, err,
+			)
 		}
-		cache.input = request.Input
-		cache.output = request.Output
+		records.input = request.Input
+		records.output = request.Output
 		if len(request.Inputs) > 0 {
-			cache.input = request.Inputs[0]
+			records.input = request.Inputs[0]
 		}
 		if len(request.Outputs) > 0 {
-			cache.output = request.Outputs[0]
+			records.output = request.Outputs[0]
 		}
 		switch intent {
 		case AnalysisIntentDynamics:
-			if err := json.Unmarshal([]byte(resultJSON), &cache.dynamics); err != nil {
-				return fmt.Errorf("decode dynamics analysis: %w", err)
+			if err := json.Unmarshal([]byte(resultJSON), &records.dynamics); err != nil {
+				return analysisRecords{}, fmt.Errorf("decode dynamics analysis: %w", err)
 			}
 		case AnalysisIntentFrequency:
-			if err := json.Unmarshal([]byte(resultJSON), &cache.frequency); err != nil {
-				return fmt.Errorf("decode frequency analysis: %w", err)
+			if err := json.Unmarshal([]byte(resultJSON), &records.frequency); err != nil {
+				return analysisRecords{}, fmt.Errorf("decode frequency analysis: %w", err)
 			}
 		case AnalysisIntentLoop:
-			if err := json.Unmarshal([]byte(resultJSON), &cache.loop); err != nil {
-				return fmt.Errorf("decode loop analysis: %w", err)
+			if err := json.Unmarshal([]byte(resultJSON), &records.loop); err != nil {
+				return analysisRecords{}, fmt.Errorf("decode loop analysis: %w", err)
 			}
 		default:
-			return fmt.Errorf("decode analysis: unsupported intent %q", intent)
+			return analysisRecords{}, fmt.Errorf(
+				"decode analysis: unsupported intent %q", intent,
+			)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read analysis results: %w", err)
+		return analysisRecords{}, fmt.Errorf("read analysis results: %w", err)
 	}
-
-	s.analysisMu.Lock()
-	if s.analyses == nil {
-		s.analyses = make(map[int64]analysisCache)
-	}
-	s.analyses[flowID] = cache
-	s.analysisMu.Unlock()
-	return nil
+	return records, nil
 }
 
-func (s *Studio) analysisWorkspace(snapshot Snapshot) AnalysisWorkspace {
+func analysisWorkspace(snapshot Snapshot, records analysisRecords) AnalysisWorkspace {
 	inputs, outputs := analysisChannels(snapshot.Blocks)
-	s.analysisMu.RLock()
-	cache := s.analyses[snapshot.Flow.ID]
-	s.analysisMu.RUnlock()
-	selectedInput := cache.input
-	selectedOutput := cache.output
+	selectedInput := records.input
+	selectedOutput := records.output
 	if !containsAnalysisChannel(inputs, selectedInput) && len(inputs) > 0 {
 		selectedInput = inputs[0].ChannelRef
 	}
@@ -342,9 +328,9 @@ func (s *Studio) analysisWorkspace(snapshot Snapshot) AnalysisWorkspace {
 		Outputs:        outputs,
 		SelectedInput:  selectedInput,
 		SelectedOutput: selectedOutput,
-		Dynamics:       copyDynamicsRecord(cache.dynamics),
-		Frequency:      copyFrequencyRecord(cache.frequency),
-		Loop:           copyLoopRecord(cache.loop),
+		Dynamics:       records.dynamics,
+		Frequency:      records.frequency,
+		Loop:           records.loop,
 	}
 	if result.Dynamics != nil {
 		result.Dynamics.Stale = !result.Dynamics.Result.ModelUpdatedAt.Equal(snapshot.Flow.ModelUpdatedAt)
@@ -407,31 +393,4 @@ func containsAnalysisChannel(channels []AnalysisChannel, ref ChannelRef) bool {
 		}
 	}
 	return false
-}
-
-func copyDynamicsRecord(record *DynamicsAnalysisRecord) *DynamicsAnalysisRecord {
-	return cloneAnalysisRecord(record)
-}
-
-func copyFrequencyRecord(record *FrequencyAnalysisRecord) *FrequencyAnalysisRecord {
-	return cloneAnalysisRecord(record)
-}
-
-func copyLoopRecord(record *LoopAnalysisRecord) *LoopAnalysisRecord {
-	return cloneAnalysisRecord(record)
-}
-
-func cloneAnalysisRecord[T any](record *T) *T {
-	if record == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		panic(fmt.Sprintf("clone analysis record: %v", err))
-	}
-	var copied T
-	if err := json.Unmarshal(encoded, &copied); err != nil {
-		panic(fmt.Sprintf("clone analysis record: %v", err))
-	}
-	return &copied
 }

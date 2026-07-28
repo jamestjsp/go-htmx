@@ -44,6 +44,21 @@ type ControllerCandidateApplication struct {
 	Undo     ControllerUndoCandidate `json:"undo"`
 }
 
+// Clone returns an independent undo snapshot suitable for retention across
+// requests.
+func (candidate ControllerUndoCandidate) Clone() ControllerUndoCandidate {
+	cloned := candidate
+	cloned.SourceControlRoles.Spec = cloneControlRoleSpec(
+		candidate.SourceControlRoles.Spec,
+	)
+	if candidate.edit != nil {
+		edit := *candidate.edit
+		edit.parameters = cloneParameters(candidate.edit.parameters)
+		cloned.edit = &edit
+	}
+	return cloned
+}
+
 func newControlRoleSnapshot(spec ControlRoleSpec) ControlRoleSnapshot {
 	normalized := normalizedControlRoleFingerprintSpec(spec)
 	encoded, err := json.Marshal(normalized)

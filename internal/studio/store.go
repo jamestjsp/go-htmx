@@ -903,19 +903,24 @@ func encodeParameters(parameters Parameters) (string, error) {
 }
 
 func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
-	parameters := defaultParameters(kind)
 	if encoded == "" {
-		return parameters, nil
+		return defaultParameters(kind), nil
 	}
-	if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
+	stored := struct {
+		Parameters
+		DelayMode *string `json:"delayMode"`
+	}{
+		Parameters: defaultParameters(kind),
+	}
+	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 		return Parameters{}, err
 	}
+	parameters := stored.Parameters
+	if stored.DelayMode != nil {
+		parameters.DelayMode = *stored.DelayMode
+	}
 	if kind == BlockDelay {
-		var stored map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
-			return Parameters{}, err
-		}
-		if _, explicit := stored["delayMode"]; !explicit {
+		if stored.DelayMode == nil {
 			parameters.DelayMode = delayModePade
 		}
 	}

@@ -103,7 +103,7 @@
 {{end}}
 
 {{define "controller-candidate"}}
-{{if .Error}}
+{{if and .Error (not .ID)}}
 <article class="analysis-result is-stale controller-candidate-error">
   <header class="analysis-result-head">
     <div><span class="analysis-kind">refresh required</span><h3>Candidate unavailable</h3></div>
@@ -129,6 +129,8 @@
       <span>rev {{.Revision}}</span>
     </div>
   </header>
+
+  {{if .Error}}<ul class="analysis-notices"><li>{{.Error}}</li></ul>{{end}}
 
   {{if .Goals}}
   <dl class="analysis-metrics">

@@ -539,9 +539,6 @@ func (s *Server) runAnalysis(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if horizon == 0 {
-		horizon = 10
-	}
 	_, err := s.studio.RunAnalysis(r.Context(), flowID, studio.AnalysisWorkspaceRequest{
 		Intent:               studio.AnalysisIntent(r.FormValue("analysis_intent")),
 		Input:                input,

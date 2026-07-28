@@ -42,6 +42,30 @@ func TestControlRoleSnapshotFingerprintNormalizesEquivalentSpecifications(t *tes
 	}
 }
 
+func TestControllerUndoCandidateCloneOwnsNestedState(t *testing.T) {
+	parameters := defaultParameters(BlockTransfer)
+	parameters.Numerator = []float64{1, 2}
+	roles := newControlRoleSnapshot(sisoRoleSpec(1, 2))
+	original := ControllerUndoCandidate{
+		FlowID:             7,
+		SourceControlRoles: roles,
+		edit: &candidateBlockEdit{
+			blockID: 3, expectedKind: BlockTransfer, parameters: parameters,
+		},
+	}
+
+	cloned := original.Clone()
+	original.SourceControlRoles.Spec.Plant.Blocks[0] = 99
+	original.edit.parameters.Numerator[0] = 99
+
+	if cloned.SourceControlRoles.Spec.Plant.Blocks[0] == 99 {
+		t.Fatal("cloned undo aliases control-role slices")
+	}
+	if cloned.edit.parameters.Numerator[0] == 99 {
+		t.Fatal("cloned undo aliases parameter slices")
+	}
+}
+
 func TestTuningCandidateRejectsChangedControlRolesAtSameModelRevision(t *testing.T) {
 	service, flowID, _, controllerID := tuningStudio(t)
 	ctx := context.Background()

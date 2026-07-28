@@ -64,6 +64,19 @@ func TestStoredDelayWithoutModeMigratesToPade(t *testing.T) {
 	}
 }
 
+func TestStoredDelayWithModeKeepsExplicitRepresentation(t *testing.T) {
+	parameters, err := decodeParameters(
+		BlockDelay,
+		`{"delay":0.5,"delayMode":"exact","approximation":3}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := normalizedDelayMode(parameters); got != delayModeExact {
+		t.Fatalf("stored explicit delay mode = %q, want %q", got, delayModeExact)
+	}
+}
+
 func TestTransportDelayEditorOffersExplicitRepresentations(t *testing.T) {
 	block := Block{Kind: BlockDelay, Parameters: defaultParameters(BlockDelay)}
 	fields := block.EditorFields()

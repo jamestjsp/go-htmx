@@ -229,14 +229,15 @@ func validateFrequencyRequest(request FrequencyAnalysisRequest) error {
 	if len(request.Inputs) > maxAnalysisChannelsPerAxis ||
 		len(request.Outputs) > maxAnalysisChannelsPerAxis {
 		return invalid(
-			"frequency analysis is limited to %d input and %d output channels",
+			"frequency analysis is limited to %d input and %d output channels; selected %d inputs and %d outputs",
 			maxAnalysisChannelsPerAxis, maxAnalysisChannelsPerAxis,
+			len(request.Inputs), len(request.Outputs),
 		)
 	}
 	if len(request.Inputs)*len(request.Outputs) > maxFrequencyResponseTraces {
 		return invalid(
-			"frequency analysis is limited to %d input-output traces",
-			maxFrequencyResponseTraces,
+			"frequency analysis is limited to %d input-output traces; selected %d",
+			maxFrequencyResponseTraces, len(request.Inputs)*len(request.Outputs),
 		)
 	}
 	if request.Points < 0 || request.Points == 1 || request.Points > maxFrequencyPoints {

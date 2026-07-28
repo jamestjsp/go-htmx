@@ -509,6 +509,7 @@ func (m *compiledModel) validateExactDelaySampling(sampleTime float64) error {
 		}
 		nearestDelay := nearestSamples * sampleTime
 		if nearestDelay == 0 {
+			// Normalize IEEE -0 so the suggested delay is never rendered as "-0 s".
 			nearestDelay = 0
 		}
 		return invalid(

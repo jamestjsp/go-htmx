@@ -790,6 +790,34 @@ func TestAnalysisWorkspaceRetainsResultsAndMarksModelEditsStale(t *testing.T) {
 	}
 }
 
+func TestDynamicsAnalysisCanSkipStepExperimentThroughHTTP(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findKindBlock(t, snapshot.Blocks, "source")
+	plant := findKindBlock(t, snapshot.Blocks, "lag")
+	channel := func(block studio.Block) string {
+		return fmt.Sprintf("%d:0:0", block.ID)
+	}
+	response := request(t, server, http.MethodPost, "/flows/1/analyses", url.Values{
+		"analysis_intent":  {"dynamics"},
+		"analysis_input":   {channel(source)},
+		"analysis_output":  {channel(plant)},
+		"analysis_horizon": {"0"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Dynamics &amp; time") {
+		t.Fatalf("dynamics result missing: %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "Step response") {
+		t.Fatalf("zero horizon still ran a step experiment: %s", response.Body.String())
+	}
+}
+
 // The connect form's port fields are optional: a client written before ports
 // omits them and keeps wiring each block's first terminal, and one that sends
 // them is taken at its word. A field that is present but unreadable is a

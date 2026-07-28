@@ -20,10 +20,12 @@ func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {
 	if conflict := registry.put(candidate); conflict != controllerCandidatePutOK {
 		t.Fatalf("put candidate: %v", conflict)
 	}
-	if registry.beginApply(candidate.ID, candidate.FlowID) == nil {
+	applying, _ := registry.beginApply(candidate.ID, candidate.FlowID)
+	if applying == nil {
 		t.Fatal("begin apply")
 	}
-	if registry.beginApply(candidate.ID, candidate.FlowID) != nil {
+	duplicateApply, _ := registry.beginApply(candidate.ID, candidate.FlowID)
+	if duplicateApply != nil {
 		t.Fatal("second apply began while the first was active")
 	}
 	if conflict := registry.put(
@@ -34,7 +36,8 @@ func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {
 	if registry.finishApply(candidate.ID, nil) == nil {
 		t.Fatal("release failed apply")
 	}
-	if registry.beginApply(candidate.ID, candidate.FlowID) == nil {
+	applying, _ = registry.beginApply(candidate.ID, candidate.FlowID)
+	if applying == nil {
 		t.Fatal("retry apply")
 	}
 	undo := studio.ControllerUndoCandidate{FlowID: candidate.FlowID}
@@ -47,16 +50,19 @@ func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {
 	); conflict != controllerCandidatePutUndoAvailable {
 		t.Fatalf("undo replacement conflict = %v", conflict)
 	}
-	if registry.beginUndo(candidate.ID, candidate.FlowID) == nil {
+	undoing, _ := registry.beginUndo(candidate.ID, candidate.FlowID)
+	if undoing == nil {
 		t.Fatal("begin undo")
 	}
-	if registry.beginUndo(candidate.ID, candidate.FlowID) != nil {
+	duplicateUndo, _ := registry.beginUndo(candidate.ID, candidate.FlowID)
+	if duplicateUndo != nil {
 		t.Fatal("second undo began while the first was active")
 	}
 	if registry.finishUndo(candidate.ID, false) == nil {
 		t.Fatal("release failed undo")
 	}
-	if registry.beginUndo(candidate.ID, candidate.FlowID) == nil {
+	undoing, _ = registry.beginUndo(candidate.ID, candidate.FlowID)
+	if undoing == nil {
 		t.Fatal("retry undo")
 	}
 	registry.finishUndo(candidate.ID, true)
@@ -90,7 +96,8 @@ func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {
 			if conflict := registry.put(original); conflict != controllerCandidatePutOK {
 				t.Fatalf("put original: %v", conflict)
 			}
-			if registry.beginApply(original.ID, original.FlowID) == nil {
+			applying, _ := registry.beginApply(original.ID, original.FlowID)
+			if applying == nil {
 				t.Fatal("begin original apply")
 			}
 			registry.finishApply(
@@ -118,6 +125,55 @@ func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestControllerCandidateRegistryReleaseRecoversPanickedActions(t *testing.T) {
+	registry := newControllerCandidateRegistry()
+	candidate := &pendingControllerCandidate{ID: "candidate", FlowID: 7}
+	if conflict := registry.put(candidate); conflict != controllerCandidatePutOK {
+		t.Fatalf("put candidate: %v", conflict)
+	}
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("apply action did not panic")
+			}
+		}()
+		applying, release := registry.beginApply(candidate.ID, candidate.FlowID)
+		if applying == nil {
+			t.Fatal("begin apply")
+		}
+		defer release()
+		panic("studio apply")
+	}()
+	applying, _ := registry.beginApply(candidate.ID, candidate.FlowID)
+	if applying == nil {
+		t.Fatal("panic stranded candidate in applying state")
+	}
+	undo := studio.ControllerUndoCandidate{FlowID: candidate.FlowID}
+	if registry.finishApply(candidate.ID, &undo) == nil {
+		t.Fatal("finish apply")
+	}
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("undo action did not panic")
+			}
+		}()
+		undoing, release := registry.beginUndo(candidate.ID, candidate.FlowID)
+		if undoing == nil {
+			t.Fatal("begin undo")
+		}
+		defer release()
+		panic("studio undo")
+	}()
+	undoing, _ := registry.beginUndo(candidate.ID, candidate.FlowID)
+	if undoing == nil {
+		t.Fatal("panic stranded candidate in undoing state")
+	}
+	registry.finishUndo(candidate.ID, true)
 }
 
 func TestControlRoleHTTPRoundTripAndValidation(t *testing.T) {
@@ -446,6 +502,34 @@ func TestRobustSynthesisIsAvailableThroughTheControllerWorkspace(t *testing.T) {
 			invalid.Header().Get("HX-Retarget"),
 			invalid.Header().Get("HX-Reswap"),
 		)
+	}
+}
+
+func TestControllerCandidateValidationFailurePreservesLiveCandidate(t *testing.T) {
+	server, service := openTestServer(t)
+	flowID, _, _ := webPIDDesignFlow(t, service)
+	path := "/flows/" + strconv.FormatInt(flowID, 10) + "/controller-candidates/pid"
+	created := requestHX(t, server, http.MethodPost, path, url.Values{
+		"pid_type": {"PI"}, "crossover_frequency": {"1"},
+		"phase_margin": {"60"},
+	})
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body.String())
+	}
+	pending := server.controllerCandidates.forFlow(flowID)
+	if pending == nil {
+		t.Fatal("candidate was not stored")
+	}
+
+	failed := requestHX(t, server, http.MethodPost, path, url.Values{
+		"pid_type": {"PI"}, "crossover_frequency": {"not-a-number"},
+		"phase_margin": {"60"},
+	})
+	body := failed.Body.String()
+	if !strings.Contains(body, "finite numbers") ||
+		!strings.Contains(body, pending.ID) ||
+		!strings.Contains(body, "Apply candidate atomically") {
+		t.Fatalf("validation failure replaced live candidate: %s", body)
 	}
 }
 

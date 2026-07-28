@@ -19,7 +19,8 @@ func (s *Studio) ExportResults(ctx context.Context, flowID int64) (ResultsExport
 	if err != nil {
 		return ResultsExport{}, err
 	}
-	if err := s.loadAnalysisCache(ctx, flowID); err != nil {
+	records, err := s.loadAnalysisRecords(ctx, flowID)
+	if err != nil {
 		return ResultsExport{}, err
 	}
 	return ResultsExport{
@@ -28,6 +29,6 @@ func (s *Studio) ExportResults(ctx context.Context, flowID int64) (ResultsExport
 		FlowName:       snapshot.Flow.Name,
 		ModelUpdatedAt: snapshot.Flow.ModelUpdatedAt,
 		Simulation:     snapshot.LastRun,
-		Analysis:       s.analysisWorkspace(snapshot),
+		Analysis:       analysisWorkspace(snapshot, records),
 	}, nil
 }

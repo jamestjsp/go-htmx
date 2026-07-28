@@ -3,7 +3,9 @@ package studio
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnalysisWorkspaceCachesIntentsAndMarksModelEditsStale(t *testing.T) {
@@ -132,6 +134,36 @@ func TestAnalysisWorkspaceRejectsNegativeStepHorizon(t *testing.T) {
 	}
 }
 
+func TestAnalysisWorkspaceReportsExpandedAllChannelLimits(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, ":memory:")
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, _ := analysisChannels(snapshot.Blocks)
+	for len(inputs) <= maxAnalysisChannelsPerAxis {
+		snapshot, _, err = service.AddBlock(
+			ctx, snapshot.Flow.ID, BlockConstant,
+			Point{X: 100 + len(inputs)*GridPitch, Y: 600},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inputs, _ = analysisChannels(snapshot.Blocks)
+	}
+
+	_, err = service.RunAnalysis(ctx, snapshot.Flow.ID, AnalysisWorkspaceRequest{
+		Intent:               AnalysisIntentFrequency,
+		FrequencyAllChannels: true,
+	})
+	if err == nil ||
+		!strings.Contains(err.Error(), "all-channel frequency analysis selects 17 inputs") ||
+		!strings.Contains(err.Error(), "limits are 16 inputs") {
+		t.Fatalf("all-channel limit error = %v", err)
+	}
+}
+
 func TestFrequencyWorkspaceUsesAllNamedChannelsAndPersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "analysis.db")
@@ -206,5 +238,92 @@ func TestFrequencyWorkspaceUsesAllNamedChannelsAndPersistsAcrossReopen(t *testin
 	}
 	if copiedResults != 0 {
 		t.Fatalf("duplicated analysis rows = %d", copiedResults)
+	}
+}
+
+func TestRunAnalysisReloadsPriorIntentsWithoutSharedProcessState(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "request-scoped-analysis.db")
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, outputs := analysisChannels(snapshot.Blocks)
+	_, err = service.RunAnalysis(ctx, snapshot.Flow.ID, AnalysisWorkspaceRequest{
+		Intent: AnalysisIntentDynamics,
+		Input:  inputs[0].ChannelRef,
+		Output: outputs[len(outputs)-1].ChannelRef,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	analysis, err := reopened.RunAnalysis(ctx, snapshot.Flow.ID, AnalysisWorkspaceRequest{
+		Intent: AnalysisIntentFrequency,
+		Input:  inputs[0].ChannelRef,
+		Output: outputs[len(outputs)-1].ChannelRef,
+		Points: 24,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Dynamics == nil || analysis.Frequency == nil {
+		t.Fatalf("request-scoped analysis did not retain persisted intents: %#v", analysis)
+	}
+}
+
+func BenchmarkAnalysisWorkspaceLargeFrequencyRecord(b *testing.B) {
+	omega := make([]float64, maxFrequencyPoints)
+	values := make([]*float64, maxFrequencyPoints)
+	for i := range omega {
+		omega[i] = float64(i + 1)
+		value := float64(i)
+		values[i] = &value
+	}
+	traces := make([]BodeTrace, maxFrequencyResponseTraces)
+	for i := range traces {
+		traces[i] = BodeTrace{
+			MagnitudeDB:  values,
+			PhaseDegrees: values,
+		}
+	}
+	revision := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	snapshot := Snapshot{
+		Flow: Flow{ID: 1, ModelUpdatedAt: revision},
+		Blocks: []Block{
+			{ID: 1, Kind: BlockSource, Name: "Input", Parameters: defaultParameters(BlockSource)},
+			{ID: 2, Kind: BlockLag, Name: "Plant", Parameters: defaultParameters(BlockLag)},
+		},
+	}
+	records := analysisRecords{
+		input:  ChannelRef{BlockID: 1},
+		output: ChannelRef{BlockID: 2},
+		frequency: &FrequencyAnalysisRecord{
+			Result: FrequencyAnalysis{
+				ModelUpdatedAt: revision,
+				Grid:           FrequencyGrid{Omega: omega},
+				Bode:           traces,
+			},
+		},
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		workspace := analysisWorkspace(snapshot, records)
+		if workspace.Frequency == nil {
+			b.Fatal("frequency record missing")
+		}
 	}
 }

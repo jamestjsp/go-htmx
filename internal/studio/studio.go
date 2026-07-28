@@ -6,15 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
 type Studio struct {
-	db         *sql.DB
-	now        func() time.Time
-	analysisMu sync.RWMutex
-	analyses   map[int64]analysisCache
+	db  *sql.DB
+	now func() time.Time
 }
 
 func (s *Studio) Current(ctx context.Context) (Snapshot, error) {
@@ -242,19 +239,25 @@ func checkWiredPortCompatibility(ctx context.Context, tx *sql.Tx, changed Block)
 	if err := rows.Close(); err != nil {
 		return fmt.Errorf("close connected port widths: %w", err)
 	}
+	connected, err := blocksConnectedTo(ctx, tx, changed.ID)
+	if err != nil {
+		return err
+	}
 	for _, wire := range wires {
 		source := changed
 		if wire.SourceID != changed.ID {
-			source, err = blockByID(ctx, tx, wire.SourceID)
-			if err != nil {
-				return err
+			var ok bool
+			source, ok = connected[wire.SourceID]
+			if !ok {
+				return fmt.Errorf("load connected source block %d: %w", wire.SourceID, ErrNotFound)
 			}
 		}
 		target := changed
 		if wire.TargetID != changed.ID {
-			target, err = blockByID(ctx, tx, wire.TargetID)
-			if err != nil {
-				return err
+			var ok bool
+			target, ok = connected[wire.TargetID]
+			if !ok {
+				return fmt.Errorf("load connected target block %d: %w", wire.TargetID, ErrNotFound)
 			}
 		}
 		if err := validateConnectionWidth(
@@ -264,6 +267,49 @@ func checkWiredPortCompatibility(ctx context.Context, tx *sql.Tx, changed Block)
 		}
 	}
 	return nil
+}
+
+func blocksConnectedTo(
+	ctx context.Context,
+	tx *sql.Tx,
+	blockID int64,
+) (map[int64]Block, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, flow_id, kind, name, x, y, parameters_json
+		FROM blocks
+		WHERE id IN (
+			SELECT target_id FROM connections WHERE source_id = ?
+			UNION
+			SELECT source_id FROM connections WHERE target_id = ?
+		)
+		ORDER BY id`,
+		blockID, blockID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load connected blocks: %w", err)
+	}
+	defer rows.Close()
+
+	blocks := make(map[int64]Block)
+	for rows.Next() {
+		var block Block
+		var encoded string
+		if err := rows.Scan(
+			&block.ID, &block.FlowID, &block.Kind, &block.Name,
+			&block.Position.X, &block.Position.Y, &encoded,
+		); err != nil {
+			return nil, fmt.Errorf("scan connected block: %w", err)
+		}
+		block.Parameters, err = decodeParameters(block.Kind, encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
+		}
+		blocks[block.ID] = block
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read connected blocks: %w", err)
+	}
+	return blocks, nil
 }
 
 func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, error) {

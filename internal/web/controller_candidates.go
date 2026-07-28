@@ -124,16 +124,18 @@ func (registry *controllerCandidateRegistry) forFlow(
 func (registry *controllerCandidateRegistry) beginApply(
 	id string,
 	flowID int64,
-) *pendingControllerCandidate {
+) (*pendingControllerCandidate, func()) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	candidate := registry.byID[id]
 	if candidate == nil || candidate.FlowID != flowID || candidate.Applied ||
 		candidate.applying || candidate.undoing {
-		return nil
+		return nil, func() {}
 	}
 	candidate.applying = true
-	return clonePendingControllerCandidate(candidate)
+	return clonePendingControllerCandidate(candidate), func() {
+		registry.finishApply(id, nil)
+	}
 }
 
 func (registry *controllerCandidateRegistry) finishApply(
@@ -148,7 +150,7 @@ func (registry *controllerCandidateRegistry) finishApply(
 	}
 	candidate.applying = false
 	if undo != nil {
-		stored := *undo
+		stored := undo.Clone()
 		candidate.Undo = &stored
 		candidate.Applied = true
 	}
@@ -158,16 +160,18 @@ func (registry *controllerCandidateRegistry) finishApply(
 func (registry *controllerCandidateRegistry) beginUndo(
 	id string,
 	flowID int64,
-) *pendingControllerCandidate {
+) (*pendingControllerCandidate, func()) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	candidate := registry.byID[id]
 	if candidate == nil || candidate.FlowID != flowID || !candidate.Applied ||
 		candidate.Undo == nil || candidate.applying || candidate.undoing {
-		return nil
+		return nil, func() {}
 	}
 	candidate.undoing = true
-	return clonePendingControllerCandidate(candidate)
+	return clonePendingControllerCandidate(candidate), func() {
+		registry.finishUndo(id, false)
+	}
 }
 
 func (registry *controllerCandidateRegistry) finishUndo(
@@ -218,7 +222,7 @@ func clonePendingControllerCandidate(
 	}
 	cloned := *candidate
 	if candidate.Undo != nil {
-		undo := *candidate.Undo
+		undo := candidate.Undo.Clone()
 		cloned.Undo = &undo
 	}
 	return &cloned
@@ -429,13 +433,14 @@ func (s *Server) applyControllerCandidate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	id := r.PathValue("candidateID")
-	candidate := s.controllerCandidates.beginApply(id, flowID)
+	candidate, release := s.controllerCandidates.beginApply(id, flowID)
 	if candidate == nil {
 		s.renderControllerCandidateFailure(
 			w, r, flowID, "This controller candidate expired or was replaced. Generate a fresh candidate.",
 		)
 		return
 	}
+	defer release()
 	var (
 		result studio.ControllerCandidateApplication
 		err    error
@@ -487,13 +492,14 @@ func (s *Server) undoControllerCandidate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	id := r.PathValue("candidateID")
-	candidate := s.controllerCandidates.beginUndo(id, flowID)
+	candidate, release := s.controllerCandidates.beginUndo(id, flowID)
 	if candidate == nil {
 		s.renderControllerCandidateFailure(
 			w, r, flowID, "This controller undo expired. Generate a fresh candidate.",
 		)
 		return
 	}
+	defer release()
 	snapshot, err := s.studio.UndoControllerCandidate(
 		r.Context(), *candidate.Undo,
 	)
@@ -555,10 +561,14 @@ func (s *Server) renderControllerCandidateFailure(
 		s.renderFailure(w, r, flowID, 0, message)
 		return
 	}
+	candidate := s.controllerCandidates.forFlow(flowID)
+	if candidate == nil {
+		candidate = &pendingControllerCandidate{FlowID: flowID}
+	}
 	s.renderControllerCandidate(
 		w,
 		r,
-		&pendingControllerCandidate{FlowID: flowID},
+		candidate,
 		message,
 	)
 }
