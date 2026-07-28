@@ -186,6 +186,7 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		return compiledFlow{}, invalid("flowsheet contains a cycle; remove a feedback connection")
 	}
 
+	wiredPorts := make(map[int64][]int, len(incoming))
 	for _, block := range blocks {
 		inputs := incoming[block.ID]
 		switch block.Kind.arity() {
@@ -213,25 +214,21 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 				return compiledFlow{}, err
 			}
 		}
+
+		ports, err := wiredInputPorts(block, inputs)
+		if err != nil {
+			return compiledFlow{}, err
+		}
+		wiredPorts[block.ID] = ports
 	}
 
 	sort.Slice(sources, func(i, j int) bool { return sources[i].ID < sources[j].ID })
 	sort.Slice(sinks, func(i, j int) bool { return sinks[i].ID < sinks[j].ID })
-	for targetID := range incoming {
-		sort.Slice(incoming[targetID], func(i, j int) bool {
-			left := incoming[targetID][i]
-			right := incoming[targetID][j]
-			if left.ID != right.ID {
-				return left.ID < right.ID
-			}
-			return left.SourceID < right.SourceID
-		})
-	}
 
 	systems := make([]*controlsys.System, 0, len(blocks))
 	for _, id := range order {
 		block := blockByID[id]
-		system, err := realizeBlock(block, incoming[id])
+		system, err := realizeBlock(block, wiredPorts[id])
 		if err != nil {
 			return compiledFlow{}, err
 		}
@@ -240,10 +237,9 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
-		target := blockByID[connection.TargetID]
 		namedConnections = append(namedConnections, controlsys.Connection{
-			From: outputSignalName(connection.SourceID),
-			To:   inputSignalName(target, connection),
+			From: outputSignalName(connection.SourceID, connection.SourcePort),
+			To:   inputSignalName(connection.TargetID, connection.TargetPort),
 			Gain: 1,
 		})
 	}
@@ -253,7 +249,7 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	}
 	outputs := make([]string, len(sinks))
 	for i, sink := range sinks {
-		outputs[i] = outputSignalName(sink.ID)
+		outputs[i] = outputSignalName(sink.ID, 0)
 	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
@@ -262,31 +258,63 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	return compiledFlow{system: system, sources: sources, sinks: sinks}, nil
 }
 
+// wiredInputPorts is the block's input terminals that carry a wire, in
+// ascending port order. It is the shape everything downstream reads a block's
+// inputs through — the realization's gains, its signal names, and so the
+// column each wire drives — which is what puts a wire's sign under its port
+// instead of under the order the wires happened to be drawn in.
+func wiredInputPorts(block Block, inputs []Connection) ([]int, error) {
+	ports := make([]int, len(inputs))
+	for i, connection := range inputs {
+		ports[i] = connection.TargetPort
+	}
+	sort.Ints(ports)
+	for i := 1; i < len(ports); i++ {
+		// One terminal, one signal. Connect refuses a second wire onto an
+		// occupied port, but the schema cannot, so a model written by an older
+		// version or edited by hand can still arrive holding two. Both would
+		// compile to the same signal name and one would vanish into the
+		// other's place, silently — hence a refusal rather than a guess at
+		// which the user meant.
+		if ports[i] == ports[i-1] {
+			return nil, invalid("%s has more than one input on port %d", block.Name, ports[i])
+		}
+	}
+	return ports, nil
+}
+
 // realizeBlock defers to the block's own definition for the controlsys
 // realization (blockDefinition.realizeSystem), keeping only what is the
 // compiler's concern here: naming the realized system's ports so
 // controlsys.ConnectByName can wire it to the rest of the flowsheet.
-func realizeBlock(block Block, incoming []Connection) (*controlsys.System, error) {
+func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 	definition, ok := blockDefinitions[block.Kind]
 	if !ok {
 		return nil, invalid("%s has an unsupported block type", block.Name)
 	}
-	system, err := definition.realizeSystem(block, len(incoming))
+	system, err := definition.realizeSystem(block, ports)
 	if err != nil {
 		return nil, fmt.Errorf("realize %s: %w", block.Name, err)
 	}
 
+	// A source's one input is the flowsheet's own input, driven by the sampled
+	// waveform rather than by a wire, so it is the one input a port does not
+	// name. Every other kind names exactly the terminals its wires arrived on,
+	// in the same order realize built its inputs, so the two agree column for
+	// column.
 	if block.Kind.isSource() {
 		system.InputName = []string{sourceSignalName(block.ID)}
-	} else if block.Kind.arity() == arityVariadic {
-		system.InputName = make([]string, len(incoming))
-		for i, connection := range incoming {
-			system.InputName[i] = inputSignalName(block, connection)
-		}
 	} else {
-		system.InputName = []string{inputSignalName(block, Connection{})}
+		system.InputName = make([]string, len(ports))
+		for i, port := range ports {
+			system.InputName[i] = inputSignalName(block.ID, port)
+		}
 	}
-	system.OutputName = []string{outputSignalName(block.ID)}
+	// Every kind realizes a single output, so it is port 0 — including a sink,
+	// whose output the compiler reads even though the canvas draws no terminal
+	// there. A kind that one day drives more will name each of them here; the
+	// wires already say which one they leave from.
+	system.OutputName = []string{outputSignalName(block.ID, 0)}
 	return system, nil
 }
 
@@ -306,15 +334,16 @@ func sourceSignalName(id int64) string {
 	return fmt.Sprintf("block_%d_source", id)
 }
 
-func inputSignalName(block Block, connection Connection) string {
-	if block.Kind.arity() == arityVariadic {
-		return fmt.Sprintf("block_%d_input_from_%d", block.ID, connection.SourceID)
-	}
-	return fmt.Sprintf("block_%d_input", block.ID)
+// inputSignalName and outputSignalName name a terminal, not a block: the port
+// is part of the name, so the two ends of a wire can be spelled from the wire
+// alone. That is what binds a signal to the port it landed on — a Sum's second
+// input is block_7_input_1 whether it was the first wire drawn or the last.
+func inputSignalName(id int64, port int) string {
+	return fmt.Sprintf("block_%d_input_%d", id, port)
 }
 
-func outputSignalName(id int64) string {
-	return fmt.Sprintf("block_%d_output", id)
+func outputSignalName(id int64, port int) string {
+	return fmt.Sprintf("block_%d_output_%d", id, port)
 }
 
 func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {

@@ -122,11 +122,14 @@ type blockDefinition struct {
 	// the same signals.
 	declareWiredPorts func(Parameters, int) (Parameters, bool)
 	// realize builds the block's controlsys realization from its own
-	// parameters and the number of incoming connections. nil means the
-	// block has no dynamics of its own: every source and sink realizes as a
-	// unit gain, and realizeSystem supplies that default rather than each of
-	// the five repeating it.
-	realize func(Block, int) (*controlsys.System, error)
+	// parameters and the input ports its wires land on, in ascending order.
+	// The ports are what a variadic kind needs: Sum's signs are its ports, so
+	// the sign an input carries has to come from the terminal it arrived on
+	// rather than from its place in the list. A fixed-arity kind reads
+	// neither. nil means the block has no dynamics of its own: every source
+	// and sink realizes as a unit gain, and realizeSystem supplies that
+	// default rather than each of the five repeating it.
+	realize func(Block, []int) (*controlsys.System, error)
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
 	waveform func(Parameters, float64) float64
@@ -167,9 +170,9 @@ const (
 // unit gain when the definition sets no realize of its own. Every source and
 // every sink shares that pass-through behavior, so it is stated once here
 // instead of five block entries repeating the same three lines.
-func (d blockDefinition) realizeSystem(block Block, inputs int) (*controlsys.System, error) {
+func (d blockDefinition) realizeSystem(block Block, ports []int) (*controlsys.System, error) {
 	if d.realize != nil {
-		return d.realize(block, inputs)
+		return d.realize(block, ports)
 	}
 	return controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
 }
@@ -353,7 +356,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("gain", "Gain", "gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Gain }),
 		},
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.NewGain(mat.NewDense(1, 1, []float64{block.Parameters.Gain}), 0)
 		},
 		summary: func(parameters Parameters) string {
@@ -395,18 +398,20 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			parameters.Signs = strings.Repeat(parameters.Signs, wired)
 			return parameters, true
 		},
-		// realize builds one gain per connected input, falling back to the
-		// first sign for any input past the last one. Now that the signs are
-		// the port list a wire cannot land past them, so that fallback is
-		// reached only by a flowsheet an older version wired beyond
-		// maxInputSigns — which declareWiredPorts deliberately leaves
-		// broadcasting rather than change what it computes. Matching the sign
-		// count against the actual connected input count is checkInputs's
-		// job, not this hook's.
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
-			gains := make([]float64, inputs)
-			for i := range gains {
-				signIndex := min(i, len(block.Parameters.Signs)-1)
+		// realize builds one gain per connected input, taking each input's
+		// sign from the port it landed on. That is what makes the sign belong
+		// to the terminal: a wire deleted and redrawn onto the same port comes
+		// back with the sign it had, whatever order the wires were drawn in.
+		// The fallback to the last sign for a port past the end is reached
+		// only by a flowsheet an older version wired beyond maxInputSigns —
+		// which declareWiredPorts deliberately leaves broadcasting rather than
+		// change what it computes, and where a lone sign covers every port.
+		// Matching the sign count against the actual connected input count is
+		// checkInputs's job, not this hook's.
+		realize: func(block Block, ports []int) (*controlsys.System, error) {
+			gains := make([]float64, len(ports))
+			for i, port := range ports {
+				signIndex := min(port, len(block.Parameters.Signs)-1)
 				gains[i] = 1
 				if block.Parameters.Signs[signIndex] == '-' {
 					gains[i] = -1
@@ -450,7 +455,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("time_constant", "Time constant", "time constant", "0.05", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
 		},
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			tau := block.Parameters.TimeConstant
 			return controlsys.New(
 				mat.NewDense(1, 1, []float64{-1 / tau}),
@@ -469,7 +474,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Kind: BlockIntegrator, Label: "Integrator", Category: "Continuous",
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
 		},
-		realize: func(Block, int) (*controlsys.System, error) {
+		realize: func(Block, []int) (*controlsys.System, error) {
 			return controlsys.New(
 				mat.NewDense(1, 1, []float64{0}),
 				mat.NewDense(1, 1, []float64{1}),
@@ -490,7 +495,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			coefficientField("numerator", "Numerator coefficients", "1, 3", func(p *Parameters) *[]float64 { return &p.Numerator }),
 			coefficientField("denominator", "Denominator coefficients", "1, 2, 1", func(p *Parameters) *[]float64 { return &p.Denominator }),
 		},
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			result, err := (&controlsys.TransferFunc{
 				Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
 				Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
@@ -531,7 +536,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
 			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
 		},
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.NewPID(
 				block.Parameters.Proportional,
 				block.Parameters.Integral,
@@ -566,7 +571,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 			},
 		},
-		realize: func(block Block, inputs int) (*controlsys.System, error) {
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
 		},
 		validate: func(parameters Parameters) error {
