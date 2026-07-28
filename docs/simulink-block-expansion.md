@@ -38,7 +38,8 @@ The compiler realizes each dynamic block as a named `controlsys.System`:
 - First-order lag and Integrator use continuous state-space realizations;
 - Transfer Function uses `controlsys.TransferFunc.StateSpace`;
 - PID uses `controlsys.NewPID(...).System`;
-- Transport Delay uses `controlsys.PadeDelay`.
+- Transport Delay defaults to exact `controlsys` delay metadata. Padé and
+  Thiran are explicit continuous and discrete finite-order choices.
 
 Each Step, Constant, or Sine Wave source becomes its own external input channel.
 The simulation request creates the waveform matrix, named connections compose

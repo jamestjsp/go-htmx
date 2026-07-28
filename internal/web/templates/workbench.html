@@ -309,6 +309,13 @@
         <label>
           <span>{{.Label}}</span>
           <div class="unit-input">
+            {{if .Options}}
+            <select name="{{.Name}}" required>
+              {{range .Options}}
+              <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+              {{end}}
+            </select>
+            {{else}}
             <input
               type="{{.Type}}"
               name="{{.Name}}"
@@ -318,6 +325,7 @@
               {{if .Max}}max="{{.Max}}"{{end}}
               {{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
               required>
+            {{end}}
             {{if .Unit}}<small>{{.Unit}}</small>{{end}}
           </div>
           {{if .Help}}<small class="field-help">{{.Help}}</small>{{end}}

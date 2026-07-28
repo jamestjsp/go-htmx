@@ -13,6 +13,7 @@ import (
 	"github.com/jamestjsp/controlsys"
 	"gonum.org/v1/gonum/dsp/fourier"
 	"gonum.org/v1/gonum/dsp/window"
+	"gonum.org/v1/gonum/mat"
 )
 
 func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationRequest) (Snapshot, error) {
@@ -214,6 +215,7 @@ func compileRequestedModel(
 			signals = append(signals, signal)
 		}
 	}
+	alignNeutralSystemsToDiscreteDomain(systems)
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
@@ -274,6 +276,13 @@ func compileRequestedModel(
 		outputs[i] = signal.Name
 		compiledOutputs[i] = compiledOutput{signal: signal, block: block}
 	}
+
+	staticDelays, err := prepareStaticExactDelays(
+		orderedBlocks, connections, sources, requestedProbes, systems,
+	)
+	if err != nil {
+		return nil, err
+	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
 		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
@@ -281,7 +290,17 @@ func compileRequestedModel(
 				"flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain",
 			)
 		}
+		if errors.Is(err, controlsys.ErrDomainMismatch) {
+			return nil, invalid(
+				"flowsheet mixes continuous systems with discrete systems or incompatible sample times; use one time domain and one discrete sample time",
+			)
+		}
 		return nil, fmt.Errorf("compile flowsheet: %w", err)
+	}
+	if staticDelays != nil {
+		if err := system.SetDelay(staticDelays); err != nil {
+			return nil, fmt.Errorf("attach exact transport delays: %w", err)
+		}
 	}
 
 	provenanceConnections := append([]Connection(nil), connections...)
@@ -311,6 +330,148 @@ func compileRequestedModel(
 			Connections: provenanceConnections,
 		},
 	}, nil
+}
+
+func alignNeutralSystemsToDiscreteDomain(systems []*controlsys.System) {
+	var sampleTime float64
+	for _, system := range systems {
+		if !system.IsDiscrete() {
+			continue
+		}
+		if sampleTime == 0 {
+			sampleTime = system.Dt
+			continue
+		}
+		if math.Abs(system.Dt-sampleTime) > 1e-12 {
+			return
+		}
+	}
+	if sampleTime == 0 {
+		return
+	}
+	for _, system := range systems {
+		states, _, _ := system.Dims()
+		if states == 0 && !system.HasDelay() {
+			system.Dt = sampleTime
+		}
+	}
+}
+
+func prepareStaticExactDelays(
+	blocks []Block,
+	connections []Connection,
+	sources []Block,
+	probes []modelProbe,
+	systems []*controlsys.System,
+) (*mat.Dense, error) {
+	hasExactDelay := false
+	totalStates := 0
+	for i, block := range blocks {
+		states, _, _ := systems[i].Dims()
+		totalStates += states
+		if block.Kind == BlockDelay &&
+			normalizedDelayMode(block.Parameters) == delayModeExact &&
+			block.Parameters.Delay > 0 {
+			hasExactDelay = true
+		}
+	}
+	if !hasExactDelay || totalStates > 0 {
+		return nil, nil
+	}
+
+	outgoing := make(map[int64][]int64, len(blocks))
+	for _, connection := range connections {
+		outgoing[connection.SourceID] = append(outgoing[connection.SourceID], connection.TargetID)
+	}
+	blockByID := make(map[int64]Block, len(blocks))
+	for _, block := range blocks {
+		blockByID[block.ID] = block
+	}
+
+	delayData := make([]float64, len(probes)*len(sources))
+	for outputIndex, probe := range probes {
+		output := blockByID[probe.BlockID]
+		for inputIndex, source := range sources {
+			delays, cycle := exactPathDelays(
+				source.ID, probe.BlockID, 0, outgoing, blockByID, make(map[int64]bool),
+			)
+			if cycle {
+				return nil, invalid(
+					"%s to %s contains a static exact-delay loop that controlsys cannot realize; add plant dynamics or select Padé or Thiran",
+					source.Name, output.Name,
+				)
+			}
+			unique := uniqueDelays(delays)
+			if len(unique) > 1 {
+				return nil, invalid(
+					"%s to %s has parallel static paths with different exact delays; add dynamics or select Padé or Thiran",
+					source.Name, output.Name,
+				)
+			}
+			if len(unique) == 1 {
+				delayData[outputIndex*len(sources)+inputIndex] = unique[0]
+			}
+		}
+	}
+
+	for i, block := range blocks {
+		if block.Kind != BlockDelay || normalizedDelayMode(block.Parameters) != delayModeExact {
+			continue
+		}
+		systems[i].Delay = nil
+		systems[i].InputDelay = nil
+		systems[i].OutputDelay = nil
+		systems[i].LFT = nil
+	}
+	return mat.NewDense(len(probes), len(sources), delayData), nil
+}
+
+func exactPathDelays(
+	current, target int64,
+	delay float64,
+	outgoing map[int64][]int64,
+	blocks map[int64]Block,
+	visiting map[int64]bool,
+) ([]float64, bool) {
+	if block := blocks[current]; block.Kind == BlockDelay &&
+		normalizedDelayMode(block.Parameters) == delayModeExact {
+		delay += block.Parameters.Delay
+	}
+	if current == target {
+		return []float64{delay}, false
+	}
+	if visiting[current] {
+		return nil, true
+	}
+	visiting[current] = true
+	defer delete(visiting, current)
+
+	var delays []float64
+	for _, next := range outgoing[current] {
+		nextDelays, cycle := exactPathDelays(next, target, delay, outgoing, blocks, visiting)
+		if cycle {
+			return nil, true
+		}
+		delays = append(delays, nextDelays...)
+	}
+	return delays, false
+}
+
+func uniqueDelays(delays []float64) []float64 {
+	var unique []float64
+	for _, delay := range delays {
+		found := false
+		for _, existing := range unique {
+			if math.Abs(delay-existing) <= 1e-9 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			unique = append(unique, delay)
+		}
+	}
+	return unique
 }
 
 // wiredInputPorts is the block's input terminals that carry a wire, in

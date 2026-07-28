@@ -75,7 +75,9 @@ type Parameters struct {
 	Derivative    float64   `json:"derivative,omitempty"`
 	FilterTime    float64   `json:"filterTime,omitempty"`
 	Delay         float64   `json:"delay,omitempty"`
+	DelayMode     string    `json:"delayMode,omitempty"`
 	Approximation int       `json:"approximation,omitempty"`
+	SampleTime    float64   `json:"sampleTime,omitempty"`
 }
 
 // Sheet geometry. The flowsheet is a fixed world measured in sheet

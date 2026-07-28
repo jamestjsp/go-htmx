@@ -31,12 +31,19 @@ type ParameterField struct {
 	Label       string
 	Type        string
 	Value       string
+	Options     []ParameterOption
 	Step        string
 	Min         string
 	Max         string
 	Unit        string
 	Placeholder string
 	Help        string
+}
+
+type ParameterOption struct {
+	Value    string
+	Label    string
+	Selected bool
 }
 
 // fieldBound is a numeric parameter's enforced range: the one place that
@@ -66,22 +73,29 @@ type parameterDefinition struct {
 	Unit        string
 	Placeholder string
 	Help        string
+	Options     []parameterOption
+	active      func(Parameters) bool
 	// set and text are the field's own read/write: the one place that knows
 	// which Parameters member this name maps to. Nothing outside the
 	// definition switches on Name again.
 	set  func(*Parameters, string) error
 	text func(Parameters) string
 	// bound is nil for fields with no simple numeric range: text fields,
-	// coefficient lists, and the Padé order, whose integer range is a
+	// coefficient lists, and approximation order, whose integer range is a
 	// cross-field rule enforced by the block's own validate hook instead.
 	bound *fieldBound
+}
+
+type parameterOption struct {
+	Value string
+	Label string
 }
 
 // validateBound enforces the field's own numeric range, if it has one.
 // Fields without a bound (text, coefficients, Padé order) have nothing to
 // check here — their rules live in the block's validate hook.
 func (field parameterDefinition) validateBound(parameters Parameters) error {
-	if field.bound == nil {
+	if field.bound == nil || field.active != nil && !field.active(parameters) {
 		return nil
 	}
 	return bounded(field.bound.label, field.bound.value(parameters), field.bound.min, field.bound.max)
@@ -259,13 +273,26 @@ func (b Block) OutputPortCount() int { return blockDefinitions[b.Kind].outputPor
 func (b Block) hasInputPort(port int) bool  { return port >= 0 && port < b.InputPortCount() }
 func (b Block) hasOutputPort(port int) bool { return port >= 0 && port < b.OutputPortCount() }
 
-// minApproximation and maxApproximation bound the transport delay's Padé
-// order: the one place that states the range, read by both the editor's
-// Min/Max attributes and the validate hook that enforces it.
+// minApproximation and maxApproximation bound both finite-order delay
+// representations: the one place that states the range, read by both the
+// editor and the validation hook.
 const (
 	minApproximation = 1
 	maxApproximation = 10
+
+	delayModeExact  = "exact"
+	delayModePade   = "pade"
+	delayModeThiran = "thiran"
 )
+
+func normalizedDelayMode(parameters Parameters) string {
+	if parameters.DelayMode == "" {
+		// Existing flows stored only Delay and Approximation, whose historical
+		// meaning was Padé. New blocks carry the explicit exact default.
+		return delayModePade
+	}
+	return strings.ToLower(strings.TrimSpace(parameters.DelayMode))
+}
 
 // maxInputSigns bounds how many inputs a Sum can name, and so how many input
 // ports it can expose. The one place that states it: the sign field's own
@@ -554,13 +581,29 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 	BlockDelay: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockDelay, Label: "Transport Delay", Category: "Continuous",
-			Description: "Padé delay approximation", Glyph: "e⁻ˢ", Tag: "CONTINUOUS",
+			Description: "Exact delay with explicit Padé and Thiran approximations", Glyph: "e⁻ˢ", Tag: "DELAY",
 		},
-		Defaults: Parameters{Delay: 1, Approximation: 3},
+		Defaults: Parameters{
+			Delay: 1, DelayMode: delayModeExact, Approximation: 3, SampleTime: 0.1,
+		},
 		Parameters: []parameterDefinition{
 			numberField("delay", "Delay", "delay", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.Delay }),
 			{
-				Name: "approximation", Label: "Padé order", Type: "number",
+				Name: "delay_mode", Label: "Representation", Type: "select",
+				Options: []parameterOption{
+					{Value: delayModeExact, Label: "Exact transport delay"},
+					{Value: delayModePade, Label: "Padé (continuous)"},
+					{Value: delayModeThiran, Label: "Thiran (discrete)"},
+				},
+				set: func(parameters *Parameters, raw string) error {
+					parameters.DelayMode = strings.ToLower(strings.TrimSpace(raw))
+					return nil
+				},
+				text: func(parameters Parameters) string { return normalizedDelayMode(parameters) },
+				Help: "Exact preserves delay metadata. Padé and Thiran are explicit finite-order approximations.",
+			},
+			{
+				Name: "approximation", Label: "Approximation order", Type: "number",
 				Step: "1", Min: strconv.Itoa(minApproximation), Max: strconv.Itoa(maxApproximation), Unit: "order",
 				set: func(parameters *Parameters, raw string) error {
 					value, err := strconv.Atoi(strings.TrimSpace(raw))
@@ -571,19 +614,72 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 					return nil
 				},
 				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
+				Help: "Used only by Padé and Thiran representations.",
 			},
+			conditionalNumberField(
+				"sample_time", "Approximation sample time", "sample time",
+				"0.01", 0.001, 10, "sec",
+				func(p *Parameters) *float64 { return &p.SampleTime },
+				func(parameters Parameters) bool {
+					return normalizedDelayMode(parameters) == delayModeThiran
+				},
+			),
 		},
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
-			return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
+			switch normalizedDelayMode(block.Parameters) {
+			case delayModeExact:
+				system, err := controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
+				if err != nil {
+					return nil, err
+				}
+				if err := system.SetInputDelay([]float64{block.Parameters.Delay}); err != nil {
+					return nil, err
+				}
+				return system, nil
+			case delayModePade:
+				return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
+			case delayModeThiran:
+				return controlsys.ThiranDelay(
+					block.Parameters.Delay,
+					block.Parameters.Approximation,
+					block.Parameters.SampleTime,
+				)
+			default:
+				return nil, invalid("delay representation must be exact, Padé, or Thiran")
+			}
 		},
 		validate: func(parameters Parameters) error {
+			mode := normalizedDelayMode(parameters)
+			if mode != delayModeExact && mode != delayModePade && mode != delayModeThiran {
+				return invalid("delay representation must be exact, Padé, or Thiran")
+			}
+			if mode == delayModeExact {
+				return nil
+			}
 			if parameters.Approximation < minApproximation || parameters.Approximation > maxApproximation {
-				return invalid("Padé order must be between %d and %d", minApproximation, maxApproximation)
+				return invalid("approximation order must be between %d and %d", minApproximation, maxApproximation)
+			}
+			if mode == delayModeThiran {
+				samples := parameters.Delay / parameters.SampleTime
+				minimum := float64(parameters.Approximation) - 0.5
+				if samples < minimum {
+					return invalid(
+						"Thiran delay must be at least %.1f samples for order %d; increase delay, reduce order, or reduce sample time",
+						minimum, parameters.Approximation,
+					)
+				}
 			}
 			return nil
 		},
 		summary: func(parameters Parameters) string {
-			return fmt.Sprintf("%.3g s · Padé %d", parameters.Delay, parameters.Approximation)
+			switch normalizedDelayMode(parameters) {
+			case delayModeExact:
+				return fmt.Sprintf("%.3g s · exact", parameters.Delay)
+			case delayModeThiran:
+				return fmt.Sprintf("%.3g s · Thiran %d @ %.3g s", parameters.Delay, parameters.Approximation, parameters.SampleTime)
+			default:
+				return fmt.Sprintf("%.3g s · Padé %d", parameters.Delay, parameters.Approximation)
+			}
 		},
 	},
 	BlockScope: {
@@ -632,6 +728,20 @@ func numberField(name, label, boundsLabel, step string, min, max float64, unit s
 			value: func(parameters Parameters) float64 { return *field(&parameters) },
 		},
 	}
+}
+
+func conditionalNumberField(
+	name, label, boundsLabel, step string,
+	minimum, maximum float64,
+	unit string,
+	field func(*Parameters) *float64,
+	active func(Parameters) bool,
+) parameterDefinition {
+	definition := numberField(
+		name, label, boundsLabel, step, minimum, maximum, unit, field,
+	)
+	definition.active = active
+	return definition
 }
 
 // formatFloat renders a float64 the same way whether it backs a live
@@ -692,10 +802,17 @@ func (b Block) EditorFields() []ParameterField {
 	definition := blockDefinitions[b.Kind]
 	fields := make([]ParameterField, 0, len(definition.Parameters))
 	for _, field := range definition.Parameters {
+		options := make([]ParameterOption, len(field.Options))
+		value := field.text(b.Parameters)
+		for i, option := range field.Options {
+			options[i] = ParameterOption{
+				Value: option.Value, Label: option.Label, Selected: option.Value == value,
+			}
+		}
 		fields = append(fields, ParameterField{
 			Name: field.Name, Label: field.Label, Type: field.Type,
-			Value: field.text(b.Parameters),
-			Step:  field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
+			Value: value, Options: options,
+			Step: field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
 			Placeholder: field.Placeholder, Help: field.Help,
 		})
 	}

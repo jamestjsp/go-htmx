@@ -231,7 +231,7 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
 | Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
-| Continuous | Transport Delay | Continuous delay represented by a selectable Padé order | Exactly one |
+| Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
 | Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
@@ -240,6 +240,14 @@ passed to `controlsys.ConnectByName`, which resolves dynamic feedback and
 rejects only an unsolvable algebraic loop. Every source owns a separate
 external input channel, so Step, Constant, and Sine Wave blocks remain
 independent when a model branches or merges.
+
+Transport Delay preserves exact delay metadata through named series and
+feedback composition. Exact time simulation requires the delay to be an
+integer multiple of the run sample time; otherwise the run reports the nearest
+aligned value and asks for an explicit Padé or Thiran approximation. Padé is a
+continuous rational model, while Thiran is a discrete all-pass model with its
+own sample time. Stored delays created before these choices existed retain
+their historical Padé behavior.
 
 Connections identify both endpoint ports. For a Sum, sign character `i`
 belongs to input port `i`, so deleting and redrawing another wire cannot change

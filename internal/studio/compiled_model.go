@@ -183,11 +183,53 @@ func uniqueModelProbes(probes []modelProbe) []modelProbe {
 }
 
 func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeResponse, error) {
+	if m.system.IsDiscrete() &&
+		math.Abs(request.SampleTime-m.system.Dt) > 1e-9 {
+		return nil, invalid(
+			"run sample time %.12g s does not match the discrete model sample time %.12g s",
+			request.SampleTime, m.system.Dt,
+		)
+	}
 	steps := int(math.Round(request.Duration/request.SampleTime)) + 1
 	times := make([]float64, steps)
-	inputData := make([]float64, steps*len(m.inputs))
 	for i := range steps {
 		times[i] = float64(i) * request.SampleTime
+	}
+
+	if m.hasExactDelay() {
+		if err := m.validateExactDelaySampling(request.SampleTime); err != nil {
+			return nil, err
+		}
+		discrete, err := m.system.DiscretizeWithOpts(request.SampleTime, controlsys.C2DOptions{
+			Method:        controlsys.C2DMethodZOH,
+			DelayModeling: controlsys.C2DDelayModelingInternal,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("prepare exact-delay simulation: %w", err)
+		}
+		inputData := make([]float64, steps*len(m.inputs))
+		for sample := range steps {
+			for inputIndex, input := range m.inputs {
+				inputData[inputIndex*steps+sample] = sourceValue(input.source, times[sample])
+			}
+		}
+		response, err := discrete.Simulate(
+			mat.NewDense(len(m.inputs), steps, inputData),
+			nil,
+			nil,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("simulate exact-delay flowsheet: %w", err)
+		}
+		return &controlsys.TimeResponse{
+			T:          times,
+			Y:          response.Y,
+			OutputName: append([]string(nil), discrete.OutputName...),
+		}, nil
+	}
+
+	inputData := make([]float64, steps*len(m.inputs))
+	for i := range steps {
 		for inputIndex, input := range m.inputs {
 			inputData[i*len(m.inputs)+inputIndex] = sourceValue(input.source, times[i])
 		}
@@ -198,6 +240,39 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		return nil, fmt.Errorf("simulate flowsheet: %w", err)
 	}
 	return response, nil
+}
+
+func (m *compiledModel) hasExactDelay() bool {
+	for _, block := range m.provenance.Blocks {
+		if block.Kind == BlockDelay &&
+			normalizedDelayMode(block.Parameters) == delayModeExact &&
+			block.Parameters.Delay > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *compiledModel) validateExactDelaySampling(sampleTime float64) error {
+	for _, block := range m.provenance.Blocks {
+		if block.Kind != BlockDelay || normalizedDelayMode(block.Parameters) != delayModeExact {
+			continue
+		}
+		samples := block.Parameters.Delay / sampleTime
+		nearestSamples := math.Round(samples)
+		if math.Abs(samples-nearestSamples) <= 1e-9 {
+			continue
+		}
+		nearestDelay := nearestSamples * sampleTime
+		if nearestDelay == 0 {
+			nearestDelay = 0
+		}
+		return invalid(
+			"%s exact delay %.12g s is not aligned to sample time %.12g s; nearest aligned delay is %.12g s, or select Padé or Thiran",
+			block.Name, block.Parameters.Delay, sampleTime, nearestDelay,
+		)
+	}
+	return nil
 }
 
 func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {

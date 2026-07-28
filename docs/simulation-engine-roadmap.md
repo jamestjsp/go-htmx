@@ -129,7 +129,7 @@ becomes an internal LFT while the Scope's output is selected externally.
 Pure-LTI strongly connected components, including these delay LFTs, must stay
 inside one controlsys segment.
 
-The Transport Delay UI consequently has one explicit model choice:
+The Transport Delay UI now exposes one explicit model choice:
 
 - **Exact** (default): pure delay metadata, simulated through a delay-aware
   conversion/step path; no approximation poles.
@@ -140,6 +140,15 @@ The Transport Delay UI consequently has one explicit model choice:
 No mode may silently fall back to another, and the run record must retain the
 chosen representation.
 
+The exact runtime uses `DiscretizeWithOpts` with internal delay modeling and
+then `Simulate`; it deliberately does not call plain `Lsim` for an exact-delay
+flowsheet. A delay must align to the requested sample grid within `1e-9`
+samples. Purely static acyclic paths are retained as external I/O delay
+metadata because controlsys cannot encode a zero-state internal LFT; parallel
+static paths with different delays and static delayed loops are refused
+instead of approximated. Once any plant dynamics are present, named feedback
+composition promotes connected delays to the normal controlsys LFT.
+
 What *is* usable, verified working:
 
 | Capability | Call | Use here |
@@ -148,7 +157,7 @@ What *is* usable, verified working:
 | Continuous to discrete | `(*System).DiscretizeZOH`, `.DiscretizeFOH`, `.DiscretizeMatched`, `.DiscretizeImpulse` | Prepares a segment for stepping |
 | Discrete to discrete resample | `(*System).D2D(newDt, opts)` | Not used; see the sample-time policy below |
 | Discrete realization | `New(A, B, C, D, dt)` with `dt > 0` | Discrete filters, if they are ever composed |
-| Fractional discrete delay | `ThiranDelay(tau, order, dt)` | A later discrete Transport Delay |
+| Fractional discrete delay | `ThiranDelay(tau, order, dt)` | Explicit Thiran Transport Delay mode |
 
 The first three are methods on `*System`; the last two are package functions.
 

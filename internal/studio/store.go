@@ -894,5 +894,14 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
 		return Parameters{}, err
 	}
+	if kind == BlockDelay {
+		var stored map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+			return Parameters{}, err
+		}
+		if _, explicit := stored["delayMode"]; !explicit {
+			parameters.DelayMode = delayModePade
+		}
+	}
 	return parameters, nil
 }
