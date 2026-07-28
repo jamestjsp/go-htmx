@@ -139,6 +139,7 @@ subflowsheet or subsystem blocks inside a flowsheet are not yet supported.
 1. Run the seeded model and inspect the temperature response and settling metric.
 2. Right-click empty canvas and add a block; it lands where you clicked.
 3. Drag from an orange output port to a gray input port to wire a signal.
+   A Sum draws one labeled input port per `+`/`-` sign.
 4. Click a block to edit its name or numerical parameter in the inspector.
 5. Drag a block. It snaps to the grid and shows guides when it lines up with a neighbour.
 6. Drag a box around several blocks and move them together.
@@ -168,8 +169,8 @@ viewport at 25%–400%.
 | Drag empty canvas | Select blocks with a marquee (`Shift` extends) |
 | Drag a block | Move it, snapped to the grid; moves the whole selection |
 | `Alt` + drag | Suspend alignment magnetism (still snaps to the grid) |
-| Drag port to port | Wire a signal |
-| Click output, then input | Wire without dragging |
+| Drag a specific output port to a specific input port | Wire a signal to that terminal |
+| Click output, then input | Wire without dragging; Enter or Space works on focused ports |
 | Right-click | Context menu on a block or on the canvas |
 
 | Keys | Action |
@@ -211,7 +212,7 @@ flowchart LR
     HTTP -- "server-rendered components" --> Browser
 ```
 
-HTMX performs every server mutation and swaps the returned `#workbench` fragment. A small framework-free JavaScript file handles only interactions that must stay in the browser: the pan/zoom viewport, pointer dragging and grid snapping, marquee selection, provisional signal lines, port gestures, context menus, and keyboard shortcuts. Every mutation still persists through `htmx.ajax`.
+HTMX performs every server mutation and swaps the returned `#workbench` fragment. A small framework-free JavaScript layer handles only interactions that must stay in the browser: the pan/zoom viewport, pointer dragging and grid snapping, marquee selection, provisional signal lines, port gestures, context menus, and keyboard shortcuts. Every mutation still persists through `htmx.ajax`.
 
 Because the swap replaces the whole fragment, all client-held state — viewport, selection, rail and dock sizing — is re-applied after each swap and stored in `localStorage` rather than in the flow record. Multi-selection is deliberately client-side, so the server keeps its single `selected` parameter for the inspector and a marquee costs no round trips.
 
@@ -225,7 +226,7 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Sources | Constant | Constant signal | No input |
 | Sources | Sine Wave | Biased sinusoid with amplitude, angular frequency, and phase | No input |
 | Math | Gain | Multiplies its input by `K` | Exactly one |
-| Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One or more |
+| Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One input port per sign |
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
@@ -235,6 +236,11 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
 Flows may branch and merge. Cycles are rejected because this version compiles an acyclic signal graph. Every source owns a separate external input channel, so Step, Constant, and Sine Wave blocks remain independent when a model branches or merges.
+
+Connections identify both endpoint ports. For a Sum, sign character `i`
+belongs to input port `i`, so deleting and redrawing another wire cannot change
+which inputs are added or subtracted. Editing the sign pattern adds ports;
+removing a sign is refused while that port still carries a wire.
 
 Each math or continuous block becomes a locally named `controlsys.System`. `controlsys.ConnectByName` composes those realizations into one state-space model, and `controlsys.Lsim` evaluates it on the requested time grid. Spectrum Analyzer sinks then apply Gonum's Hann window and real FFT to their selected response.
 
@@ -250,17 +256,23 @@ The database stores:
 - flows, their place in the project's tab strip, and separate layout/model
   update timestamps;
 - blocks, positions, and version-tolerant JSON parameters;
-- signal connections with foreign keys and uniqueness constraints;
+- signal connections with source and target port indices, foreign keys, tuple
+  uniqueness, and a domain rule that each target port accepts one wire;
 - recent activity events;
 - complete simulation runs as JSON time series.
 
 Model edits invalidate the displayed result, while layout-only moves and
 flowsheet renames do not. Historical runs remain in SQLite. Schema startup
-migrates databases created before projects, tab order, model timestamps, or
-JSON block parameters were introduced. Deleting a project reaches its
-flowsheets, blocks, connections, events, and runs through `ON DELETE CASCADE`,
-so foreign keys are turned on in the connection string rather than left to a
-pragma on whichever connection happens to run it.
+migrates databases created before projects, tab order, model timestamps, JSON
+block parameters, or connection ports were introduced. During the port
+migration, every source endpoint becomes port 0 and target endpoints are
+numbered per target by their old connection order. Non-Sum blocks could carry
+only one input and therefore remain on target port 0; Sum inputs retain the
+positions the old compiler gave their signs. Reopening the migrated database
+does not renumber it. Deleting a project reaches its flowsheets, blocks,
+connections, events, and runs through `ON DELETE CASCADE`, so foreign keys are
+turned on in the connection string rather than left to a pragma on whichever
+connection happens to run it.
 
 ## Project structure
 
@@ -297,6 +309,19 @@ real pointer and key gestures against headless Chrome over CDP — 88 checks
 across viewport, snapping, selection, keyboard, context menus, and wiring — at
 25%, 100%, and 400% zoom.
 
+The port-model pass additionally migrated and reopened a pre-port connection
+fixture, grew a Sum's sign list and refused a shrink that would orphan a wire,
+then disconnected and pointer-wired the seeded model to Sum ports 0 and 1.
+The draft snapped to each labeled port, both port indices survived an HTMX
+swap and a reload, and server-rendered and client-redrawn curve coordinates
+matched. Focused-port keyboard wiring, cancellation, history restore, dense
+16-port hit testing, and unchanged single-port geometry at 25%, 100%, and 400%
+also passed. Restoring the seeded `++` signs and running the rewired model
+produced the expected displayed final value of `1.591`. The persistent
+regression verifies 301 samples, the final-value tolerance, and the settled
+metric; the compiler pass also compared every sample and metric bit-for-bit
+before and after port-based wiring.
+
 The navigation redesign was verified the same way, end to end in one browser
 session: create a project from the register, add sheets with `+`, rename a tab
 by double-click, duplicate it, reorder by drag and by keyboard, delete a sheet
@@ -310,4 +335,4 @@ by-name order, every new operation worked on it, and a second open did not
 re-sort the strip — 46 checks. Rendering was confirmed at 1440, 1280, 860, and
 620px on both pages.
 
-Note that templates and static assets are `go:embed`-ed into the binary, so a change to `app.js` or `app.css` needs a rebuild before the server serves it.
+Note that templates and static assets are `go:embed`-ed into the binary, so a change to `static/js/*.js` or `app.css` needs a rebuild before the server serves it.

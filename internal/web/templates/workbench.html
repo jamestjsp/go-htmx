@@ -146,16 +146,17 @@
                 </marker>
               </defs>
               {{range .Connections}}
-              <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
-              <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-target="{{.TargetID}}" d="{{.Path}}"></path>
+              <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" d="{{.Path}}"></path>
+              <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" d="{{.Path}}"></path>
               {{end}}
               <path id="draft-edge" class="draft-edge" d=""></path>
             </svg>
 
             {{range .Blocks}}
+            {{$block := .}}
             <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
-              {{if .Definition.HasInput}}
-              <button type="button" class="port port-input" data-input-port="{{.ID}}" aria-label="Connect to {{.Name}}"></button>
+              {{range .InputPorts}}
+              <button type="button" class="port port-input" data-input-block="{{$block.ID}}" data-input-port="{{.Index}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect to {{$block.Name}} {{.Name}}">{{if .Label}}<span class="port-label" aria-hidden="true">{{.Label}}</span>{{end}}</button>
               {{end}}
               <button
                 class="block-body"
@@ -164,8 +165,8 @@
                 <strong>{{.Name}}</strong>
                 <small>{{.ParameterText}}</small>
               </button>
-              {{if .Definition.HasOutput}}
-              <button type="button" class="port port-output" data-output-port="{{.ID}}" data-output-name="{{.Name}}" aria-label="Connect from {{.Name}}"></button>
+              {{range .OutputPorts}}
+              <button type="button" class="port port-output" data-output-block="{{$block.ID}}" data-output-port="{{.Index}}" data-output-name="{{$block.Name}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect from {{$block.Name}} {{.Name}}"></button>
               {{end}}
             </article>
             {{end}}
@@ -336,7 +337,7 @@
           {{range .SelectedLinks}}
           <div>
             <span class="direction-pill">{{.Direction}}</span>
-            <strong>{{.OtherName}}</strong>
+            <span class="signal-peer"><strong>{{.OtherName}}</strong><small>{{.PortName}}</small></span>
             <button
               type="button"
               hx-delete="/connections/{{.ID}}?selected={{$.Selected.ID}}"

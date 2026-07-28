@@ -110,13 +110,13 @@ func TestConnectRejectsDuplicateInvalidPortsAndCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	existing := snapshot.Connections[0]
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, existing.SourceID, existing.TargetID); err == nil {
+	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: existing.SourceID, TargetID: existing.TargetID}); err == nil {
 		t.Fatal("duplicate connection succeeded")
 	}
 
 	scope := findKind(t, snapshot.Blocks, BlockScope)
 	gain := findKind(t, snapshot.Blocks, BlockGain)
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, scope.ID, gain.ID); err == nil {
+	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: scope.ID, TargetID: gain.ID}); err == nil {
 		t.Fatal("scope output connection succeeded")
 	}
 
@@ -128,14 +128,81 @@ func TestConnectRejectsDuplicateInvalidPortsAndCycle(t *testing.T) {
 		}
 		sums = append(sums, id)
 	}
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, sums[0], sums[1]); err != nil {
+	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[0], TargetID: sums[1]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, sums[1], sums[2]); err != nil {
+	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[1], TargetID: sums[2]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, sums[2], sums[0]); err == nil {
+	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[2], TargetID: sums[0]}); err == nil {
 		t.Fatal("cyclic connection succeeded")
+	}
+}
+
+func TestConnectAllowsVariadicSumButRejectsSecondWireOnArityOneBlock(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	snapshot, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := snapshot.Flow.ID
+
+	_, sourceA, err := studio.AddBlock(ctx, flowID, BlockConstant, Point{X: 700, Y: 700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sourceB, err := studio.AddBlock(ctx, flowID, BlockConstant, Point{X: 700, Y: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sumID, err := studio.AddBlock(ctx, flowID, BlockSum, Point{X: 900, Y: 700})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gainID, err := studio.AddBlock(ctx, flowID, BlockGain, Point{X: 900, Y: 800})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A Sum's signs are its input ports, so a second terminal to wire is what
+	// a second sign creates. The default one sign leaves it with port 0 only.
+	snapshot, err = studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := findBlock(t, snapshot.Blocks, sumID)
+	if _, err := studio.UpdateBlock(ctx, sumID, BlockUpdate{
+		Name:       sum.Name,
+		Parameters: map[string]string{"signs": "++"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := studio.Connect(ctx, flowID, Wire{SourceID: sourceA, TargetID: sumID}); err != nil {
+		t.Fatalf("first wire into Sum: %v", err)
+	}
+	if _, err := studio.Connect(ctx, flowID, Wire{
+		SourceID: sourceB, TargetID: sumID, TargetPort: 1,
+	}); err != nil {
+		t.Fatalf("second wire into variadic Sum: %v", err)
+	}
+
+	if _, err := studio.Connect(ctx, flowID, Wire{SourceID: sourceA, TargetID: gainID}); err != nil {
+		t.Fatalf("first wire into Gain: %v", err)
+	}
+	snapshot, err = studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gain := findBlock(t, snapshot.Blocks, gainID)
+
+	_, err = studio.Connect(ctx, flowID, Wire{SourceID: sourceB, TargetID: gainID})
+	if err == nil {
+		t.Fatal("second wire into an arityOne block succeeded")
+	}
+	if want := gain.Name + " already has an input"; err.Error() != want {
+		t.Fatalf("error = %q, want %q", err.Error(), want)
 	}
 }
 

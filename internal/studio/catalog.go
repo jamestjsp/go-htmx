@@ -5,6 +5,9 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 type BlockDefinition struct {
@@ -14,9 +17,14 @@ type BlockDefinition struct {
 	Description string
 	Glyph       string
 	Tag         string
-	HasInput    bool
-	HasOutput   bool
 }
+
+// HasInput and HasOutput are the workbench template's and palette's window
+// into a block's structural role: which port glyphs to draw. Both delegate
+// to the same Kind-level derivation Connect and compileFlow enforce, so the
+// canvas can never draw a port that the wiring rules would then refuse.
+func (d BlockDefinition) HasInput() bool  { return d.Kind.HasInput() }
+func (d BlockDefinition) HasOutput() bool { return d.Kind.HasOutput() }
 
 type ParameterField struct {
 	Name        string
@@ -31,6 +39,23 @@ type ParameterField struct {
 	Help        string
 }
 
+// fieldBound is a numeric parameter's enforced range: the one place that
+// states it. numberField derives the editor's Min/Max strings from it and
+// parameterDefinition.validateBound enforces it from the same two numbers,
+// so an input the editor's attributes accept can never be one the server
+// then rejects (or vice versa).
+type fieldBound struct {
+	// label is the noun bounded()'s error names. It is not always the
+	// field's editor Label — e.g. the PID's "proportional" field is
+	// captioned "Proportional Kp" in the editor, but its violation reads
+	// "proportional gain must be...". Kept as its own value rather than
+	// derived from Label, since the two are independently user-visible
+	// strings that happen to coincide for most fields but not all.
+	label    string
+	min, max float64
+	value    func(Parameters) float64
+}
+
 type parameterDefinition struct {
 	Name        string
 	Label       string
@@ -41,13 +66,212 @@ type parameterDefinition struct {
 	Unit        string
 	Placeholder string
 	Help        string
+	// set and text are the field's own read/write: the one place that knows
+	// which Parameters member this name maps to. Nothing outside the
+	// definition switches on Name again.
+	set  func(*Parameters, string) error
+	text func(Parameters) string
+	// bound is nil for fields with no simple numeric range: text fields,
+	// coefficient lists, and the Padé order, whose integer range is a
+	// cross-field rule enforced by the block's own validate hook instead.
+	bound *fieldBound
+}
+
+// validateBound enforces the field's own numeric range, if it has one.
+// Fields without a bound (text, coefficients, Padé order) have nothing to
+// check here — their rules live in the block's validate hook.
+func (field parameterDefinition) validateBound(parameters Parameters) error {
+	if field.bound == nil {
+		return nil
+	}
+	return bounded(field.bound.label, field.bound.value(parameters), field.bound.min, field.bound.max)
 }
 
 type blockDefinition struct {
 	BlockDefinition
 	Defaults   Parameters
 	Parameters []parameterDefinition
+	// role is the block's part in compileFlow's structural rules: at least
+	// one roleSource and one roleSink block must be present before
+	// simulating, and a roleSource block may not accept a connection. The
+	// zero value, roleDynamic, covers every block that is neither — Gain,
+	// Sum, Lag, Integrator, Transfer, PID, and Delay all take one input and
+	// produce one output like any other interior block.
+	role blockRole
+	// variadic is true for the one kind whose input count is not fixed —
+	// Sum today, and any future block like Product or Mux that combines an
+	// arbitrary number of connected inputs. Every other non-source kind
+	// accepts exactly one; see arity, which folds this together with role
+	// into the none/one/variadic answer Connect and compileFlow both
+	// consult instead of separately special-casing Sum by name.
+	variadic bool
+	// inputPorts answers how many input terminals a variadic kind exposes
+	// for a given set of parameters — Sum, one per sign character. Setting
+	// variadic without setting this is a programming error, guarded by
+	// TestEveryVariadicKindDerivesItsInputPortsFromParameters. Fixed-arity
+	// kinds leave it nil: arity already states their count, so only a kind
+	// whose count a user can change needs to say how it is derived.
+	inputPorts func(Parameters) int
+	// declareWiredPorts widens a variadic kind's parameters so its port list
+	// covers wires already sitting on ports the parameters never named — the
+	// state a database written before connections carried ports can be in.
+	// It reports false when the widening cannot be done without changing what
+	// the block computes, which leaves the stored parameters alone. Sum is
+	// the only kind that can widen: a lone sign is shorthand for that same
+	// sign on every wire, so repeating it names each port and sums exactly
+	// the same signals.
+	declareWiredPorts func(Parameters, int) (Parameters, bool)
+	// realize builds the block's controlsys realization from its own
+	// parameters and the input ports its wires land on: ascending, distinct,
+	// and never negative, which compileFlow establishes before calling so a
+	// hook can index by port without re-checking. The ports are what a
+	// variadic kind needs: Sum's signs are its ports, so the sign an input
+	// carries has to come from the terminal it arrived on rather than from its
+	// place in the list. A fixed-arity kind reads neither. nil means the block
+	// has no dynamics of its own: every source and sink realizes as a unit
+	// gain, and realizeSystem supplies that default rather than each of the
+	// five repeating it.
+	realize func(Block, []int) (*controlsys.System, error)
+	// waveform evaluates a roleSource block's signal at time t. nil for
+	// every other role.
+	waveform func(Parameters, float64) float64
+	// spectrum is true for the one sink kind whose output is a frequency
+	// spectrum instead of a time series and settling metric. It is a
+	// property of this specific kind, not the source/dynamic/sink
+	// structural role above, so it is its own field rather than a fourth
+	// role value.
+	spectrum bool
+	// validate carries the rules that are not one field's own bound:
+	// transfer-function properness and order limits, the sign alphabet and
+	// length, the Padé integer range. nil for kinds with no such rule.
+	validate func(Parameters) error
+	// checkInputs enforces a kind's own rule tying its parameters to the
+	// number of connected inputs, once compileFlow's arity walk has already
+	// confirmed the count itself satisfies the kind's arity. nil for every
+	// kind except Sum, whose signs must be length 1 (broadcasting to every
+	// input) or exactly the connected input count — Sum's own concern, not
+	// a generic arity rule every block shares.
+	checkInputs func(Block, int) error
+	// summary renders the block's one-line canvas caption. nil is never
+	// valid for a registered kind — every entry in blockOrder sets one.
+	summary func(Parameters) string
 }
+
+// blockRole is source | dynamic | sink: see the role field's comment on
+// blockDefinition for what each value governs. roleDynamic is the zero
+// value because most registered kinds are it.
+type blockRole int
+
+const (
+	roleDynamic blockRole = iota
+	roleSource
+	roleSink
+)
+
+// realizeSystem builds the block's controlsys realization, defaulting to a
+// unit gain when the definition sets no realize of its own. Every source and
+// every sink shares that pass-through behavior, so it is stated once here
+// instead of five block entries repeating the same three lines.
+func (d blockDefinition) realizeSystem(block Block, ports []int) (*controlsys.System, error) {
+	if d.realize != nil {
+		return d.realize(block, ports)
+	}
+	return controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
+}
+
+// isSource and isSink read a block's structural role, replacing the two
+// kind-list functions that used to enumerate source and sink kinds by hand
+// in simulate.go. The catalog is now the only place a kind's role is stated.
+func (k BlockKind) isSource() bool { return blockDefinitions[k].role == roleSource }
+func (k BlockKind) isSink() bool   { return blockDefinitions[k].role == roleSink }
+
+// isSpectrumSink reports whether a sink's output is a frequency spectrum
+// rather than a time series and settling metric — see the spectrum field's
+// comment on blockDefinition for why this is not folded into role.
+func (k BlockKind) isSpectrumSink() bool { return blockDefinitions[k].spectrum }
+
+// inputArity states how many incoming connections a block accepts. Connect's
+// incoming-count check (studio.go) and compileFlow's arity walk (simulate.go)
+// both consult this one derivation instead of separately re-deriving "every
+// non-Sum block takes one input."
+type inputArity int
+
+const (
+	// arityOne is the zero value: most registered kinds — Gain, Lag,
+	// Integrator, Transfer, PID, Delay, Scope, and Spectrum — accept
+	// exactly one connected input.
+	arityOne      inputArity = iota
+	arityNone                // sources: no incoming connection is permitted
+	arityVariadic            // Sum, and any future kind like it: any number of inputs
+)
+
+// arity folds a block's role and variadic flag into the three-way answer
+// Connect and compileFlow need: none for a source, variadic for the one
+// kind that sets variadic, and exactly one for everything else.
+func (d blockDefinition) arity() inputArity {
+	switch {
+	case d.role == roleSource:
+		return arityNone
+	case d.variadic:
+		return arityVariadic
+	default:
+		return arityOne
+	}
+}
+
+func (k BlockKind) arity() inputArity { return blockDefinitions[k].arity() }
+
+// inputPortCount is the one authority for how many input terminals a block
+// carries: none for a source, one for a fixed-arity kind, and whatever the
+// kind's own inputPorts hook derives from the parameters for a variadic one.
+// Connect refuses a wire to any index outside it, UpdateBlock refuses an edit
+// that would shrink it past a wired port, and the workbench draws exactly
+// this many glyphs — so a port a user can see is always a port the wiring
+// rules accept, and one they cannot see can never be wired behind their back.
+func (d blockDefinition) inputPortCount(parameters Parameters) int {
+	switch d.arity() {
+	case arityNone:
+		return 0
+	case arityVariadic:
+		return d.inputPorts(parameters)
+	default:
+		return 1
+	}
+}
+
+// outputPortCount is its counterpart. Every kind but a sink drives exactly one
+// output today; a sink drives none, which is the same fact HasOutput states
+// for the canvas.
+func (d blockDefinition) outputPortCount() int {
+	if d.role == roleSink {
+		return 0
+	}
+	return 1
+}
+
+// InputPortCount and OutputPortCount are a placed block's own terminals, as
+// its parameters currently stand. They are the workbench's and the wiring
+// rules' shared window onto the derivation above, so the canvas cannot draw a
+// port Connect would refuse.
+func (b Block) InputPortCount() int  { return blockDefinitions[b.Kind].inputPortCount(b.Parameters) }
+func (b Block) OutputPortCount() int { return blockDefinitions[b.Kind].outputPortCount() }
+
+func (b Block) hasInputPort(port int) bool  { return port >= 0 && port < b.InputPortCount() }
+func (b Block) hasOutputPort(port int) bool { return port >= 0 && port < b.OutputPortCount() }
+
+// minApproximation and maxApproximation bound the transport delay's Padé
+// order: the one place that states the range, read by both the editor's
+// Min/Max attributes and the validate hook that enforces it.
+const (
+	minApproximation = 1
+	maxApproximation = 10
+)
+
+// maxInputSigns bounds how many inputs a Sum can name, and so how many input
+// ports it can expose. The one place that states it: the sign field's own
+// validate hook enforces it and declareWiredPorts refuses to widen past it,
+// rather than the two agreeing by coincidence.
+const maxInputSigns = 16
 
 var blockOrder = []BlockKind{
 	BlockSource,
@@ -69,148 +293,373 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSource, Label: "Step", Category: "Sources",
 			Description: "Initial-to-final step", Glyph: "↗", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Amplitude: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Final value", "0.05", "-10000", "10000", "scalar"),
-			numberField("initial_value", "Initial value", "0.05", "-10000", "10000", "scalar"),
-			numberField("step_time", "Step time", "0.05", "0", "120", "sec"),
+			numberField("amplitude", "Final value", "final value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
+			numberField("step_time", "Step time", "step time", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
+		},
+		role: roleSource,
+		waveform: func(parameters Parameters, t float64) float64 {
+			if t < parameters.StepTime {
+				return parameters.InitialValue
+			}
+			return parameters.Amplitude
+		},
+		summary: func(parameters Parameters) string {
+			if parameters.StepTime == 0 {
+				return fmt.Sprintf("%.3g step", parameters.Amplitude)
+			}
+			return fmt.Sprintf("%.3g at %.3g s", parameters.Amplitude, parameters.StepTime)
 		},
 	},
 	BlockConstant: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockConstant, Label: "Constant", Category: "Sources",
 			Description: "Constant signal", Glyph: "C", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Value: 1},
 		Parameters: []parameterDefinition{
-			numberField("value", "Value", "0.05", "-10000", "10000", "scalar"),
+			numberField("value", "Value", "value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Value }),
+		},
+		role:     roleSource,
+		waveform: func(parameters Parameters, t float64) float64 { return parameters.Value },
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g constant", parameters.Value)
 		},
 	},
 	BlockSine: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSine, Label: "Sine Wave", Category: "Sources",
 			Description: "Biased sinusoid", Glyph: "∿", Tag: "SOURCE",
-			HasOutput: true,
 		},
 		Defaults: Parameters{Amplitude: 1, Frequency: 1},
 		Parameters: []parameterDefinition{
-			numberField("amplitude", "Amplitude", "0.05", "-10000", "10000", "scalar"),
-			numberField("bias", "Bias", "0.05", "-10000", "10000", "scalar"),
-			numberField("frequency", "Frequency", "0.05", "0", "1000", "rad/s"),
-			numberField("phase", "Phase", "0.05", "-1000", "1000", "rad"),
+			numberField("amplitude", "Amplitude", "amplitude", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
+			numberField("bias", "Bias", "bias", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Bias }),
+			numberField("frequency", "Frequency", "frequency", "0.05", 0, 1000, "rad/s", func(p *Parameters) *float64 { return &p.Frequency }),
+			numberField("phase", "Phase", "phase", "0.05", -1000, 1000, "rad", func(p *Parameters) *float64 { return &p.Phase }),
+		},
+		role: roleSource,
+		waveform: func(parameters Parameters, t float64) float64 {
+			return parameters.Bias + parameters.Amplitude*math.Sin(parameters.Frequency*t+parameters.Phase)
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g sin(%.3gt)", parameters.Amplitude, parameters.Frequency)
 		},
 	},
 	BlockGain: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockGain, Label: "Gain", Category: "Math",
 			Description: "Scale a signal", Glyph: "×", Tag: "MATH",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Gain: 1},
 		Parameters: []parameterDefinition{
-			numberField("gain", "Gain", "0.05", "-10000", "10000", "scalar"),
+			numberField("gain", "Gain", "gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Gain }),
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewGain(mat.NewDense(1, 1, []float64{block.Parameters.Gain}), 0)
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("K = %.3g", parameters.Gain)
 		},
 	},
 	BlockSum: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSum, Label: "Sum", Category: "Math",
 			Description: "Signed signal sum", Glyph: "Σ", Tag: "MATH",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Signs: "+"},
 		Parameters: []parameterDefinition{{
 			Name: "signs", Label: "Input signs", Type: "text",
-			Placeholder: "+-", Help: "Connection order; one sign broadcasts",
+			// The hint states the port rule because the field is now the port
+			// list: a wire can only land on a sign, so the old "one sign
+			// broadcasts" shorthand would promise inputs Connect refuses.
+			Placeholder: "+-", Help: "One sign per input port, in order",
+			set: func(parameters *Parameters, raw string) error {
+				parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
+				return nil
+			},
+			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
+		variadic: true,
+		// Sum's input ports are its signs: one terminal per sign character,
+		// so the sign an input carries is the port it lands on and editing
+		// the field is how a user adds or removes an input.
+		inputPorts: func(parameters Parameters) int { return len(parameters.Signs) },
+		declareWiredPorts: func(parameters Parameters, wired int) (Parameters, bool) {
+			// Only the one-sign broadcast can widen. With two or more signs
+			// every port already has its own and inventing more would guess
+			// at a sign the model never stated; beyond maxInputSigns there is
+			// no sign string that could name them all, and refusing to widen
+			// leaves such a flowsheet computing what it always did.
+			if len(parameters.Signs) != 1 || wired > maxInputSigns {
+				return parameters, false
+			}
+			parameters.Signs = strings.Repeat(parameters.Signs, wired)
+			return parameters, true
+		},
+		// realize builds one gain per connected input, taking each input's
+		// sign from the port it landed on. That is what makes the sign belong
+		// to the terminal: a wire deleted and redrawn onto the same port comes
+		// back with the sign it had, whatever order the wires were drawn in.
+		// The fallback to the last sign for a port past the end is reached
+		// only by a flowsheet an older version wired beyond maxInputSigns —
+		// which declareWiredPorts deliberately leaves broadcasting rather than
+		// change what it computes, and where a lone sign covers every port.
+		// Matching the sign count against the actual connected input count is
+		// checkInputs's job, not this hook's.
+		realize: func(block Block, ports []int) (*controlsys.System, error) {
+			gains := make([]float64, len(ports))
+			for i, port := range ports {
+				signIndex := min(port, len(block.Parameters.Signs)-1)
+				gains[i] = 1
+				if block.Parameters.Signs[signIndex] == '-' {
+					gains[i] = -1
+				}
+			}
+			return controlsys.NewGain(mat.NewDense(1, len(gains), gains), 0)
+		},
+		validate: func(parameters Parameters) error {
+			if len(parameters.Signs) == 0 || len(parameters.Signs) > maxInputSigns {
+				return invalid("input signs must contain 1 to %d plus or minus signs", maxInputSigns)
+			}
+			for _, sign := range parameters.Signs {
+				if sign != '+' && sign != '-' {
+					return invalid("input signs may contain only + and -")
+				}
+			}
+			return nil
+		},
+		// checkInputs is Sum's own rule tying its signs to the connected
+		// input count: one sign covers however many wires arrived, otherwise
+		// there must be exactly one sign per connection. The first case now
+		// only reaches a Sum wired past maxInputSigns, since every other Sum
+		// has a sign for each port a wire can reach.
+		checkInputs: func(block Block, inputs int) error {
+			if len(block.Parameters.Signs) != 1 && len(block.Parameters.Signs) != inputs {
+				return invalid("%s has %d input signs for %d connections",
+					block.Name, len(block.Parameters.Signs), inputs)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return "signs " + parameters.Signs
+		},
 	},
 	BlockLag: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockLag, Label: "First-order Lag", Category: "Continuous",
 			Description: "1 / (τs + 1)", Glyph: "τ", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{TimeConstant: 1},
 		Parameters: []parameterDefinition{
-			numberField("time_constant", "Time constant", "0.05", "0.001", "1000", "sec"),
+			numberField("time_constant", "Time constant", "time constant", "0.05", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			tau := block.Parameters.TimeConstant
+			return controlsys.New(
+				mat.NewDense(1, 1, []float64{-1 / tau}),
+				mat.NewDense(1, 1, []float64{1 / tau}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{0}),
+				0,
+			)
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("τ = %.3g s", parameters.TimeConstant)
 		},
 	},
 	BlockIntegrator: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockIntegrator, Label: "Integrator", Category: "Continuous",
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
+		realize: func(Block, []int) (*controlsys.System, error) {
+			return controlsys.New(
+				mat.NewDense(1, 1, []float64{0}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{0}),
+				0,
+			)
+		},
+		summary: func(Parameters) string { return "1 / s" },
 	},
 	BlockTransfer: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockTransfer, Label: "Transfer Function", Category: "Continuous",
 			Description: "Proper SISO model", Glyph: "G", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Numerator: []float64{1}, Denominator: []float64{1, 1}},
 		Parameters: []parameterDefinition{
-			{
-				Name: "numerator", Label: "Numerator coefficients", Type: "text",
-				Placeholder: "1, 3", Help: "Descending powers of s",
-			},
-			{
-				Name: "denominator", Label: "Denominator coefficients", Type: "text",
-				Placeholder: "1, 2, 1", Help: "Descending powers of s",
-			},
+			coefficientField("numerator", "Numerator coefficients", "1, 3", func(p *Parameters) *[]float64 { return &p.Numerator }),
+			coefficientField("denominator", "Denominator coefficients", "1, 2, 1", func(p *Parameters) *[]float64 { return &p.Denominator }),
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			result, err := (&controlsys.TransferFunc{
+				Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
+				Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
+			}).StateSpace(nil)
+			if err != nil {
+				return nil, err
+			}
+			return result.Sys, nil
+		},
+		validate: func(parameters Parameters) error {
+			if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
+				return invalid("transfer function coefficients are required")
+			}
+			if len(parameters.Numerator) > 9 || len(parameters.Denominator) > 9 {
+				return invalid("transfer functions are limited to eighth order")
+			}
+			if len(parameters.Numerator) > len(parameters.Denominator) {
+				return invalid("transfer function must be proper")
+			}
+			if parameters.Denominator[0] == 0 {
+				return invalid("denominator leading coefficient must be nonzero")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return polynomialText(parameters.Numerator) + " / " + polynomialText(parameters.Denominator)
 		},
 	},
 	BlockPID: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockPID, Label: "PID Controller", Category: "Continuous",
 			Description: "Filtered parallel PID", Glyph: "PID", Tag: "CONTROL",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Proportional: 1, Integral: 0.5, FilterTime: 0.1},
 		Parameters: []parameterDefinition{
-			numberField("proportional", "Proportional Kp", "0.05", "-10000", "10000", "scalar"),
-			numberField("integral", "Integral Ki", "0.05", "-10000", "10000", "1/sec"),
-			numberField("derivative", "Derivative Kd", "0.05", "-10000", "10000", "sec"),
-			numberField("filter_time", "Derivative filter Tf", "0.01", "0.001", "1000", "sec"),
+			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewPID(
+				block.Parameters.Proportional,
+				block.Parameters.Integral,
+				block.Parameters.Derivative,
+				controlsys.WithFilter(block.Parameters.FilterTime),
+			).System()
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
+				parameters.Proportional, parameters.Integral, parameters.Derivative)
 		},
 	},
 	BlockDelay: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockDelay, Label: "Transport Delay", Category: "Continuous",
 			Description: "Padé delay approximation", Glyph: "e⁻ˢ", Tag: "CONTINUOUS",
-			HasInput: true, HasOutput: true,
 		},
 		Defaults: Parameters{Delay: 1, Approximation: 3},
 		Parameters: []parameterDefinition{
-			numberField("delay", "Delay", "0.05", "0", "120", "sec"),
+			numberField("delay", "Delay", "delay", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.Delay }),
 			{
 				Name: "approximation", Label: "Padé order", Type: "number",
-				Step: "1", Min: "1", Max: "10", Unit: "order",
+				Step: "1", Min: strconv.Itoa(minApproximation), Max: strconv.Itoa(maxApproximation), Unit: "order",
+				set: func(parameters *Parameters, raw string) error {
+					value, err := strconv.Atoi(strings.TrimSpace(raw))
+					if err != nil {
+						return invalid("Padé order must be a whole number")
+					}
+					parameters.Approximation = value
+					return nil
+				},
+				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 			},
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.Approximation < minApproximation || parameters.Approximation > maxApproximation {
+				return invalid("Padé order must be between %d and %d", minApproximation, maxApproximation)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%.3g s · Padé %d", parameters.Delay, parameters.Approximation)
 		},
 	},
 	BlockScope: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockScope, Label: "Scope", Category: "Sinks",
 			Description: "Plot a signal", Glyph: "⌁", Tag: "OUTPUT",
-			HasInput: true,
 		},
+		role:    roleSink,
+		summary: func(Parameters) string { return "trend output" },
 	},
 	BlockSpectrum: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockSpectrum, Label: "Spectrum Analyzer", Category: "Sinks",
 			Description: "Hann-windowed FFT", Glyph: "FFT", Tag: "DSP SINK",
-			HasInput: true,
 		},
+		role:     roleSink,
+		spectrum: true,
+		summary:  func(Parameters) string { return "frequency output" },
 	},
 }
 
-func numberField(name, label, step, min, max, unit string) parameterDefinition {
+// numberField builds a scalar float field from a selector picking its home
+// in Parameters, so the block definition stays the only place that names it.
+// min and max are the field's one range authority: the editor's Min/Max
+// attributes and validateBound's enforcement both derive from these two
+// numbers, so the range cannot state itself two different ways. boundsLabel
+// is kept distinct from label because the two are independently user-visible
+// strings — see fieldBound's comment.
+func numberField(name, label, boundsLabel, step string, min, max float64, unit string, field func(*Parameters) *float64) parameterDefinition {
 	return parameterDefinition{
 		Name: name, Label: label, Type: "number",
-		Step: step, Min: min, Max: max, Unit: unit,
+		Step: step, Min: formatFloat(min), Max: formatFloat(max), Unit: unit,
+		set: func(parameters *Parameters, raw string) error {
+			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+			if err != nil {
+				return invalid("%s must be a number", strings.ReplaceAll(name, "_", " "))
+			}
+			*field(parameters) = value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			return formatFloat(*field(&parameters))
+		},
+		bound: &fieldBound{
+			label: boundsLabel, min: min, max: max,
+			value: func(parameters Parameters) float64 { return *field(&parameters) },
+		},
+	}
+}
+
+// formatFloat renders a float64 the same way whether it backs a live
+// parameter value or a field's static bound, so an editor's Min/Max
+// attribute and its current value always agree on how a number like -10000
+// or 0.001 prints.
+func formatFloat(value float64) string {
+	return strconv.FormatFloat(value, 'g', -1, 64)
+}
+
+// coefficientField is numberField's counterpart for the polynomial
+// parameters: same one-selector shape, but parsed and rendered as a
+// comma/space separated coefficient list instead of a single number.
+func coefficientField(name, label, placeholder string, field func(*Parameters) *[]float64) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "text",
+		Placeholder: placeholder, Help: "Descending powers of s",
+		set: func(parameters *Parameters, raw string) error {
+			coefficients, err := parseCoefficients(strings.TrimSpace(raw))
+			if err != nil {
+				return invalid("%s coefficients must be comma or space separated numbers", name)
+			}
+			*field(parameters) = coefficients
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			return coefficientsText(*field(&parameters))
+		},
 	}
 }
 
@@ -245,7 +694,7 @@ func (b Block) EditorFields() []ParameterField {
 	for _, field := range definition.Parameters {
 		fields = append(fields, ParameterField{
 			Name: field.Name, Label: field.Label, Type: field.Type,
-			Value: parameterText(b.Parameters, field.Name),
+			Value: field.text(b.Parameters),
 			Step:  field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
 			Placeholder: field.Placeholder, Help: field.Help,
 		})
@@ -254,38 +703,11 @@ func (b Block) EditorFields() []ParameterField {
 }
 
 func (b Block) Summary() string {
-	switch b.Kind {
-	case BlockSource:
-		if b.Parameters.StepTime == 0 {
-			return fmt.Sprintf("%.3g step", b.Parameters.Amplitude)
-		}
-		return fmt.Sprintf("%.3g at %.3g s", b.Parameters.Amplitude, b.Parameters.StepTime)
-	case BlockConstant:
-		return fmt.Sprintf("%.3g constant", b.Parameters.Value)
-	case BlockSine:
-		return fmt.Sprintf("%.3g sin(%.3gt)", b.Parameters.Amplitude, b.Parameters.Frequency)
-	case BlockGain:
-		return fmt.Sprintf("K = %.3g", b.Parameters.Gain)
-	case BlockSum:
-		return "signs " + b.Parameters.Signs
-	case BlockLag:
-		return fmt.Sprintf("τ = %.3g s", b.Parameters.TimeConstant)
-	case BlockIntegrator:
-		return "1 / s"
-	case BlockTransfer:
-		return polynomialText(b.Parameters.Numerator) + " / " + polynomialText(b.Parameters.Denominator)
-	case BlockPID:
-		return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
-			b.Parameters.Proportional, b.Parameters.Integral, b.Parameters.Derivative)
-	case BlockDelay:
-		return fmt.Sprintf("%.3g s · Padé %d", b.Parameters.Delay, b.Parameters.Approximation)
-	case BlockScope:
-		return "trend output"
-	case BlockSpectrum:
-		return "frequency output"
-	default:
+	definition, ok := blockDefinitions[b.Kind]
+	if !ok || definition.summary == nil {
 		return ""
 	}
+	return definition.summary(b.Parameters)
 }
 
 func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
@@ -307,7 +729,7 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 		if !exists {
 			return Block{}, invalid("%s is required", strings.ToLower(field.Label))
 		}
-		if err := setParameter(&parameters, field.Name, value); err != nil {
+		if err := field.set(&parameters, value); err != nil {
 			return Block{}, err
 		}
 	}
@@ -319,77 +741,24 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 	return block, nil
 }
 
+// validateParameters is the one entry point both the editor path
+// (validateBlockUpdate) and the compile path (simulate.go's compileFlow) call
+// to enforce a block's rules: each field's own bound first, in the order the
+// definition lists them, then the block's cross-field validate hook.
 func validateParameters(kind BlockKind, parameters Parameters) error {
-	switch kind {
-	case BlockSource:
-		if err := bounded("final value", parameters.Amplitude, -10000, 10000); err != nil {
+	definition, ok := blockDefinitions[kind]
+	if !ok {
+		return nil
+	}
+	for _, field := range definition.Parameters {
+		if err := field.validateBound(parameters); err != nil {
 			return err
-		}
-		if err := bounded("initial value", parameters.InitialValue, -10000, 10000); err != nil {
-			return err
-		}
-		return bounded("step time", parameters.StepTime, 0, 120)
-	case BlockConstant:
-		return bounded("value", parameters.Value, -10000, 10000)
-	case BlockSine:
-		for label, value := range map[string]float64{
-			"amplitude": parameters.Amplitude,
-			"bias":      parameters.Bias,
-			"phase":     parameters.Phase,
-		} {
-			if err := bounded(label, value, -10000, 10000); err != nil {
-				return err
-			}
-		}
-		return bounded("frequency", parameters.Frequency, 0, 1000)
-	case BlockGain:
-		return bounded("gain", parameters.Gain, -10000, 10000)
-	case BlockSum:
-		if len(parameters.Signs) == 0 || len(parameters.Signs) > 16 {
-			return invalid("input signs must contain 1 to 16 plus or minus signs")
-		}
-		for _, sign := range parameters.Signs {
-			if sign != '+' && sign != '-' {
-				return invalid("input signs may contain only + and -")
-			}
-		}
-	case BlockLag:
-		return bounded("time constant", parameters.TimeConstant, 0.001, 1000)
-	case BlockTransfer:
-		if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
-			return invalid("transfer function coefficients are required")
-		}
-		if len(parameters.Numerator) > 9 || len(parameters.Denominator) > 9 {
-			return invalid("transfer functions are limited to eighth order")
-		}
-		if len(parameters.Numerator) > len(parameters.Denominator) {
-			return invalid("transfer function must be proper")
-		}
-		if parameters.Denominator[0] == 0 {
-			return invalid("denominator leading coefficient must be nonzero")
-		}
-	case BlockPID:
-		for label, value := range map[string]float64{
-			"proportional gain": parameters.Proportional,
-			"integral gain":     parameters.Integral,
-			"derivative gain":   parameters.Derivative,
-		} {
-			if err := bounded(label, value, -10000, 10000); err != nil {
-				return err
-			}
-		}
-		if err := bounded("derivative filter", parameters.FilterTime, 0.001, 1000); err != nil {
-			return err
-		}
-	case BlockDelay:
-		if err := bounded("delay", parameters.Delay, 0, 120); err != nil {
-			return err
-		}
-		if parameters.Approximation < 1 || parameters.Approximation > 10 {
-			return invalid("Padé order must be between 1 and 10")
 		}
 	}
-	return nil
+	if definition.validate == nil {
+		return nil
+	}
+	return definition.validate(parameters)
 }
 
 func bounded(label string, value, minimum, maximum float64) error {
@@ -400,116 +769,6 @@ func bounded(label string, value, minimum, maximum float64) error {
 		return invalid("%s must be between %g and %g", label, minimum, maximum)
 	}
 	return nil
-}
-
-func setParameter(parameters *Parameters, name, raw string) error {
-	raw = strings.TrimSpace(raw)
-	switch name {
-	case "signs":
-		parameters.Signs = strings.ReplaceAll(raw, " ", "")
-		return nil
-	case "numerator", "denominator":
-		coefficients, err := parseCoefficients(raw)
-		if err != nil {
-			return invalid("%s coefficients must be comma or space separated numbers", name)
-		}
-		if name == "numerator" {
-			parameters.Numerator = coefficients
-		} else {
-			parameters.Denominator = coefficients
-		}
-		return nil
-	case "approximation":
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return invalid("Padé order must be a whole number")
-		}
-		parameters.Approximation = value
-		return nil
-	}
-
-	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return invalid("%s must be a number", strings.ReplaceAll(name, "_", " "))
-	}
-	switch name {
-	case "amplitude":
-		parameters.Amplitude = value
-	case "initial_value":
-		parameters.InitialValue = value
-	case "step_time":
-		parameters.StepTime = value
-	case "value":
-		parameters.Value = value
-	case "bias":
-		parameters.Bias = value
-	case "frequency":
-		parameters.Frequency = value
-	case "phase":
-		parameters.Phase = value
-	case "gain":
-		parameters.Gain = value
-	case "time_constant":
-		parameters.TimeConstant = value
-	case "proportional":
-		parameters.Proportional = value
-	case "integral":
-		parameters.Integral = value
-	case "derivative":
-		parameters.Derivative = value
-	case "filter_time":
-		parameters.FilterTime = value
-	case "delay":
-		parameters.Delay = value
-	default:
-		return invalid("unknown parameter %q", name)
-	}
-	return nil
-}
-
-func parameterText(parameters Parameters, name string) string {
-	switch name {
-	case "signs":
-		return parameters.Signs
-	case "numerator":
-		return coefficientsText(parameters.Numerator)
-	case "denominator":
-		return coefficientsText(parameters.Denominator)
-	case "approximation":
-		return strconv.Itoa(parameters.Approximation)
-	}
-	var value float64
-	switch name {
-	case "amplitude":
-		value = parameters.Amplitude
-	case "initial_value":
-		value = parameters.InitialValue
-	case "step_time":
-		value = parameters.StepTime
-	case "value":
-		value = parameters.Value
-	case "bias":
-		value = parameters.Bias
-	case "frequency":
-		value = parameters.Frequency
-	case "phase":
-		value = parameters.Phase
-	case "gain":
-		value = parameters.Gain
-	case "time_constant":
-		value = parameters.TimeConstant
-	case "proportional":
-		value = parameters.Proportional
-	case "integral":
-		value = parameters.Integral
-	case "derivative":
-		value = parameters.Derivative
-	case "filter_time":
-		value = parameters.FilterTime
-	case "delay":
-		value = parameters.Delay
-	}
-	return strconv.FormatFloat(value, 'g', -1, 64)
 }
 
 func parseCoefficients(raw string) ([]float64, error) {

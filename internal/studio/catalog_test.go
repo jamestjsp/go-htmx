@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -27,6 +28,42 @@ func TestBlockLibraryDefinitionsOwnDefaultsAndEditors(t *testing.T) {
 		}
 		if block.Summary() == "" {
 			t.Fatalf("%s has no summary", definition.Kind)
+		}
+	}
+}
+
+func TestArityDerivesHasInputAndHasOutputForEveryKind(t *testing.T) {
+	for _, kind := range blockOrder {
+		definition := kind.Definition()
+		switch arity := kind.arity(); {
+		case kind.isSource():
+			if arity != arityNone {
+				t.Fatalf("%s arity = %v, want arityNone", kind, arity)
+			}
+			if definition.HasInput() {
+				t.Fatalf("%s.HasInput() = true, want false", kind)
+			}
+			if !definition.HasOutput() {
+				t.Fatalf("%s.HasOutput() = false, want true", kind)
+			}
+		case kind == BlockSum:
+			if arity != arityVariadic {
+				t.Fatalf("%s arity = %v, want arityVariadic", kind, arity)
+			}
+			if !definition.HasInput() || !definition.HasOutput() {
+				t.Fatalf("%s HasInput/HasOutput = %v/%v, want true/true",
+					kind, definition.HasInput(), definition.HasOutput())
+			}
+		default:
+			if arity != arityOne {
+				t.Fatalf("%s arity = %v, want arityOne", kind, arity)
+			}
+			if !definition.HasInput() {
+				t.Fatalf("%s.HasInput() = false, want true", kind)
+			}
+			if definition.HasOutput() != !kind.isSink() {
+				t.Fatalf("%s.HasOutput() = %v, want %v", kind, definition.HasOutput(), !kind.isSink())
+			}
 		}
 	}
 }
@@ -60,6 +97,133 @@ func TestTransferFunctionUpdateParsesAndValidatesCoefficients(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("improper transfer function succeeded")
+	}
+}
+
+// Transfer-function properness is a cross-field rule — it compares numerator
+// and denominator length, so it cannot live on either field's own bound. It
+// belongs to BlockTransfer's validate hook, and validateParameters is the one
+// place both validateBlockUpdate (the editor path) and compileFlow (the
+// compile path) call to reach it. This test proves the move to per-definition
+// hooks kept both callers refusing the same improper model, not just one.
+func TestImproperTransferFunctionRefusedByBothEditorAndCompilePaths(t *testing.T) {
+	numerator, denominator := "1, 2, 3", "1, 2"
+	const wantMessage = "transfer function must be proper"
+
+	block := Block{Kind: BlockTransfer, Name: "Plant", Parameters: defaultParameters(BlockTransfer)}
+	_, err := validateBlockUpdate(block, BlockUpdate{
+		Name: "Plant",
+		Parameters: map[string]string{
+			"numerator":   numerator,
+			"denominator": denominator,
+		},
+	})
+	if err == nil || err.Error() != wantMessage {
+		t.Fatalf("validateBlockUpdate error = %v, want %q", err, wantMessage)
+	}
+
+	improperNumerator, parseErr := parseCoefficients(numerator)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	improperDenominator, parseErr := parseCoefficients(denominator)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Input", Parameters: Parameters{Value: 1}},
+		{ID: 2, Kind: BlockTransfer, Name: "Plant", Parameters: Parameters{
+			Numerator: improperNumerator, Denominator: improperDenominator,
+		}},
+		{ID: 3, Kind: BlockScope, Name: "Output"},
+	}
+	connections := []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2},
+		{ID: 2, SourceID: 2, TargetID: 3},
+	}
+	if _, err := compileFlow(blocks, connections); err == nil ||
+		err.Error() != "Plant: "+wantMessage {
+		t.Fatalf("compileFlow error = %v, want %q", err, "Plant: "+wantMessage)
+	}
+}
+
+// updateWithOverride starts from a kind's own defaults, rendered through
+// EditorFields the way the UI would echo them back, then swaps in one bad
+// value. Every other field stays valid, so the returned error can only have
+// come from the field under test.
+func updateWithOverride(t *testing.T, kind BlockKind, field, raw string) error {
+	t.Helper()
+	block := Block{Kind: kind, Name: "Block", Parameters: defaultParameters(kind)}
+	values := make(map[string]string)
+	for _, editorField := range block.EditorFields() {
+		values[editorField.Name] = editorField.Value
+	}
+	values[field] = raw
+	_, err := validateBlockUpdate(block, BlockUpdate{Name: "Block", Parameters: values})
+	return err
+}
+
+// These wordings moved from the setParameter/parameterText switches into
+// per-field closures; this test is the guard that the move didn't paraphrase
+// them along the way.
+func TestValidateBlockUpdateFieldErrorWordingIsUnchanged(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    BlockKind
+		field   string
+		raw     string
+		wantErr string
+	}{
+		{"malformed number keeps underscores as spaces", BlockSource, "initial_value", "abc", "initial value must be a number"},
+		{"malformed Padé order", BlockDelay, "approximation", "abc", "Padé order must be a whole number"},
+		{"malformed numerator coefficients", BlockTransfer, "numerator", "one, two", "numerator coefficients must be comma or space separated numbers"},
+		{"malformed denominator coefficients", BlockTransfer, "denominator", "?", "denominator coefficients must be comma or space separated numbers"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := updateWithOverride(t, test.kind, test.field, test.raw)
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
+// The Sine block's phase field used to state its range twice and
+// disagree with itself: the editor's Min/Max attributes said -1000..1000,
+// but the old validateParameters switch enforced -10000..10000 against it.
+// Unifying the bound onto the field (task 4) kept the editor's frozen
+// attribute value and tightened enforcement to match it, since a value the
+// UI never let you type could still reach the server as -10000..10000 was
+// no tighter. This pins that resolved number down: if it ever needs to
+// widen again, this test forces that to be a deliberate edit, not a silent
+// drift back to the old inconsistency.
+func TestValidateBlockUpdateRejectsPhaseAboveItsBound(t *testing.T) {
+	err := updateWithOverride(t, BlockSine, "phase", "5000")
+	if want := "phase must be between -1000 and 1000"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+func TestValidateBlockUpdateRequiresEveryDefinedField(t *testing.T) {
+	block := Block{Kind: BlockGain, Name: "Valve", Parameters: defaultParameters(BlockGain)}
+	_, err := validateBlockUpdate(block, BlockUpdate{Name: "Valve", Parameters: map[string]string{}})
+	if want := "gain is required"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+func TestValidateBlockUpdateStripsSpacesFromSigns(t *testing.T) {
+	block := Block{Kind: BlockSum, Name: "Balance", Parameters: defaultParameters(BlockSum)}
+	updated, err := validateBlockUpdate(block, BlockUpdate{
+		Name:       "Balance",
+		Parameters: map[string]string{"signs": " + - + "},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := updated.Parameters.Signs, "+-+"; got != want {
+		t.Fatalf("signs = %q, want %q", got, want)
 	}
 }
 
@@ -149,6 +313,145 @@ func TestOpenMigratesLegacyBlockParameters(t *testing.T) {
 	if projectCount != 1 {
 		t.Fatalf("project count after reopen = %d, want 1", projectCount)
 	}
+}
+
+// ensureLegacyBlockParameters must run after ensureParametersJSON has
+// guaranteed parameters_json exists, backfilling it from the scalar columns
+// for rows the column's own DEFAULT ” left empty. This fixture's blocks
+// table already carries parameters_json — unlike
+// TestOpenMigratesLegacyBlockParameters's, where ensureParametersJSON has to
+// add the column first — so this is the ordering constraint's own coverage,
+// not the same path exercised a second time.
+func TestOpenBackfillsBlockParametersFromLegacyColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "pre-json.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+		CREATE TABLE flows (
+			id INTEGER PRIMARY KEY,
+			name TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE TABLE blocks (
+			id INTEGER PRIMARY KEY,
+			flow_id INTEGER NOT NULL,
+			kind TEXT NOT NULL,
+			name TEXT NOT NULL,
+			x INTEGER NOT NULL,
+			y INTEGER NOT NULL,
+			amplitude REAL NOT NULL DEFAULT 0,
+			gain REAL NOT NULL DEFAULT 0,
+			time_constant REAL NOT NULL DEFAULT 0,
+			parameters_json TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO flows(id, name, created_at, updated_at)
+		VALUES(1, 'Legacy', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z');
+		INSERT INTO blocks(flow_id, kind, name, x, y, amplitude, gain, time_constant) VALUES
+			(1, 'source', 'Feed', 60, 80, 1.75, 0, 0),
+			(1, 'gain', 'Valve', 300, 80, 0, 2.4, 0),
+			(1, 'lag', 'Reactor', 540, 80, 0, 0, 4.5),
+			(1, 'sum', 'Balance', 780, 80, 0, 0, 0);
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Feed").Parameters.Amplitude; got != 1.75 {
+		t.Fatalf("amplitude = %v, want 1.75", got)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Valve").Parameters.Gain; got != 2.4 {
+		t.Fatalf("gain = %v, want 2.4", got)
+	}
+	if got := blockNamed(t, snapshot.Blocks, "Reactor").Parameters.TimeConstant; got != 4.5 {
+		t.Fatalf("time constant = %v, want 4.5", got)
+	}
+	// A kind outside decodeParameters' old switch — nothing in the legacy
+	// columns ever described a sum block — backfills to its catalog defaults,
+	// the same value a fresh sum block gets today.
+	if got, want := blockNamed(t, snapshot.Blocks, "Balance").Parameters, defaultParameters(BlockSum); !reflect.DeepEqual(got, want) {
+		t.Fatalf("sum defaults = %#v, want %#v", got, want)
+	}
+
+	encoded := blockParametersJSON(t, service, "Feed")
+	if encoded == "" {
+		t.Fatal("parameters_json was not backfilled")
+	}
+	// The legacy columns are kept, not dropped: rebuilding the table for no
+	// runtime benefit is exactly what this migration avoids.
+	if got := legacyColumn(t, service, "amplitude", "Feed"); got != 1.75 {
+		t.Fatalf("legacy amplitude column = %v, want 1.75 to survive untouched", got)
+	}
+
+	// Diverge parameters_json from what the legacy columns would regenerate,
+	// simulating a user editing this block after the first Open already
+	// backfilled it. amplitude stays 1.75 — only the JSON changes, the way
+	// UpdateBlock leaves it after a real edit. A backfill that re-derives from
+	// the legacy columns on every Open, instead of skipping rows its own
+	// WHERE clause says are already done, would silently revert this edit
+	// and lose it — encodeParameters is deterministic, so comparing against
+	// the unedited `encoded` from before could never catch that regression.
+	const edited = `{"amplitude":9.5}`
+	if _, err := service.db.ExecContext(ctx,
+		"UPDATE blocks SET parameters_json = ? WHERE name = ?", edited, "Feed",
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	if got := blockParametersJSON(t, reopened, "Feed"); got != edited {
+		t.Fatalf("parameters_json after reopen = %q, want the edit %q preserved untouched", got, edited)
+	}
+	snapshotAfterReopen, err := reopened.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockNamed(t, snapshotAfterReopen.Blocks, "Feed").Parameters.Amplitude; got != 9.5 {
+		t.Fatalf("amplitude after reopen = %v, want the edited 9.5, not the stale legacy 1.75", got)
+	}
+}
+
+func blockParametersJSON(t *testing.T, service *Studio, name string) string {
+	t.Helper()
+	var encoded string
+	if err := service.db.QueryRowContext(context.Background(),
+		"SELECT parameters_json FROM blocks WHERE name = ?", name,
+	).Scan(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func legacyColumn(t *testing.T, service *Studio, column, name string) float64 {
+	t.Helper()
+	var value float64
+	if err := service.db.QueryRowContext(context.Background(),
+		"SELECT "+column+" FROM blocks WHERE name = ?", name,
+	).Scan(&value); err != nil {
+		t.Fatal(err)
+	}
+	return value
 }
 
 // A database written before projects, model revisions, and tab order existed
@@ -374,6 +677,23 @@ func TestOpenEnforcesForeignKeys(t *testing.T) {
 	}
 	if enforced != 1 {
 		t.Fatalf("foreign_keys = %d, want 1", enforced)
+	}
+}
+
+// A fresh database has no reason to carry columns nothing reads or writes
+// anymore; only a database opened from before this migration keeps them, for
+// compatibility rather than any ongoing use.
+func TestOpenFreshDatabaseOmitsLegacyBlockColumns(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, filepath.Join(t.TempDir(), "fresh.db"))
+	for _, column := range []string{"amplitude", "gain", "time_constant"} {
+		found, err := tableHasColumn(ctx, service.db, "blocks", column)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if found {
+			t.Fatalf("fresh database has the legacy %s column", column)
+		}
 	}
 }
 

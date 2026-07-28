@@ -1,0 +1,72 @@
+/* ===============================================================
+   Process Lab — shared design tokens.
+
+   Both shells link this stylesheet before their own: the workbench
+   (app.css, the canvas/rails/dock) and the drawing register
+   (register.css, a ruled table). It holds exactly the tokens both
+   shells reference — one definition instead of two copies that can
+   only be observed to have drifted, never prevented from it.
+
+   A token used by exactly one shell stays in that shell's own
+   stylesheet. In particular the --signal family (signal wires and
+   output ports) and the per-category block accents belong to the
+   workbench alone — a register has no wires and no blocks, so it
+   has no use for the vocabulary that describes them.
+
+   Load order matters: this file must come first so either shell
+   can still override a token for its own surfaces (see .topbar
+   etc. in app.css and .register-bar in register.css, both of which
+   override --focus locally).
+   =============================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* --- Lit surfaces -------------------------------------------- */
+  --sheet: #eef1ef;           /* cool drafting vellum */
+  --sheet-card: #fff;         /* block cards, chart panels */
+  --sheet-sunk: #e2e8e5;      /* wells and inset chips on light */
+  --sheet-line: #ccd6d2;
+  --sheet-line-soft: #dde4e1;
+
+  /* --- Machined housing ---------------------------------------- */
+  --housing: #16201e;
+  --housing-raised: #1f2c29;
+  --housing-deep: #0f1817;    /* bezel gap behind the lit displays */
+  --housing-line: #2c3b37;
+  --housing-line-strong: #3c4f4a;
+  --housing-glint: rgb(255 255 255 / 6%);
+
+  /* --- Ink ------------------------------------------------------ */
+  --ink: #101a18;             /* 15.6:1 on vellum */
+  --ink-muted: #4a5b56;       /*  6.3:1 on vellum */
+  --ink-inverse: #e8efec;     /* 14.3:1 on housing */
+  --ink-inverse-muted: #93a8a2; /* 6.6:1 on housing, 5.8:1 on raised */
+
+  /* --- Reserved semantics ----------------------------------------
+     Shared across both shells. --signal and the bright --alarm sit
+     in app.css instead: they read as workbench wiring, not chrome. */
+  --probe: #35b39c;           /* interactive, on housing */
+  --probe-deep: #0d6156;      /* the same affordance on vellum */
+  --probe-glow: rgb(53 179 156 / 20%);
+  --caution: #d9a441;         /* warnings and stale state */
+  --caution-deep: #8a6410;
+  --alarm-deep: #a3341c;      /* destructive actions on vellum */
+
+  /* --- Focus, per surface --------------------------------------- */
+  --focus: var(--probe-deep);
+
+  /* --- Type ----------------------------------------------------- */
+  --font-ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --fs-100: 11px;   /* keys, eyebrows, legends — the floor */
+  --fs-200: 12px;   /* secondary body */
+  --fs-300: 13px;   /* body */
+  --fs-400: 15px;   /* subheads, block names, readout values */
+  --fs-500: 19px;   /* panel headings */
+
+  --radius: 7px;
+  --radius-sm: 5px;
+
+  font-family: var(--font-ui);
+}

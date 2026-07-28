@@ -50,11 +50,11 @@ func (k BlockKind) Label() string {
 }
 
 func (k BlockKind) HasInput() bool {
-	return blockDefinitions[k].HasInput
+	return k.arity() != arityNone
 }
 
 func (k BlockKind) HasOutput() bool {
-	return blockDefinitions[k].HasOutput
+	return blockDefinitions[k].role != roleSink
 }
 
 type Parameters struct {
@@ -130,11 +130,28 @@ type Block struct {
 	Parameters Parameters
 }
 
+// Connection is one drawn signal. SourcePort and TargetPort are the terminal
+// indices it joins, numbered from zero: which output of the source drives
+// which input of the target. Every block but Sum has a single terminal in
+// each direction, so port 0 is what almost every wire names.
 type Connection struct {
-	ID       int64
-	FlowID   int64
-	SourceID int64
-	TargetID int64
+	ID         int64
+	FlowID     int64
+	SourceID   int64
+	SourcePort int
+	TargetID   int64
+	TargetPort int
+}
+
+// Wire is a connection a caller is asking for, before it exists. Ports are
+// numbered from zero, so the zero value names each block's first terminal —
+// which is exactly what a client that predates ports asks for when it omits
+// them.
+type Wire struct {
+	SourceID   int64
+	SourcePort int
+	TargetID   int64
+	TargetPort int
 }
 
 type Event struct {

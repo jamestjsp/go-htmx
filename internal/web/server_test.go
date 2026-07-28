@@ -40,6 +40,7 @@ func TestPageRendersTheRegister(t *testing.T) {
 		`href="/projects/1/flows/1"`,
 		`hx-post="/projects"`,
 		`hx-put="/projects/1/name"`,
+		`href="/assets/tokens.css"`,
 		`href="/assets/register.css"`,
 		`src="/assets/register.js"`,
 		"htmx.org@2.0.10",
@@ -49,8 +50,10 @@ func TestPageRendersTheRegister(t *testing.T) {
 		}
 	}
 	// The register is a different shell. Pulling the workbench stylesheet or
-	// its scripts onto it would undo the point of the separation.
-	for _, unwanted := range []string{"/assets/app.css", "/assets/app.js", "/assets/menu.js"} {
+	// its scripts onto it would undo the point of the separation. The canvas
+	// modules are named by their directory: they assume a #workbench to act on,
+	// so any one of them arriving here is the same mistake.
+	for _, unwanted := range []string{"/assets/app.css", "/assets/js/", "/assets/menu.js"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the register loads %q", unwanted)
 		}
@@ -214,6 +217,7 @@ func TestRegisterViewCoversTheEmptyState(t *testing.T) {
 			t.Errorf("empty register does not contain %q", expected)
 		}
 	}
+
 }
 
 // TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
@@ -230,6 +234,7 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		"Process Lab project",
 		"Reactor temperature loop",
 		"Feed setpoint",
+		`href="/assets/tokens.css"`,
 		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
 		"htmx.org@2.0.10",
@@ -595,6 +600,161 @@ func TestConnectionErrorRendersInline(t *testing.T) {
 	}
 }
 
+// The connect form's port fields are optional: a client written before ports
+// omits them and keeps wiring each block's first terminal, and one that sends
+// them is taken at its word. A field that is present but unreadable is a
+// malformed request, not a silent fall back to port 0.
+func TestConnectReadsOptionalPortFields(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := findKindBlock(t, snapshot.Blocks, "sum")
+	scope := findKindBlock(t, snapshot.Blocks, "scope")
+
+	omitted := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id": {strconv.FormatInt(sum.ID, 10)},
+		"target_id": {strconv.FormatInt(scope.ID, 10)},
+	})
+	if !strings.Contains(omitted.Body.String(), "already connected") {
+		t.Fatalf("omitted ports did not reach port 0: %s", omitted.Body.String())
+	}
+
+	named := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id":   {strconv.FormatInt(sum.ID, 10)},
+		"target_id":   {strconv.FormatInt(scope.ID, 10)},
+		"target_port": {"2"},
+	})
+	if !strings.Contains(named.Body.String(), "has no input port 2") {
+		t.Fatalf("named port was not passed through: %s", named.Body.String())
+	}
+
+	malformed := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id":   {strconv.FormatInt(sum.ID, 10)},
+		"target_id":   {strconv.FormatInt(scope.ID, 10)},
+		"target_port": {"left"},
+	})
+	if !strings.Contains(malformed.Body.String(), "choose an output and an input to connect") {
+		t.Fatalf("malformed port was not refused: %s", malformed.Body.String())
+	}
+}
+
+func TestConnectPersistsAndRendersANonzeroTargetPort(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := snapshot.Flow.ID
+	_, sourceID, err := service.AddBlock(ctx, flowID, studio.BlockConstant, studio.Point{X: 120, Y: 720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, sumID, err := service.AddBlock(ctx, flowID, studio.BlockSum, studio.Point{X: 420, Y: 720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := blockByID(snapshot.Blocks, sumID)
+	if _, err := service.UpdateBlock(ctx, sumID, studio.BlockUpdate{
+		Name:       sum.Name,
+		Parameters: map[string]string{"signs": "+-"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := request(t, server, http.MethodPost,
+		"/flows/"+strconv.FormatInt(flowID, 10)+"/connections",
+		url.Values{
+			"source_id":   {strconv.FormatInt(sourceID, 10)},
+			"source_port": {"0"},
+			"target_id":   {strconv.FormatInt(sumID, 10)},
+			"target_port": {"1"},
+		},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	snapshot, err = service.Snapshot(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, connection := range snapshot.Connections {
+		if connection.SourceID == sourceID && connection.TargetID == sumID {
+			found = true
+			if connection.SourcePort != 0 || connection.TargetPort != 1 {
+				t.Fatalf("persisted ports = %d -> %d, want 0 -> 1", connection.SourcePort, connection.TargetPort)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("nonzero-port connection was not persisted")
+	}
+
+	body := response.Body.String()
+	for _, expected := range []string{
+		fmt.Sprintf(`data-edge-source="%d" data-edge-source-port="0"`, sourceID),
+		fmt.Sprintf(`data-edge-target="%d" data-edge-target-port="1"`, sumID),
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("workbench does not contain %q", expected)
+		}
+	}
+
+	if _, err := service.Connect(ctx, flowID, studio.Wire{
+		SourceID: sourceID, TargetID: sumID, TargetPort: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body = request(t, server, http.MethodGet,
+		"/flows/"+strconv.FormatInt(flowID, 10)+"/workbench?selected="+strconv.FormatInt(sourceID, 10), nil,
+	).Body.String()
+	for _, expected := range []string{
+		"input &#43; (port 1) ← output port 1",
+		"input - (port 2) ← output port 1",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("source inspector does not contain %q", expected)
+		}
+	}
+}
+
+func TestWorkbenchRendersPortIdentityLabelsAndInspectorNames(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := findKindBlock(t, snapshot.Blocks, "sum")
+	if _, err := service.UpdateBlock(context.Background(), sum.ID, studio.BlockUpdate{
+		Name:       sum.Name,
+		Parameters: map[string]string{"signs": "+-"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := request(t, server, http.MethodGet,
+		"/flows/1/workbench?selected="+strconv.FormatInt(sum.ID, 10), nil,
+	).Body.String()
+	for _, expected := range []string{
+		fmt.Sprintf(`data-input-block="%d" data-input-port="0"`, sum.ID),
+		fmt.Sprintf(`data-input-block="%d" data-input-port="1"`, sum.ID),
+		`<span class="port-label" aria-hidden="true">&#43;</span>`,
+		`<span class="port-label" aria-hidden="true">-</span>`,
+		fmt.Sprintf(`data-edge-target="%d" data-edge-target-port="0"`, sum.ID),
+		"input &#43; (port 1)",
+		"input - (port 2)",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("workbench does not contain %q", expected)
+		}
+	}
+}
+
 func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 	server, _ := openTestServer(t)
 	response := request(t, server, http.MethodPost, "/flows/1/simulations", url.Values{
@@ -615,8 +775,8 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{
-		"/assets/app.css", "/assets/app.js", "/assets/menu.js", "/assets/tabs.js",
-		"/assets/register.css", "/assets/register.js",
+		"/assets/app.css", "/assets/menu.js", "/assets/tabs.js",
+		"/assets/register.css", "/assets/register.js", "/assets/tokens.css",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {
@@ -625,6 +785,51 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 		if response.Body.Len() < 1000 {
 			t.Fatalf("%s unexpectedly small", path)
 		}
+	}
+}
+
+// The canvas modules sit a directory down. `go:embed static/*` matches the
+// directory and embeds its subtree, but nothing in the build fails if it
+// stops doing so — the binary would simply serve 404s for every script the
+// workbench needs, which no other test would notice.
+func TestCanvasModulesAreEmbedded(t *testing.T) {
+	server, _ := openTestServer(t)
+	for _, path := range []string{
+		"/assets/js/main.js", "/assets/js/dom.js", "/assets/js/geometry.js",
+		"/assets/js/viewport.js", "/assets/js/selection.js", "/assets/js/dragging.js",
+		"/assets/js/wiring.js", "/assets/js/shell.js", "/assets/js/shortcuts.js",
+		"/assets/js/contextmenu.js", "/assets/js/input.js", "/assets/js/reapply.js",
+	} {
+		response := request(t, server, http.MethodGet, path, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", path, response.Code)
+		}
+		if response.Body.Len() < 1000 {
+			t.Fatalf("%s unexpectedly small", path)
+		}
+	}
+}
+
+// Every module main.js pulls in has to be served, so a page that loads only
+// the entry point has to be able to reach the rest by relative path.
+func TestPageLoadsTheCanvasEntryPointAsAModule(t *testing.T) {
+	server, _ := openTestServer(t)
+	body := request(t, server, http.MethodGet, "/flows/1/workbench", nil).Body.String()
+	if strings.Contains(body, "/assets/js/") {
+		t.Error("the workbench fragment loads scripts; only the page shell should")
+	}
+	page := request(t, server, http.MethodGet, "/projects/1/flows/1", nil).Body.String()
+	if !strings.Contains(page, `<script type="module" src="/assets/js/main.js"></script>`) {
+		t.Error("the page does not load the canvas entry point as a module")
+	}
+	// menu.js before it, tabs.js after it: the canvas registers against the
+	// namespace menu.js defines, and tabs.js layers a second menu region and
+	// its own arrow chord over the canvas bindings.
+	menu := strings.Index(page, "/assets/menu.js")
+	main := strings.Index(page, "/assets/js/main.js")
+	tabs := strings.Index(page, "/assets/tabs.js")
+	if menu < 0 || main < 0 || tabs < 0 || !(menu < main && main < tabs) {
+		t.Errorf("script order is menu=%d main=%d tabs=%d", menu, main, tabs)
 	}
 }
 

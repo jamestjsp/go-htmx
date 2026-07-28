@@ -16,6 +16,23 @@ import (
 // run on whichever connection executes it, which makes enforcement depend on
 // the pool staying pinned to one connection — and would mask a broken DSN, so
 // TestOpenEnforcesForeignKeys would pass while proving nothing.
+//
+// connectionColumns and connectionsFlowIndex are spelled once and reused by
+// the rebuild in ensureConnectionPorts, so a database created fresh and one
+// migrated up from an earlier version cannot end up carrying different
+// constraints under the same name.
+const connectionColumns = `(
+	id INTEGER PRIMARY KEY,
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+	source_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+	source_port INTEGER NOT NULL DEFAULT 0,
+	target_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
+	target_port INTEGER NOT NULL DEFAULT 0,
+	UNIQUE(flow_id, source_id, source_port, target_id, target_port)
+)`
+
+const connectionsFlowIndex = "CREATE INDEX IF NOT EXISTS connections_flow_id_idx ON connections(flow_id)"
+
 const schema = `
 CREATE TABLE IF NOT EXISTS projects (
 	id INTEGER PRIMARY KEY,
@@ -39,18 +56,9 @@ CREATE TABLE IF NOT EXISTS blocks (
 	name TEXT NOT NULL,
 	x INTEGER NOT NULL,
 	y INTEGER NOT NULL,
-	amplitude REAL NOT NULL DEFAULT 0,
-	gain REAL NOT NULL DEFAULT 0,
-	time_constant REAL NOT NULL DEFAULT 0,
 	parameters_json TEXT NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS connections (
-	id INTEGER PRIMARY KEY,
-	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
-	source_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
-	target_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
-	UNIQUE(flow_id, source_id, target_id)
-);
+` + "CREATE TABLE IF NOT EXISTS connections " + connectionColumns + `;
 CREATE TABLE IF NOT EXISTS events (
 	id INTEGER PRIMARY KEY,
 	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
@@ -66,7 +74,7 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 	result_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
-CREATE INDEX IF NOT EXISTS connections_flow_id_idx ON connections(flow_id);
+` + connectionsFlowIndex + `;
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);
 CREATE INDEX IF NOT EXISTS simulation_runs_flow_id_created_at_idx
 	ON simulation_runs(flow_id, created_at);
@@ -93,6 +101,23 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 		return nil, err
 	}
 	if err := ensureParametersJSON(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// After ensureParametersJSON, so the column this reads from is guaranteed
+	// to exist whether it was just added or has been there all along.
+	if err := ensureLegacyBlockParameters(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := ensureConnectionPorts(ctx, db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// After both ensureLegacyBlockParameters and ensureConnectionPorts: it
+	// reads the parameters the first backfilled and the ports the second
+	// numbered, and reconciles them.
+	if err := ensureDeclaredInputPorts(ctx, db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -141,6 +166,261 @@ func ensureParametersJSON(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("add block parameters: %w", err)
 	}
 	return nil
+}
+
+// ensureLegacyBlockParameters fills parameters_json for rows written before
+// that column existed, applying once, at migration time, the same
+// kind-to-field mapping decodeParameters used to apply on every read. A fresh
+// database never had the amplitude, gain and time_constant columns to begin
+// with, so there is nothing here for it to do. An already-migrated row has a
+// non-empty parameters_json and will not match the WHERE clause below, which
+// is what makes re-running this on every Open safe rather than merely
+// harmless.
+func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
+	hasLegacyColumns, err := tableHasColumn(ctx, db, "blocks", "amplitude")
+	if err != nil {
+		return err
+	}
+	if !hasLegacyColumns {
+		return nil
+	}
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx,
+			"SELECT id, kind, amplitude, gain, time_constant FROM blocks WHERE parameters_json = ''",
+		)
+		if err != nil {
+			return fmt.Errorf("find legacy block parameters: %w", err)
+		}
+		type legacyBlock struct {
+			id                            int64
+			kind                          BlockKind
+			amplitude, gain, timeConstant float64
+		}
+		var legacy []legacyBlock
+		for rows.Next() {
+			var block legacyBlock
+			if err := rows.Scan(
+				&block.id, &block.kind, &block.amplitude, &block.gain, &block.timeConstant,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan legacy block parameters: %w", err)
+			}
+			legacy = append(legacy, block)
+		}
+		// rows.Close alone would miss this: it reports the driver's own
+		// close-time error, not an iteration failure that ended Next early.
+		// Only rows.Err reports that, and a truncated read here would commit
+		// a partial backfill — the rest of legacy's rows silently keep
+		// decoding to catalog defaults for the life of the process, since
+		// decodeParameters no longer has a fallback to catch them.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("read legacy block parameters: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close legacy block parameters: %w", err)
+		}
+		for _, block := range legacy {
+			parameters := defaultParameters(block.kind)
+			switch block.kind {
+			case BlockSource:
+				parameters.Amplitude = block.amplitude
+			case BlockGain:
+				parameters.Gain = block.gain
+			case BlockLag:
+				parameters.TimeConstant = block.timeConstant
+			}
+			encoded, err := encodeParameters(parameters)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE blocks SET parameters_json = ? WHERE id = ?", encoded, block.id,
+			); err != nil {
+				return fmt.Errorf("backfill block %d parameters: %w", block.id, err)
+			}
+		}
+		return nil
+	})
+}
+
+// ensureConnectionPorts gives every stored wire the terminal identity the
+// domain now carries. Adding the two columns is only half of it: the old
+// UNIQUE(flow_id, source_id, target_id) has to become per-port, and SQLite
+// cannot alter a constraint in place, so the table is rebuilt
+// create-copy-drop-rename inside one transaction. A fresh database is created
+// with the ports already there, so the column check below is what keeps this
+// from running twice and renumbering a flowsheet a user has since rewired.
+//
+// Ports are numbered per target in connection-id order — exactly the order
+// compileFlow hands a Sum's signs to its inbound wires today — so no stored
+// flowsheet changes what it computes. Nothing here names a block kind: every
+// target is numbered the same way, and a target that has only ever held one
+// wire lands on port 0 by arithmetic rather than by a rule about Sum. That
+// also means a flowsheet an older version left over-wired keeps one wire per
+// port instead of stacking several onto port 0.
+func ensureConnectionPorts(ctx context.Context, db *sql.DB) error {
+	found, err := tableHasColumn(ctx, db, "connections", "source_port")
+	if err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	// The rebuild is pinned to one connection because PRAGMA foreign_keys is
+	// per-connection state, and it is turned off for the duration because
+	// DROP TABLE performs an implicit delete of every row while they are
+	// enforced, and because the copy would otherwise reject rows an older
+	// version could have orphaned — compileFlow's "a connection references a
+	// missing block" exists precisely because such rows are possible. Those
+	// rows open today, so refusing to migrate them would take a database the
+	// user can still repair and make it unopenable.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve connection for port migration: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("suspend foreign keys: %w", err)
+	}
+	rebuild := rebuildConnectionsWithPorts(ctx, conn)
+	// Restoring enforcement is not optional: every later write on this pooled
+	// connection depends on it, and TestOpenEnforcesForeignKeys reads it back.
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil && rebuild == nil {
+		rebuild = fmt.Errorf("restore foreign keys: %w", err)
+	}
+	return rebuild
+}
+
+func rebuildConnectionsWithPorts(ctx context.Context, conn *sql.Conn) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin port migration: %w", err)
+	}
+	if err := copyConnectionsOntoPorts(ctx, tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit port migration: %w", err)
+	}
+	return nil
+}
+
+func copyConnectionsOntoPorts(ctx context.Context, tx *sql.Tx) error {
+	var before int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM connections").Scan(&before); err != nil {
+		return fmt.Errorf("count connections to migrate: %w", err)
+	}
+	statements := []string{
+		// An interrupted run cannot leave this table behind — the whole
+		// rebuild is one transaction — but a database touched by some older
+		// or hand-run attempt can, and a stale copy would make the CREATE
+		// below fail for a reason that has nothing to do with the user.
+		"DROP TABLE IF EXISTS connections_ported",
+		"CREATE TABLE connections_ported " + connectionColumns,
+		`INSERT INTO connections_ported(id, flow_id, source_id, source_port, target_id, target_port)
+			SELECT id, flow_id, source_id, 0, target_id,
+				ROW_NUMBER() OVER (PARTITION BY flow_id, target_id ORDER BY id) - 1
+			FROM connections`,
+		"DROP TABLE connections",
+		"ALTER TABLE connections_ported RENAME TO connections",
+		connectionsFlowIndex,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("migrate connections to ports: %w", err)
+		}
+	}
+
+	// The row count is the gate rather than PRAGMA foreign_key_check: the
+	// copy changes no key column, so the check could only report damage that
+	// predates this migration, while a short copy is the one failure that
+	// would cost a user wiring. Rolling back on a mismatch leaves the old
+	// table exactly as it was.
+	var after int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM connections").Scan(&after); err != nil {
+		return fmt.Errorf("count migrated connections: %w", err)
+	}
+	if after != before {
+		return fmt.Errorf("migrate connections to ports: %d of %d wires survived", after, before)
+	}
+	return nil
+}
+
+// ensureDeclaredInputPorts widens a variadic block's parameters to cover the
+// ports its wires occupy. A Sum written before ports carried a single sign
+// broadcast across however many wires reached it; now the signs are the port
+// list, so that same Sum has to name each one. Repeating the sign is
+// numerically identical to the broadcast it replaces, which is why this is a
+// restatement rather than an edit.
+//
+// It runs on every Open, unguarded by a column check, so that it also repairs
+// a database whose connections were renumbered by a run that stopped before
+// getting here. Once every wired port is declared, the loop below finds
+// nothing to write and re-opening leaves the parameters alone.
+func ensureDeclaredInputPorts(ctx context.Context, db *sql.DB) error {
+	return inDBTx(ctx, db, func(tx *sql.Tx) error {
+		type wiredBlock struct {
+			id         int64
+			kind       BlockKind
+			parameters string
+			ports      int
+		}
+		// Only a block wired beyond port 0 can be under-declared: every kind
+		// that accepts a wire at all has at least one port.
+		rows, err := tx.QueryContext(ctx, `
+			SELECT blocks.id, blocks.kind, blocks.parameters_json, MAX(connections.target_port) + 1
+			FROM blocks
+			JOIN connections ON connections.target_id = blocks.id
+			GROUP BY blocks.id
+			HAVING MAX(connections.target_port) > 0`)
+		if err != nil {
+			return fmt.Errorf("find wired input ports: %w", err)
+		}
+		var wired []wiredBlock
+		for rows.Next() {
+			var block wiredBlock
+			if err := rows.Scan(&block.id, &block.kind, &block.parameters, &block.ports); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan wired input ports: %w", err)
+			}
+			wired = append(wired, block)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return fmt.Errorf("read wired input ports: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close wired input ports: %w", err)
+		}
+
+		for _, block := range wired {
+			definition := blockDefinitions[block.kind]
+			parameters, err := decodeParameters(block.kind, block.parameters)
+			if err != nil {
+				return fmt.Errorf("decode parameters for block %d: %w", block.id, err)
+			}
+			if definition.inputPortCount(parameters) >= block.ports ||
+				definition.declareWiredPorts == nil {
+				continue
+			}
+			widened, ok := definition.declareWiredPorts(parameters, block.ports)
+			if !ok {
+				continue
+			}
+			encoded, err := encodeParameters(widened)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE blocks SET parameters_json = ? WHERE id = ?", encoded, block.id,
+			); err != nil {
+				return fmt.Errorf("declare input ports for block %d: %w", block.id, err)
+			}
+		}
+		return nil
+	})
 }
 
 func ensureModelUpdatedAt(ctx context.Context, db *sql.DB) error {
@@ -381,7 +661,10 @@ func (s *Studio) seed(ctx context.Context) error {
 			{BlockSource, "Disturbance", 60, 320, Parameters{Amplitude: 0.3}},
 			{BlockLag, "Jacket lag", 300, 320, Parameters{TimeConstant: 4}},
 			{BlockGain, "Heat loss", 540, 320, Parameters{Gain: -0.7}},
-			{BlockSum, "Energy balance", 780, 200, Parameters{}},
+			// Two signs because two wires arrive: the Sum's signs are its
+			// input ports, one per wire, in the order the edges below add
+			// them.
+			{BlockSum, "Energy balance", 780, 200, Parameters{Signs: "++"}},
 			{BlockScope, "Temperature", 1020, 200, Parameters{}},
 		}
 
@@ -393,12 +676,9 @@ func (s *Studio) seed(ctx context.Context) error {
 			}
 			placed := clampPosition(Point{X: seed.x, Y: seed.y})
 			result, err := tx.ExecContext(ctx, `
-				INSERT INTO blocks(
-					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-				)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				flowID, seed.kind, seed.name, placed.X, placed.Y,
-				seed.p.Amplitude, seed.p.Gain, seed.p.TimeConstant, encoded,
+				INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+				VALUES(?, ?, ?, ?, ?, ?)`,
+				flowID, seed.kind, seed.name, placed.X, placed.Y, encoded,
 			)
 			if err != nil {
 				return fmt.Errorf("seed block %q: %w", seed.name, err)
@@ -409,11 +689,15 @@ func (s *Studio) seed(ctx context.Context) error {
 			}
 		}
 
-		edges := [][2]int{{0, 1}, {1, 2}, {2, 6}, {3, 4}, {4, 5}, {5, 6}, {6, 7}}
+		// Source block, target block, target input port. Every source block
+		// here drives its only output, so no edge needs to name a source
+		// port; only the Sum has a second input to land on.
+		edges := [][3]int{{0, 1, 0}, {1, 2, 0}, {2, 6, 0}, {3, 4, 0}, {4, 5, 0}, {5, 6, 1}, {6, 7, 0}}
 		for _, edge := range edges {
-			if _, err := tx.ExecContext(ctx,
-				"INSERT INTO connections(flow_id, source_id, target_id) VALUES(?, ?, ?)",
-				flowID, ids[edge[0]], ids[edge[1]],
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO connections(flow_id, source_id, source_port, target_id, target_port)
+				VALUES(?, ?, ?, ?, ?)`,
+				flowID, ids[edge[0]], 0, ids[edge[1]], edge[2],
 			); err != nil {
 				return fmt.Errorf("seed connection: %w", err)
 			}
@@ -469,24 +753,22 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	snapshot.Flow.ModelUpdatedAt, _ = time.Parse(time.RFC3339Nano, modelUpdated)
 
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+		SELECT id, flow_id, kind, name, x, y, parameters_json
 		FROM blocks WHERE flow_id = ? ORDER BY id`, flowID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load blocks: %w", err)
 	}
 	for rows.Next() {
 		var block Block
-		var legacy Parameters
 		var encoded string
 		if err := rows.Scan(
 			&block.ID, &block.FlowID, &block.Kind, &block.Name,
-			&block.Position.X, &block.Position.Y,
-			&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
+			&block.Position.X, &block.Position.Y, &encoded,
 		); err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("scan block: %w", err)
 		}
-		block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+		block.Parameters, err = decodeParameters(block.Kind, encoded)
 		if err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
@@ -498,14 +780,18 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 	}
 
 	rows, err = s.db.QueryContext(ctx, `
-		SELECT id, flow_id, source_id, target_id
+		SELECT id, flow_id, source_id, source_port, target_id, target_port
 		FROM connections WHERE flow_id = ? ORDER BY id`, flowID)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("load connections: %w", err)
 	}
 	for rows.Next() {
 		var connection Connection
-		if err := rows.Scan(&connection.ID, &connection.FlowID, &connection.SourceID, &connection.TargetID); err != nil {
+		if err := rows.Scan(
+			&connection.ID, &connection.FlowID,
+			&connection.SourceID, &connection.SourcePort,
+			&connection.TargetID, &connection.TargetPort,
+		); err != nil {
 			rows.Close()
 			return Snapshot{}, fmt.Errorf("scan connection: %w", err)
 		}
@@ -571,15 +857,13 @@ func (s *Studio) snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 
 func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	var block Block
-	var legacy Parameters
 	var encoded string
 	err := tx.QueryRowContext(ctx, `
-		SELECT id, flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
+		SELECT id, flow_id, kind, name, x, y, parameters_json
 		FROM blocks WHERE id = ?`, id,
 	).Scan(
 		&block.ID, &block.FlowID, &block.Kind, &block.Name,
-		&block.Position.X, &block.Position.Y,
-		&legacy.Amplitude, &legacy.Gain, &legacy.TimeConstant, &encoded,
+		&block.Position.X, &block.Position.Y, &encoded,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Block{}, ErrNotFound
@@ -587,7 +871,7 @@ func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	if err != nil {
 		return Block{}, fmt.Errorf("load block: %w", err)
 	}
-	block.Parameters, err = decodeParameters(block.Kind, encoded, legacy)
+	block.Parameters, err = decodeParameters(block.Kind, encoded)
 	if err != nil {
 		return Block{}, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
 	}
@@ -602,21 +886,13 @@ func encodeParameters(parameters Parameters) (string, error) {
 	return string(encoded), nil
 }
 
-func decodeParameters(kind BlockKind, encoded string, legacy Parameters) (Parameters, error) {
+func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	parameters := defaultParameters(kind)
-	if encoded != "" {
-		if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
-			return Parameters{}, err
-		}
+	if encoded == "" {
 		return parameters, nil
 	}
-	switch kind {
-	case BlockSource:
-		parameters.Amplitude = legacy.Amplitude
-	case BlockGain:
-		parameters.Gain = legacy.Gain
-	case BlockLag:
-		parameters.TimeConstant = legacy.TimeConstant
+	if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
+		return Parameters{}, err
 	}
 	return parameters, nil
 }

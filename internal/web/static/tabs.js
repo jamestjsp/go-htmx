@@ -6,9 +6,11 @@
 // scrolled, whether the ‹ › arrows have anywhere left to go, which tab is
 // being renamed, and where a dragged tab would land.
 //
-// Loaded after menu.js and app.js, both of which it uses: menu.js for the
-// right-click menu, and htmx for every mutation except the reorder, which
-// answers 204 and so has nothing for htmx to swap.
+// Loaded after menu.js and after the canvas modules: menu.js supplies the
+// right-click menu, and the second menu region and the Ctrl/Cmd + Shift +
+// arrow chord claimed here read as additions to the canvas layer rather
+// than replacements for it. htmx carries every mutation except the reorder,
+// which answers 204 and so has nothing for htmx to swap.
 //
 // Two constraints shape the code more than anything else:
 //

@@ -258,9 +258,12 @@ func TestIndependentSourceWaveformsAndSignedSum(t *testing.T) {
 		{ID: 3, Kind: BlockSum, Name: "Difference", Parameters: Parameters{Signs: "+-"}},
 		{ID: 4, Kind: BlockScope, Name: "Output"},
 	}
+	// The Sum's two wires name the two ports its signs declare. Before
+	// connections carried ports these read as the first and second wire drawn,
+	// which is the same pair in the same order — port 0 takes +, port 1 takes -.
 	run, err := simulate(blocks, []Connection{
-		{ID: 1, SourceID: 1, TargetID: 3},
-		{ID: 2, SourceID: 2, TargetID: 3},
+		{ID: 1, SourceID: 1, TargetID: 3, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3, TargetPort: 1},
 		{ID: 3, SourceID: 3, TargetID: 4},
 	}, SimulationRequest{Duration: 2, SampleTime: 0.05})
 	if err != nil {
@@ -270,6 +273,133 @@ func TestIndependentSourceWaveformsAndSignedSum(t *testing.T) {
 		time := run.Times[i]
 		want := 2 - (0.25 + 0.5*math.Sin(2*time+0.3))
 		if math.Abs(got-want) > 1e-12 {
+			t.Fatalf("sample %d = %.12g, want %.12g", i, got, want)
+		}
+	}
+}
+
+// A Sum's sign belongs to the port a wire landed on, not to the wire's place
+// in the drawing order. These two are drawn back to front — the wire onto the
+// second port is made first — so a compiler that matched signs to connection
+// order would give + to the subtrahend and - to the minuend, and the response
+// would come out negated.
+func TestSumSignsFollowInputPortsNotWiringOrder(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Subtrahend", Parameters: Parameters{Value: 3}},
+		{ID: 2, Kind: BlockConstant, Name: "Minuend", Parameters: Parameters{Value: 10}},
+		{ID: 3, Kind: BlockSum, Name: "Difference", Parameters: Parameters{Signs: "+-"}},
+		{ID: 4, Kind: BlockScope, Name: "Output"},
+	}
+	run, err := simulate(blocks, []Connection{
+		{ID: 1, SourceID: 1, TargetID: 3, TargetPort: 1},
+		{ID: 2, SourceID: 2, TargetID: 3, TargetPort: 0},
+		{ID: 3, SourceID: 3, TargetID: 4},
+	}, SimulationRequest{Duration: 1, SampleTime: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range run.Series[0].Values {
+		if want := 10.0 - 3.0; math.Abs(got-want) > 1e-12 {
+			t.Fatalf("sample %d = %.12g, want %.12g", i, got, want)
+		}
+	}
+}
+
+// Per-port uniqueness lets one output fan into two ports of the same Sum.
+// Naming an input by its port is what makes both wires arrive: keyed by the
+// source block, as they were, the two shared one signal name and the second
+// silently vanished into the first's place, halving the sum.
+func TestSumCountsBothWiresWhenOneOutputFansIntoTwoPorts(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Feed", Parameters: Parameters{Value: 4}},
+		{ID: 2, Kind: BlockSum, Name: "Doubler", Parameters: Parameters{Signs: "++"}},
+		{ID: 3, Kind: BlockScope, Name: "Output"},
+	}
+	run, err := simulate(blocks, []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: 0},
+		{ID: 2, SourceID: 1, TargetID: 2, TargetPort: 1},
+		{ID: 3, SourceID: 2, TargetID: 3},
+	}, SimulationRequest{Duration: 1, SampleTime: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range run.Series[0].Values {
+		if want := 8.0; math.Abs(got-want) > 1e-12 {
+			t.Fatalf("sample %d = %.12g, want %.12g", i, got, want)
+		}
+	}
+}
+
+// Connect refuses a second wire onto an occupied port, but the connections
+// table cannot express that rule, so a model an older version wrote can still
+// arrive with two wires on one terminal. Both would compile to the same signal
+// name, so compiling one is a guess; the compiler says so instead.
+func TestCompileRejectsTwoWiresOnOneInputPort(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Bias", Parameters: Parameters{Value: 2}},
+		{ID: 2, Kind: BlockConstant, Name: "Load", Parameters: Parameters{Value: 5}},
+		{ID: 3, Kind: BlockSum, Name: "Difference", Parameters: Parameters{Signs: "+-"}},
+		{ID: 4, Kind: BlockScope, Name: "Output"},
+	}
+	_, err := compileFlow(blocks, []Connection{
+		{ID: 1, SourceID: 1, TargetID: 3, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3, TargetPort: 0},
+		{ID: 3, SourceID: 3, TargetID: 4},
+	})
+	var validation *ValidationError
+	want := "Difference has more than one input on port 0"
+	if !errors.As(err, &validation) || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+// A negative port is the one bad index that cannot compile into something
+// harmless — Sum would read its sign at that index and panic — so it is
+// refused in the same voice Connect refuses it in, and for the same reach: the
+// column has no CHECK, and copying a flowsheet carries the value over.
+func TestCompileRejectsANegativeInputPort(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "Feed", Parameters: Parameters{Value: 2}},
+		{ID: 2, Kind: BlockSum, Name: "Total", Parameters: Parameters{Signs: "+"}},
+		{ID: 3, Kind: BlockScope, Name: "Output"},
+	}
+	_, err := compileFlow(blocks, []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: -1},
+		{ID: 2, SourceID: 2, TargetID: 3},
+	})
+	var validation *ValidationError
+	want := "Total has no input port -1"
+	if !errors.As(err, &validation) || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+}
+
+// A Sum can hold more wires than it has signs: an older version could wire one
+// past maxInputSigns, where no sign string could name every port, so the port
+// migration leaves the lone sign broadcasting rather than change what the
+// flowsheet computes. Three wires stand in for that shape — the clamp that
+// reads the last sign for a port past the end is the same one — and a minus
+// makes it visible, since a clamp that missed would leave the extra ports on
+// the +1 a zero gain slot would also show.
+func TestSumBroadcastsALoneSignAcrossEveryWiredPort(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockConstant, Name: "A", Parameters: Parameters{Value: 2}},
+		{ID: 2, Kind: BlockConstant, Name: "B", Parameters: Parameters{Value: 7}},
+		{ID: 3, Kind: BlockConstant, Name: "C", Parameters: Parameters{Value: 11}},
+		{ID: 4, Kind: BlockSum, Name: "Total", Parameters: Parameters{Signs: "-"}},
+		{ID: 5, Kind: BlockScope, Name: "Output"},
+	}
+	run, err := simulate(blocks, []Connection{
+		{ID: 1, SourceID: 1, TargetID: 4, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 4, TargetPort: 1},
+		{ID: 3, SourceID: 3, TargetID: 4, TargetPort: 2},
+		{ID: 4, SourceID: 4, TargetID: 5},
+	}, SimulationRequest{Duration: 1, SampleTime: 0.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range run.Series[0].Values {
+		if want := -(2.0 + 7.0 + 11.0); math.Abs(got-want) > 1e-12 {
 			t.Fatalf("sample %d = %.12g, want %.12g", i, got, want)
 		}
 	}

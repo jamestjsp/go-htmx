@@ -63,12 +63,9 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 			return err
 		}
 		result, err := tx.ExecContext(ctx, `
-			INSERT INTO blocks(
-				flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-			)
-			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			flowID, kind, name, placed.X, placed.Y,
-			parameters.Amplitude, parameters.Gain, parameters.TimeConstant, encoded,
+			INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+			VALUES(?, ?, ?, ?, ?, ?)`,
+			flowID, kind, name, placed.X, placed.Y, encoded,
 		)
 		if err != nil {
 			return fmt.Errorf("add block: %w", err)
@@ -77,14 +74,7 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 		if err != nil {
 			return fmt.Errorf("read block id: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Added %s", name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Added %s", name))
 	})
 	if err != nil {
 		return Snapshot{}, 0, err
@@ -128,9 +118,7 @@ func (s *Studio) MoveBlocks(ctx context.Context, flowID int64, moves []BlockMove
 				return ErrNotFound
 			}
 		}
-		_, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
-			s.now().UTC().Format(time.RFC3339Nano), flowID)
-		return err
+		return s.touchLayout(ctx, tx, flowID)
 	})
 }
 
@@ -155,9 +143,7 @@ func (s *Studio) MoveBlock(ctx context.Context, blockID int64, position Point) e
 		if affected == 0 {
 			return ErrNotFound
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
-			s.now().UTC().Format(time.RFC3339Nano), block.FlowID)
-		return err
+		return s.touchLayout(ctx, tx, block.FlowID)
 	})
 }
 
@@ -172,6 +158,9 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		if err != nil {
 			return err
 		}
+		if err := checkWiredInputPorts(ctx, tx, block); err != nil {
+			return err
+		}
 		flowID = block.FlowID
 		encoded, err := encodeParameters(block.Parameters)
 		if err != nil {
@@ -179,27 +168,43 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		}
 		_, err = tx.ExecContext(ctx, `
 			UPDATE blocks
-			SET name = ?, amplitude = ?, gain = ?, time_constant = ?, parameters_json = ?
+			SET name = ?, parameters_json = ?
 			WHERE id = ?`,
-			block.Name, block.Parameters.Amplitude, block.Parameters.Gain,
-			block.Parameters.TimeConstant, encoded, block.ID,
+			block.Name, encoded, block.ID,
 		)
 		if err != nil {
 			return fmt.Errorf("update block: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Updated %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Updated %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+// checkWiredInputPorts refuses a parameter edit that would take away an input
+// port a wire is already sitting on. Shrinking a Sum's signs is the case that
+// makes this real: dropping the wire to fit would throw away a signal the
+// user drew, silently, while they were editing something else. Refusing
+// instead leaves them to disconnect it deliberately, or to keep the port.
+func checkWiredInputPorts(ctx context.Context, tx *sql.Tx, block Block) error {
+	var highest sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT MAX(target_port) FROM connections WHERE target_id = ?", block.ID,
+	).Scan(&highest); err != nil {
+		return fmt.Errorf("read wired input ports: %w", err)
+	}
+	if !highest.Valid {
+		return nil
+	}
+	port := int(highest.Int64)
+	if port < block.InputPortCount() {
+		return nil
+	}
+	// The highest wired port is the one named, not the first that would be
+	// orphaned: it is the port that sets how far the edit can shrink.
+	return invalid("%s has a wire on input port %d; disconnect it first", block.Name, port)
 }
 
 func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, error) {
@@ -213,14 +218,7 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 		if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE id = ?", blockID); err != nil {
 			return fmt.Errorf("delete block: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Deleted %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Deleted %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -257,18 +255,11 @@ func (s *Studio) DeleteBlocks(ctx context.Context, flowID int64, blockIDs []int6
 				return fmt.Errorf("delete blocks: %w", err)
 			}
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
 		message := "Deleted " + names[0]
 		if len(names) > 1 {
 			message = fmt.Sprintf("Deleted %d blocks", len(names))
 		}
-		return insertEvent(ctx, tx, flowID, now, message)
+		return s.touchModel(ctx, tx, flowID, message)
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -315,30 +306,19 @@ func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []i
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO blocks(
-					flow_id, kind, name, x, y, amplitude, gain, time_constant, parameters_json
-				)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				flowID, block.Kind, name, placed.X, placed.Y,
-				block.Parameters.Amplitude, block.Parameters.Gain,
-				block.Parameters.TimeConstant, encoded,
+				INSERT INTO blocks(flow_id, kind, name, x, y, parameters_json)
+				VALUES(?, ?, ?, ?, ?, ?)`,
+				flowID, block.Kind, name, placed.X, placed.Y, encoded,
 			); err != nil {
 				return fmt.Errorf("duplicate block: %w", err)
 			}
 			copied++
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
 		message := fmt.Sprintf("Duplicated %d blocks", copied)
 		if copied == 1 {
 			message = "Duplicated 1 block"
 		}
-		return insertEvent(ctx, tx, flowID, now, message)
+		return s.touchModel(ctx, tx, flowID, message)
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -380,16 +360,16 @@ func availableBlockName(ctx context.Context, tx *sql.Tx, flowID int64, base stri
 	return "", invalid("too many copies of %q", base)
 }
 
-func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) (Snapshot, error) {
-	if sourceID == targetID {
+func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot, error) {
+	if wire.SourceID == wire.TargetID {
 		return Snapshot{}, invalid("a block cannot connect to itself")
 	}
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		source, err := blockByID(ctx, tx, sourceID)
+		source, err := blockByID(ctx, tx, wire.SourceID)
 		if err != nil {
 			return err
 		}
-		target, err := blockByID(ctx, tx, targetID)
+		target, err := blockByID(ctx, tx, wire.TargetID)
 		if err != nil {
 			return err
 		}
@@ -402,12 +382,23 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		if !target.Kind.HasInput() {
 			return invalid("%s does not have an input port", target.Name)
 		}
+		// The two checks above answer "has terminals in that direction at
+		// all"; these answer "has that one". A wire onto a port the block
+		// does not expose would be invisible on the canvas and unreachable
+		// from the inspector, so it is refused rather than stored.
+		if !source.hasOutputPort(wire.SourcePort) {
+			return invalid("%s has no output port %d", source.Name, wire.SourcePort)
+		}
+		if !target.hasInputPort(wire.TargetPort) {
+			return invalid("%s has no input port %d", target.Name, wire.TargetPort)
+		}
 
 		var duplicate int
 		err = tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM connections
-			WHERE flow_id = ? AND source_id = ? AND target_id = ?`,
-			flowID, sourceID, targetID,
+			WHERE flow_id = ? AND source_id = ? AND source_port = ?
+				AND target_id = ? AND target_port = ?`,
+			flowID, wire.SourceID, wire.SourcePort, wire.TargetID, wire.TargetPort,
 		).Scan(&duplicate)
 		if err != nil {
 			return err
@@ -415,41 +406,43 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		if duplicate > 0 {
 			return invalid("those blocks are already connected")
 		}
-		if target.Kind != BlockSum {
-			var incoming int
-			if err := tx.QueryRowContext(ctx,
-				"SELECT COUNT(*) FROM connections WHERE flow_id = ? AND target_id = ?",
-				flowID, targetID,
-			).Scan(&incoming); err != nil {
-				return err
-			}
-			if incoming > 0 {
+		// An input port carries one signal. A second wire onto it would be a
+		// junction nobody drew, so it is refused here rather than left for
+		// compileFlow to discover. This is the whole of the old "everything
+		// but Sum accepts one input" rule: a Sum has a port per sign, so its
+		// wires land on different ports and never meet this check.
+		var occupied int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM connections WHERE flow_id = ? AND target_id = ? AND target_port = ?",
+			flowID, wire.TargetID, wire.TargetPort,
+		).Scan(&occupied); err != nil {
+			return err
+		}
+		if occupied > 0 {
+			// A block with a single input port has no port worth naming, and
+			// that is the wording every such block has always shown.
+			if target.InputPortCount() == 1 {
 				return invalid("%s already has an input", target.Name)
 			}
+			return invalid("%s already has an input on port %d", target.Name, wire.TargetPort)
 		}
 
 		connections, err := connectionsInTx(ctx, tx, flowID)
 		if err != nil {
 			return err
 		}
-		if pathExists(connections, targetID, sourceID) {
+		if pathExists(connections, wire.TargetID, wire.SourceID) {
 			return invalid("that connection would create a cycle")
 		}
 
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO connections(flow_id, source_id, target_id) VALUES(?, ?, ?)`,
-			flowID, sourceID, targetID,
+			INSERT INTO connections(flow_id, source_id, source_port, target_id, target_port)
+			VALUES(?, ?, ?, ?, ?)`,
+			flowID, wire.SourceID, wire.SourcePort, wire.TargetID, wire.TargetPort,
 		); err != nil {
 			return fmt.Errorf("connect blocks: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Connected %s → %s", source.Name, target.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Connected %s → %s", source.Name, target.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -479,15 +472,7 @@ func (s *Studio) DisconnectBlock(ctx context.Context, blockID int64) (Snapshot, 
 		if removed == 0 {
 			return nil
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now,
-			fmt.Sprintf("Disconnected %s", block.Name))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Disconnected %s", block.Name))
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -515,19 +500,38 @@ func (s *Studio) Disconnect(ctx context.Context, connectionID int64) (Snapshot, 
 		if _, err := tx.ExecContext(ctx, "DELETE FROM connections WHERE id = ?", connectionID); err != nil {
 			return fmt.Errorf("disconnect blocks: %w", err)
 		}
-		now := s.now().UTC().Format(time.RFC3339Nano)
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
-			now, now, flowID,
-		); err != nil {
-			return err
-		}
-		return insertEvent(ctx, tx, flowID, now, fmt.Sprintf("Disconnected %s → %s", sourceName, targetName))
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Disconnected %s → %s", sourceName, targetName))
 	})
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+// touchModel records an edit to what a flowsheet simulates: it stamps both
+// updated_at and model_updated_at, then logs message as an event. Every
+// mutation that adds, removes, or rewires a block goes through this, because
+// which operations count as a model edit is exactly the boundary flowSelect
+// (workspace.go) reads to light the amber staleness dot — moving
+// model_updated_at is what makes a flowsheet's last simulation run stale.
+func (s *Studio) touchModel(ctx context.Context, tx *sql.Tx, flowID int64, message string) error {
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE flows SET updated_at = ?, model_updated_at = ? WHERE id = ?",
+		now, now, flowID,
+	); err != nil {
+		return err
+	}
+	return insertEvent(ctx, tx, flowID, now, message)
+}
+
+// touchLayout stamps updated_at only. Rearranging blocks on the sheet changes
+// nothing a simulation depends on, so model_updated_at stays put and nothing
+// is logged — the event feed would otherwise fill with every drag.
+func (s *Studio) touchLayout(ctx context.Context, tx *sql.Tx, flowID int64) error {
+	_, err := tx.ExecContext(ctx, "UPDATE flows SET updated_at = ? WHERE id = ?",
+		s.now().UTC().Format(time.RFC3339Nano), flowID)
+	return err
 }
 
 func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) (Point, error) {
@@ -587,8 +591,9 @@ func abs(value int) int {
 }
 
 func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connection, error) {
-	rows, err := tx.QueryContext(ctx,
-		"SELECT id, flow_id, source_id, target_id FROM connections WHERE flow_id = ?",
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, flow_id, source_id, source_port, target_id, target_port
+		FROM connections WHERE flow_id = ?`,
 		flowID,
 	)
 	if err != nil {
@@ -598,7 +603,11 @@ func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connectio
 	var connections []Connection
 	for rows.Next() {
 		var connection Connection
-		if err := rows.Scan(&connection.ID, &connection.FlowID, &connection.SourceID, &connection.TargetID); err != nil {
+		if err := rows.Scan(
+			&connection.ID, &connection.FlowID,
+			&connection.SourceID, &connection.SourcePort,
+			&connection.TargetID, &connection.TargetPort,
+		); err != nil {
 			return nil, err
 		}
 		connections = append(connections, connection)
