@@ -157,6 +157,9 @@ type blockDefinition struct {
 	// nil means domain-neutral: the compiler may place the block in a
 	// continuous system or retime its static gain to one discrete rate.
 	timeDomain func(Parameters) blockTimeDomain
+	// step creates a per-sample evaluator for behavior that cannot remain in
+	// an LTI controlsys segment. Existing blocks are all LTI and leave it nil.
+	step func(Block, float64) (stepEvaluator, error)
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
 	waveform func(Parameters, float64) float64
@@ -221,6 +224,7 @@ func (k BlockKind) isSink() bool   { return blockDefinitions[k].role == roleSink
 // rather than a time series and settling metric — see the spectrum field's
 // comment on blockDefinition for why this is not folded into role.
 func (k BlockKind) isSpectrumSink() bool { return blockDefinitions[k].spectrum }
+func (k BlockKind) isStepBlock() bool    { return blockDefinitions[k].step != nil }
 
 // inputArity states how many incoming connections a block accepts. Connect's
 // incoming-count check (studio.go) and compileModel's arity walk (simulate.go)

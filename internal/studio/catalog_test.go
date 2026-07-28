@@ -32,6 +32,17 @@ func TestBlockLibraryDefinitionsOwnDefaultsAndEditors(t *testing.T) {
 	}
 }
 
+func TestCatalogEngineHooksAreUnambiguous(t *testing.T) {
+	for kind, definition := range blockDefinitions {
+		if definition.realize != nil && definition.step != nil {
+			t.Fatalf("%s defines both LTI realization and sampled step evaluator", kind)
+		}
+		if definition.step != nil && definition.role == roleSource {
+			t.Fatalf("%s is both an external source and a sampled step block", kind)
+		}
+	}
+}
+
 func TestArityDerivesHasInputAndHasOutputForEveryKind(t *testing.T) {
 	for _, kind := range blockOrder {
 		definition := kind.Definition()

@@ -196,10 +196,19 @@ type Simulation struct {
 	CreatedAt  time.Time  `json:"createdAt"`
 	Duration   float64    `json:"duration"`
 	SampleTime float64    `json:"sampleTime"`
+	Fidelity   Fidelity   `json:"fidelity,omitempty"`
 	Times      []float64  `json:"times"`
 	Series     []Series   `json:"series"`
 	Metrics    []Metric   `json:"metrics"`
 	Spectra    []Spectrum `json:"spectra,omitempty"`
+}
+
+type Fidelity struct {
+	Driver            string   `json:"driver"`
+	SourceHold        string   `json:"sourceHold"`
+	SegmentCount      int      `json:"segmentCount"`
+	DelayModels       []string `json:"delayModels,omitempty"`
+	ExactDelayAligned bool     `json:"exactDelayAligned,omitempty"`
 }
 
 type Snapshot struct {

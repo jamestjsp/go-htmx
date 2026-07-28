@@ -337,6 +337,26 @@ func TestExactTransportDelayUsesControlsysLFTInFeedback(t *testing.T) {
 	if len(run.Series) != 1 || len(run.Series[0].Values) != 21 {
 		t.Fatalf("simulation shape = series %d samples %d", len(run.Series), len(run.Series[0].Values))
 	}
+	discreteWant, err := want.DiscretizeWithOpts(0.1, controlsys.C2DOptions{
+		Method:        controlsys.C2DMethodZOH,
+		DelayModeling: controlsys.C2DDelayModelingInternal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := mat.NewDense(1, len(run.Times), nil)
+	for sample := range run.Times {
+		input.Set(0, sample, 1)
+	}
+	timeWant, err := discreteWant.Simulate(input, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sample, got := range run.Series[0].Values {
+		if diff := math.Abs(got - timeWant.Y.At(0, sample)); diff > 1e-11 {
+			t.Fatalf("sample %d exact-feedback diff = %g", sample, diff)
+		}
+	}
 }
 
 func TestStaticParallelExactDelaysMustHaveOnePathDelay(t *testing.T) {

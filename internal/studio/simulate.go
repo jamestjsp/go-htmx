@@ -188,6 +188,15 @@ func compileRequestedModel(
 	sort.Slice(sources, func(i, j int) bool { return sources[i].ID < sources[j].ID })
 	sort.Slice(sinks, func(i, j int) bool { return sinks[i].ID < sinks[j].ID })
 
+	execution, err := buildExecutionPartition(
+		orderedBlocks,
+		connections,
+		func(block Block) bool { return block.Kind.isStepBlock() },
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	systems := make([]*controlsys.System, 0, len(blocks))
 	sourceSignals := make(map[int64]compiledSignal, len(sources))
 	inputSignals := make(map[compiledPort]compiledSignal, len(connections))
@@ -346,6 +355,7 @@ func compileRequestedModel(
 			Blocks:      provenanceBlocks,
 			Connections: provenanceConnections,
 		},
+		execution: execution,
 	}, nil
 }
 

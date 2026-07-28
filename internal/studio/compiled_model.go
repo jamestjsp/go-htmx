@@ -71,6 +71,7 @@ type compiledModel struct {
 	outputs    []compiledOutput
 	signals    []compiledSignal
 	provenance compiledModelProvenance
+	execution  executionPartition
 }
 
 func (m *compiledModel) dimensions() compiledModelDimensions {
@@ -160,6 +161,7 @@ func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, erro
 		outputs:    outputs,
 		signals:    m.signals,
 		provenance: m.provenance,
+		execution:  m.execution,
 	}, nil
 }
 
@@ -222,6 +224,27 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		}, nil
 	}
 
+	if m.system.IsDiscrete() {
+		inputData := make([]float64, steps*len(m.inputs))
+		for sample := range steps {
+			for inputIndex, input := range m.inputs {
+				inputData[inputIndex*steps+sample] = sourceValue(input.source, times[sample])
+			}
+		}
+		response, err := simulateSystemByStep(
+			m.system,
+			mat.NewDense(len(m.inputs), steps, inputData),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("step discrete flowsheet: %w", err)
+		}
+		return &controlsys.TimeResponse{
+			T:          times,
+			Y:          response,
+			OutputName: append([]string(nil), m.system.OutputName...),
+		}, nil
+	}
+
 	inputData := make([]float64, steps*len(m.inputs))
 	for i := range steps {
 		for inputIndex, input := range m.inputs {
@@ -234,6 +257,34 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		return nil, fmt.Errorf("simulate flowsheet: %w", err)
 	}
 	return response, nil
+}
+
+func simulateSystemByStep(system *controlsys.System, input *mat.Dense) (*mat.Dense, error) {
+	inputs, steps := input.Dims()
+	_, systemInputs, outputs := system.Dims()
+	if inputs != systemInputs {
+		return nil, fmt.Errorf(
+			"step input rows %d do not match system inputs %d",
+			inputs, systemInputs,
+		)
+	}
+	values := mat.NewDense(outputs, steps, nil)
+	var state *mat.VecDense
+	for sample := range steps {
+		column := mat.NewDense(inputs, 1, nil)
+		for inputIndex := range inputs {
+			column.Set(inputIndex, 0, input.At(inputIndex, sample))
+		}
+		response, err := system.Simulate(column, state, nil)
+		if err != nil {
+			return nil, err
+		}
+		for output := range outputs {
+			values.Set(output, sample, response.Y.At(output, 0))
+		}
+		state = response.XFinal
+	}
+	return values, nil
 }
 
 func (m *compiledModel) hasExactDelay() bool {
@@ -277,6 +328,7 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 	run := &Simulation{
 		Duration:   request.Duration,
 		SampleTime: request.SampleTime,
+		Fidelity:   m.fidelity(),
 		Times:      response.T,
 	}
 	for outputIndex, output := range m.outputs {
@@ -299,4 +351,37 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 		}
 	}
 	return run, nil
+}
+
+func (m *compiledModel) fidelity() Fidelity {
+	fidelity := Fidelity{
+		Driver:       "batch-lsim",
+		SourceHold:   "piecewise-constant",
+		SegmentCount: len(m.execution.segments),
+	}
+	if m.hasExactDelay() {
+		fidelity.Driver = "delay-aware-simulate"
+		fidelity.ExactDelayAligned = true
+	} else if m.system.IsDiscrete() {
+		fidelity.Driver = "per-sample-simulate"
+	}
+	for _, input := range m.inputs {
+		if input.source.Kind == BlockSine {
+			fidelity.SourceHold = "sampled-zero-order-hold"
+			break
+		}
+	}
+	seenDelayModels := make(map[string]struct{})
+	for _, block := range m.provenance.Blocks {
+		if block.Kind != BlockDelay {
+			continue
+		}
+		mode := normalizedDelayMode(block.Parameters)
+		if _, exists := seenDelayModels[mode]; exists {
+			continue
+		}
+		seenDelayModels[mode] = struct{}{}
+		fidelity.DelayModels = append(fidelity.DelayModels, mode)
+	}
+	return fidelity
 }

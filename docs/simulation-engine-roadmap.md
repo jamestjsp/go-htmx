@@ -433,6 +433,16 @@ Remove the Saturation and every block sits at depth 0, so there is one
 segment and no step blocks: the driver falls back to a single batch `Lsim`
 over the whole grid — today's call, today's allocations, today's numbers.
 
+The execution-plan layer now implements this SCC condensation, depth rule,
+and complete boundary-channel enumeration. Pure-LTI feedback remains one
+segment, while a cycle containing a sample-stepped block is refused. The
+discrete driver carries `XFinal` between one-sample `Simulate` calls and is
+bit-identical to batch `Simulate` for delay-free discrete systems. Continuous
+delay-free sheets still take the original batch `Lsim` branch; aligned exact
+delay takes the explicit delay-aware conversion and batch `Simulate` branch
+so controlsys owns its delay buffers. Run fidelity records the chosen driver,
+source hold, segment count, delay representations, and exact alignment.
+
 **What the user pays, and must be told.** The signal entering the Saturation
 is held over each step; the second segment sees a piecewise-constant input
 that the true continuous signal is not. That is the right-hand column of the
