@@ -572,6 +572,7 @@ var blockOrder = []BlockKind{
 	BlockIntegrator,
 	BlockTransfer,
 	BlockPID,
+	BlockPID2,
 	BlockDelay,
 	BlockStateSpace,
 	BlockMIMOTransfer,
@@ -1168,28 +1169,123 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 	},
 	BlockPID: {
 		BlockDefinition: BlockDefinition{
-			Kind: BlockPID, Label: "PID Controller", Category: "Continuous",
+			Kind: BlockPID, Label: "PID Controller", Category: "Control",
 			Description: "Filtered parallel PID", Glyph: "PID", Tag: "CONTROL",
 		},
-		Defaults: Parameters{Proportional: 1, Integral: 0.5, FilterTime: 0.1},
-		Parameters: []parameterDefinition{
+		Defaults: Parameters{
+			Proportional: 1, Integral: 0.5, FilterTime: 0.1,
+			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
+		},
+		Parameters: append([]parameterDefinition{
 			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
 			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
 			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
 			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
-		},
+		}, representationTimeFields()...),
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.NewPID(
 				block.Parameters.Proportional,
 				block.Parameters.Integral,
 				block.Parameters.Derivative,
 				controlsys.WithFilter(block.Parameters.FilterTime),
+				controlsys.WithTs(representationSampleTime(block.Parameters)),
 			).System()
 		},
-		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
+		timeDomain: representationTimeDomain,
+		validate: func(parameters Parameters) error {
+			if err := validateRepresentationTime(parameters); err != nil {
+				return err
+			}
+			_, err := controlsys.NewPID(
+				parameters.Proportional,
+				parameters.Integral,
+				parameters.Derivative,
+				controlsys.WithFilter(parameters.FilterTime),
+				controlsys.WithTs(representationSampleTime(parameters)),
+			).System()
+			if err != nil {
+				return invalid("PID realization: %s", err)
+			}
+			return nil
+		},
 		summary: func(parameters Parameters) string {
-			return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
-				parameters.Proportional, parameters.Integral, parameters.Derivative)
+			return fmt.Sprintf("P %.3g · I %.3g · D %.3g · %s",
+				parameters.Proportional, parameters.Integral, parameters.Derivative,
+				normalizedModelDomain(parameters))
+		},
+	},
+	BlockPID2: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockPID2, Label: "2-DOF PID Controller", Category: "Control",
+			Description: "Reference-weighted filtered parallel PID", Glyph: "PID2", Tag: "CONTROL",
+		},
+		Defaults: Parameters{
+			Proportional: 1, Integral: 0.5, FilterTime: 0.1,
+			SetpointWeight: 1, DerivativeWeight: 1,
+			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
+		},
+		Parameters: append([]parameterDefinition{
+			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("setpoint_weight", "Setpoint weight b", "setpoint weight", "0.05", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.SetpointWeight }),
+			numberField("derivative_weight", "Derivative weight c", "derivative weight", "0.05", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.DerivativeWeight }),
+		}, representationTimeFields()...),
+		variadic:   true,
+		inputPorts: func(Parameters) int { return 2 },
+		portSchema: func(Parameters) blockPortSchema {
+			reference, _ := newSignalPort(1, []string{"reference"})
+			measurement, _ := newSignalPort(1, []string{"measurement"})
+			control, _ := newSignalPort(1, []string{"control"})
+			return blockPortSchema{
+				inputs:  []SignalPort{reference, measurement},
+				outputs: []SignalPort{control},
+			}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewPID2(
+				block.Parameters.Proportional,
+				block.Parameters.Integral,
+				block.Parameters.Derivative,
+				block.Parameters.FilterTime,
+				block.Parameters.SetpointWeight,
+				block.Parameters.DerivativeWeight,
+				controlsys.WithTs(representationSampleTime(block.Parameters)),
+			).System()
+		},
+		timeDomain: representationTimeDomain,
+		validate: func(parameters Parameters) error {
+			if err := validateRepresentationTime(parameters); err != nil {
+				return err
+			}
+			_, err := controlsys.NewPID2(
+				parameters.Proportional,
+				parameters.Integral,
+				parameters.Derivative,
+				parameters.FilterTime,
+				parameters.SetpointWeight,
+				parameters.DerivativeWeight,
+				controlsys.WithTs(representationSampleTime(parameters)),
+			).System()
+			if err != nil {
+				return invalid("PID2 realization: %s", err)
+			}
+			return nil
+		},
+		checkInputs: func(block Block, inputs int) error {
+			if inputs != 2 {
+				return invalid("%s requires reference and measurement inputs", block.Name)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf(
+				"P %.3g · I %.3g · D %.3g · b %.3g · c %.3g · %s",
+				parameters.Proportional, parameters.Integral, parameters.Derivative,
+				parameters.SetpointWeight, parameters.DerivativeWeight,
+				normalizedModelDomain(parameters),
+			)
 		},
 	},
 	BlockDelay: {

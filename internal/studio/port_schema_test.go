@@ -16,7 +16,7 @@ func TestScalarPortsKeepWidthOneAndExistingPortIDs(t *testing.T) {
 			kind == BlockMux || kind == BlockDemux ||
 			kind == BlockSelector || kind == BlockPermutation ||
 			kind == BlockStateSpace || kind == BlockMIMOTransfer ||
-			kind == BlockZPK || kind == BlockFRD {
+			kind == BlockZPK || kind == BlockFRD || kind == BlockPID2 {
 			continue
 		}
 		block := Block{Kind: kind, Parameters: defaultParameters(kind)}
@@ -32,6 +32,21 @@ func TestScalarPortsKeepWidthOneAndExistingPortIDs(t *testing.T) {
 				t.Fatalf("%s output port %d = %#v", kind, port, schema)
 			}
 		}
+	}
+}
+
+func TestPID2ExposesNamedReferenceMeasurementAndControlPorts(t *testing.T) {
+	block := Block{Kind: BlockPID2, Parameters: defaultParameters(BlockPID2)}
+	reference, _ := block.InputPort(0)
+	measurement, _ := block.InputPort(1)
+	control, _ := block.OutputPort(0)
+	if !reflect.DeepEqual(reference.Channels, []string{"reference"}) ||
+		!reflect.DeepEqual(measurement.Channels, []string{"measurement"}) ||
+		!reflect.DeepEqual(control.Channels, []string{"control"}) {
+		t.Fatalf(
+			"PID2 ports = reference %#v, measurement %#v, control %#v",
+			reference, measurement, control,
+		)
 	}
 }
 

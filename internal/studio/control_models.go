@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 const controlRoleSpecVersion = 1
@@ -40,6 +41,7 @@ type PlantRole struct {
 
 type ControllerRole struct {
 	Blocks            []int64           `json:"blocks"`
+	ReferenceInputs   []NamedChannelRef `json:"referenceInputs,omitempty"`
 	MeasurementInputs []NamedChannelRef `json:"measurementInputs"`
 	ControlOutputs    []NamedChannelRef `json:"controlOutputs"`
 }
@@ -81,12 +83,13 @@ type ControlPointModels struct {
 }
 
 type ControlModelSet struct {
-	Plant            *controlsys.System
-	Controller       *controlsys.System
-	GeneralizedPlant *controlsys.System
-	EstimatorPlant   *controlsys.System
-	Loop             *controlsys.GeneralizedClosedLoop
-	Points           []ControlPointModels
+	Plant               *controlsys.System
+	Controller          *controlsys.System
+	ReferenceController *controlsys.System
+	GeneralizedPlant    *controlsys.System
+	EstimatorPlant      *controlsys.System
+	Loop                *controlsys.GeneralizedClosedLoop
+	Points              []ControlPointModels
 }
 
 func (s *Studio) AssignControlRoles(
@@ -166,6 +169,7 @@ type resolvedPlantRole struct {
 
 type resolvedControllerRole struct {
 	Blocks            []int64
+	ReferenceInputs   []resolvedNamedChannel
 	MeasurementInputs []resolvedNamedChannel
 	ControlOutputs    []resolvedNamedChannel
 }
@@ -275,6 +279,14 @@ func resolveControlRoleSpec(
 	); err != nil {
 		return resolvedControlRoleSpec{}, err
 	}
+	if result.Controller.ReferenceInputs, err = resolve(
+		"controller reference input",
+		spec.Controller.ReferenceInputs,
+		ChannelInput,
+		controllerSet,
+	); err != nil {
+		return resolvedControlRoleSpec{}, err
+	}
 	if result.Controller.ControlOutputs, err = resolve(
 		"controller control output",
 		spec.Controller.ControlOutputs,
@@ -301,6 +313,13 @@ func resolveControlRoleSpec(
 			len(result.Plant.MeasurementOutputs), len(result.Controller.MeasurementInputs),
 		)
 	}
+	if len(result.Controller.ReferenceInputs) != 0 &&
+		len(result.Controller.ReferenceInputs) != len(result.Plant.MeasurementOutputs) {
+		return resolvedControlRoleSpec{}, invalid(
+			"controller has %d reference inputs but plant has %d measurement outputs",
+			len(result.Controller.ReferenceInputs), len(result.Plant.MeasurementOutputs),
+		)
+	}
 	for label, channels := range map[string][]resolvedNamedChannel{
 		"generalized plant inputs": appendResolved(
 			result.Plant.ExogenousInputs, result.Plant.ControlInputs,
@@ -308,7 +327,9 @@ func resolveControlRoleSpec(
 		"generalized plant outputs": appendResolved(
 			result.Plant.PerformanceOutputs, result.Plant.MeasurementOutputs,
 		),
-		"controller inputs":  result.Controller.MeasurementInputs,
+		"controller inputs": appendResolved(
+			result.Controller.ReferenceInputs, result.Controller.MeasurementInputs,
+		),
 		"controller outputs": result.Controller.ControlOutputs,
 	} {
 		if err := validateUniqueControlSignalNames(label, channels); err != nil {
@@ -323,7 +344,11 @@ func resolveControlRoleSpec(
 		return resolvedControlRoleSpec{}, err
 	}
 	if err := validateBoundaryPorts(
-		"controller inputs", blockByID, result.Controller.MeasurementInputs,
+		"controller inputs",
+		blockByID,
+		appendResolved(
+			result.Controller.ReferenceInputs, result.Controller.MeasurementInputs,
+		),
 	); err != nil {
 		return resolvedControlRoleSpec{}, err
 	}
@@ -546,10 +571,13 @@ func buildControlModels(
 	if err != nil {
 		return ControlModelSet{}, fmt.Errorf("select plant control model: %w", err)
 	}
-	controller, err := compileControlSubsystem(
+	controllerInputs := appendResolved(
+		spec.Controller.ReferenceInputs, spec.Controller.MeasurementInputs,
+	)
+	referenceController, err := compileControlSubsystem(
 		snapshot,
 		spec.Controller.Blocks,
-		spec.Controller.MeasurementInputs,
+		controllerInputs,
 		spec.Controller.ControlOutputs,
 		request.BaseStep,
 	)
@@ -558,7 +586,21 @@ func buildControlModels(
 	}
 	if plant.IsDiscrete() &&
 		subsystemUsesOnlyNeutralTimeDomain(snapshot.Blocks, spec.Controller.Blocks) {
-		controller.Dt = plant.Dt
+		referenceController.Dt = plant.Dt
+	}
+	controller, err := selectSystemChannels(
+		referenceController,
+		namedChannelNames(spec.Controller.MeasurementInputs),
+		namedChannelNames(spec.Controller.ControlOutputs),
+	)
+	if err != nil {
+		return ControlModelSet{}, fmt.Errorf("select controller feedback model: %w", err)
+	}
+	if len(spec.Controller.ReferenceInputs) != 0 {
+		controller, err = negateSystemOutputs(controller)
+		if err != nil {
+			return ControlModelSet{}, fmt.Errorf("normalize controller feedback sign: %w", err)
+		}
 	}
 	if err := validateControlModelDomains(plant, controller); err != nil {
 		return ControlModelSet{}, err
@@ -589,12 +631,13 @@ func buildControlModels(
 		}
 	}
 	result := ControlModelSet{
-		Plant:            plant,
-		Controller:       controller,
-		GeneralizedPlant: generalized,
-		EstimatorPlant:   plant.Copy(),
-		Loop:             loop,
-		Points:           make([]ControlPointModels, len(spec.AnalysisPoints)),
+		Plant:               plant,
+		Controller:          controller,
+		ReferenceController: referenceController,
+		GeneralizedPlant:    generalized,
+		EstimatorPlant:      plant.Copy(),
+		Loop:                loop,
+		Points:              make([]ControlPointModels, len(spec.AnalysisPoints)),
 	}
 	for i, point := range spec.AnalysisPoints {
 		openLoop, closedLoop, err := controlPointSystems(loop, point.Name)
@@ -605,6 +648,32 @@ func buildControlModels(
 			Name: point.Name, Location: point.Location,
 			OpenLoop: openLoop, ClosedLoop: closedLoop,
 		}
+	}
+	return result, nil
+}
+
+func negateSystemOutputs(system *controlsys.System) (*controlsys.System, error) {
+	_, _, outputs := system.Dims()
+	data := make([]float64, outputs*outputs)
+	for i := range outputs {
+		data[i*outputs+i] = -1
+	}
+	negation, err := controlsys.NewGain(
+		mat.NewDense(outputs, outputs, data),
+		system.Dt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	result, err := controlsys.Series(system, negation)
+	if err != nil {
+		return nil, err
+	}
+	if err := result.SetInputName(system.InputName...); err != nil {
+		return nil, err
+	}
+	if err := result.SetOutputName(system.OutputName...); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -1078,6 +1147,7 @@ func copyControlRoleSpec(
 		spec.Plant.ControlInputs,
 		spec.Plant.PerformanceOutputs,
 		spec.Plant.MeasurementOutputs,
+		spec.Controller.ReferenceInputs,
 		spec.Controller.MeasurementInputs,
 		spec.Controller.ControlOutputs,
 	} {
@@ -1111,6 +1181,7 @@ func controlRoleBlockIDs(spec ControlRoleSpec) []int64 {
 		spec.Plant.ControlInputs,
 		spec.Plant.PerformanceOutputs,
 		spec.Plant.MeasurementOutputs,
+		spec.Controller.ReferenceInputs,
 		spec.Controller.MeasurementInputs,
 		spec.Controller.ControlOutputs,
 	} {

@@ -39,6 +39,7 @@ const (
 	BlockIntegrator          BlockKind = "integrator"
 	BlockTransfer            BlockKind = "transfer"
 	BlockPID                 BlockKind = "pid"
+	BlockPID2                BlockKind = "pid2"
 	BlockDelay               BlockKind = "delay"
 	BlockStateSpace          BlockKind = "state_space"
 	BlockMIMOTransfer        BlockKind = "mimo_transfer"
@@ -90,6 +91,8 @@ type Parameters struct {
 	Integral             float64                 `json:"integral,omitempty"`
 	Derivative           float64                 `json:"derivative,omitempty"`
 	FilterTime           float64                 `json:"filterTime,omitempty"`
+	SetpointWeight       float64                 `json:"setpointWeight,omitempty"`
+	DerivativeWeight     float64                 `json:"derivativeWeight,omitempty"`
 	Delay                float64                 `json:"delay,omitempty"`
 	DelayMode            string                  `json:"delayMode,omitempty"`
 	Approximation        int                     `json:"approximation,omitempty"`

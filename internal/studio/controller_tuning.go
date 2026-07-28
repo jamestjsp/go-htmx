@@ -28,6 +28,9 @@ const (
 	TunableProportional TunableField = "proportional"
 	TunableIntegral     TunableField = "integral"
 	TunableDerivative   TunableField = "derivative"
+	TunableFilterTime   TunableField = "filter_time"
+	TunableSetpointWeight   TunableField = "setpoint_weight"
+	TunableDerivativeWeight TunableField = "derivative_weight"
 	TunableMatrixGain   TunableField = "matrix_gain"
 	TunableNumerator    TunableField = "numerator"
 	TunableTransferNum  TunableField = "transfer_numerator"
@@ -743,6 +746,12 @@ func setTunedParameter(
 		parameters.Integral = value
 	case TunableDerivative:
 		parameters.Derivative = value
+	case TunableFilterTime:
+		parameters.FilterTime = value
+	case TunableSetpointWeight:
+		parameters.SetpointWeight = value
+	case TunableDerivativeWeight:
+		parameters.DerivativeWeight = value
 	case TunableMatrixGain:
 		if parameters.D == nil {
 			return invalid("tuned matrix gain is missing")
