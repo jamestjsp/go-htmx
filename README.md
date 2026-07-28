@@ -506,6 +506,13 @@ channel names, and compare current and candidate Bode, singular-value,
 H-infinity, and SISO robustness evidence on one frequency grid. See
 `docs/pid-design.md` and `docs/loop-sensitivity.md`.
 
+State-design tests independently check CARE and estimator-covariance
+residuals, continuous and discrete closed-loop poles, Acker/Place pole
+multisets, LQI augmentation, named Estim/Reg/LQG construction, full-state
+measurement contracts, cost/covariance validation, signed-control-law
+normalization, non-mutating candidates, and atomic stale-safe whole-block
+apply. See `docs/state-design.md`.
+
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks
 across viewport, snapping, selection, keyboard, context menus, and wiring — at

@@ -40,11 +40,19 @@ type PlantRole struct {
 }
 
 type ControllerRole struct {
-	Blocks            []int64           `json:"blocks"`
-	ReferenceInputs   []NamedChannelRef `json:"referenceInputs,omitempty"`
-	MeasurementInputs []NamedChannelRef `json:"measurementInputs"`
-	ControlOutputs    []NamedChannelRef `json:"controlOutputs"`
+	Blocks             []int64            `json:"blocks"`
+	FeedbackConvention FeedbackConvention `json:"feedbackConvention,omitempty"`
+	ReferenceInputs    []NamedChannelRef  `json:"referenceInputs,omitempty"`
+	MeasurementInputs  []NamedChannelRef  `json:"measurementInputs"`
+	ControlOutputs     []NamedChannelRef  `json:"controlOutputs"`
 }
+
+type FeedbackConvention string
+
+const (
+	FeedbackExternalNegative FeedbackConvention = "external_negative"
+	FeedbackSignedControlLaw FeedbackConvention = "signed_control_law"
+)
 
 type AnalysisPointLocation string
 
@@ -168,10 +176,11 @@ type resolvedPlantRole struct {
 }
 
 type resolvedControllerRole struct {
-	Blocks            []int64
-	ReferenceInputs   []resolvedNamedChannel
-	MeasurementInputs []resolvedNamedChannel
-	ControlOutputs    []resolvedNamedChannel
+	Blocks             []int64
+	FeedbackConvention FeedbackConvention
+	ReferenceInputs    []resolvedNamedChannel
+	MeasurementInputs  []resolvedNamedChannel
+	ControlOutputs     []resolvedNamedChannel
 }
 
 type resolvedControlRoleSpec struct {
@@ -251,6 +260,16 @@ func resolveControlRoleSpec(
 	var result resolvedControlRoleSpec
 	result.Plant.Blocks = append([]int64(nil), spec.Plant.Blocks...)
 	result.Controller.Blocks = append([]int64(nil), spec.Controller.Blocks...)
+	result.Controller.FeedbackConvention = spec.Controller.FeedbackConvention
+	switch spec.Controller.FeedbackConvention {
+	case "", FeedbackExternalNegative:
+	case FeedbackSignedControlLaw:
+	default:
+		return resolvedControlRoleSpec{}, invalid(
+			"controller feedback convention %q is unknown",
+			spec.Controller.FeedbackConvention,
+		)
+	}
 	if result.Plant.ExogenousInputs, err = resolve(
 		"plant exogenous input", spec.Plant.ExogenousInputs, ChannelInput, plantSet,
 	); err != nil {
@@ -313,11 +332,15 @@ func resolveControlRoleSpec(
 			len(result.Plant.MeasurementOutputs), len(result.Controller.MeasurementInputs),
 		)
 	}
+	referenceOutputs := result.Plant.PerformanceOutputs
+	if len(referenceOutputs) == 0 {
+		referenceOutputs = result.Plant.MeasurementOutputs
+	}
 	if len(result.Controller.ReferenceInputs) != 0 &&
-		len(result.Controller.ReferenceInputs) != len(result.Plant.MeasurementOutputs) {
+		len(result.Controller.ReferenceInputs) != len(referenceOutputs) {
 		return resolvedControlRoleSpec{}, invalid(
-			"controller has %d reference inputs but plant has %d measurement outputs",
-			len(result.Controller.ReferenceInputs), len(result.Plant.MeasurementOutputs),
+			"controller has %d reference inputs but plant has %d regulated outputs",
+			len(result.Controller.ReferenceInputs), len(referenceOutputs),
 		)
 	}
 	for label, channels := range map[string][]resolvedNamedChannel{
@@ -596,7 +619,8 @@ func buildControlModels(
 	if err != nil {
 		return ControlModelSet{}, fmt.Errorf("select controller feedback model: %w", err)
 	}
-	if len(spec.Controller.ReferenceInputs) != 0 {
+	if len(spec.Controller.ReferenceInputs) != 0 ||
+		spec.Controller.FeedbackConvention == FeedbackSignedControlLaw {
 		controller, err = negateSystemOutputs(controller)
 		if err != nil {
 			return ControlModelSet{}, fmt.Errorf("normalize controller feedback sign: %w", err)
