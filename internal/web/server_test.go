@@ -217,6 +217,7 @@ func TestRegisterViewCoversTheEmptyState(t *testing.T) {
 			t.Errorf("empty register does not contain %q", expected)
 		}
 	}
+
 }
 
 // TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
@@ -637,6 +638,120 @@ func TestConnectReadsOptionalPortFields(t *testing.T) {
 	})
 	if !strings.Contains(malformed.Body.String(), "choose an output and an input to connect") {
 		t.Fatalf("malformed port was not refused: %s", malformed.Body.String())
+	}
+}
+
+func TestConnectPersistsAndRendersANonzeroTargetPort(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := snapshot.Flow.ID
+	_, sourceID, err := service.AddBlock(ctx, flowID, studio.BlockConstant, studio.Point{X: 120, Y: 720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, sumID, err := service.AddBlock(ctx, flowID, studio.BlockSum, studio.Point{X: 420, Y: 720})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := blockByID(snapshot.Blocks, sumID)
+	if _, err := service.UpdateBlock(ctx, sumID, studio.BlockUpdate{
+		Name:       sum.Name,
+		Parameters: map[string]string{"signs": "+-"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := request(t, server, http.MethodPost,
+		"/flows/"+strconv.FormatInt(flowID, 10)+"/connections",
+		url.Values{
+			"source_id":   {strconv.FormatInt(sourceID, 10)},
+			"source_port": {"0"},
+			"target_id":   {strconv.FormatInt(sumID, 10)},
+			"target_port": {"1"},
+		},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+
+	snapshot, err = service.Snapshot(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, connection := range snapshot.Connections {
+		if connection.SourceID == sourceID && connection.TargetID == sumID {
+			found = true
+			if connection.SourcePort != 0 || connection.TargetPort != 1 {
+				t.Fatalf("persisted ports = %d -> %d, want 0 -> 1", connection.SourcePort, connection.TargetPort)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("nonzero-port connection was not persisted")
+	}
+
+	body := response.Body.String()
+	for _, expected := range []string{
+		fmt.Sprintf(`data-edge-source="%d" data-edge-source-port="0"`, sourceID),
+		fmt.Sprintf(`data-edge-target="%d" data-edge-target-port="1"`, sumID),
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("workbench does not contain %q", expected)
+		}
+	}
+
+	if _, err := service.Connect(ctx, flowID, studio.Wire{
+		SourceID: sourceID, TargetID: sumID, TargetPort: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body = request(t, server, http.MethodGet,
+		"/flows/"+strconv.FormatInt(flowID, 10)+"/workbench?selected="+strconv.FormatInt(sourceID, 10), nil,
+	).Body.String()
+	for _, expected := range []string{
+		"input &#43; (port 1) ← output port 1",
+		"input - (port 2) ← output port 1",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("source inspector does not contain %q", expected)
+		}
+	}
+}
+
+func TestWorkbenchRendersPortIdentityLabelsAndInspectorNames(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := findKindBlock(t, snapshot.Blocks, "sum")
+	if _, err := service.UpdateBlock(context.Background(), sum.ID, studio.BlockUpdate{
+		Name:       sum.Name,
+		Parameters: map[string]string{"signs": "+-"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := request(t, server, http.MethodGet,
+		"/flows/1/workbench?selected="+strconv.FormatInt(sum.ID, 10), nil,
+	).Body.String()
+	for _, expected := range []string{
+		fmt.Sprintf(`data-input-block="%d" data-input-port="0"`, sum.ID),
+		fmt.Sprintf(`data-input-block="%d" data-input-port="1"`, sum.ID),
+		`<span class="port-label" aria-hidden="true">&#43;</span>`,
+		`<span class="port-label" aria-hidden="true">-</span>`,
+		fmt.Sprintf(`data-edge-target="%d" data-edge-target-port="0"`, sum.ID),
+		"input &#43; (port 1)",
+		"input - (port 2)",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("workbench does not contain %q", expected)
+		}
 	}
 }
 

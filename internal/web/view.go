@@ -148,21 +148,36 @@ type blockView struct {
 	studio.Block
 	Definition    studio.BlockDefinition
 	Fields        []studio.ParameterField
+	InputPorts    []portView
+	OutputPorts   []portView
 	Selected      bool
 	ParameterText string
 }
 
+type portView struct {
+	Index     int
+	Top       int
+	Center    int
+	HitHeight int
+	Size      int
+	Label     string
+	Name      string
+}
+
 type connectionView struct {
 	studio.Connection
-	Path       string
-	SourceName string
-	TargetName string
+	Path         string
+	SourceName   string
+	TargetName   string
+	SourceCenter int
+	TargetCenter int
 }
 
 type inspectorLink struct {
 	ID        int64
 	Direction string
 	OtherName string
+	PortName  string
 }
 
 type paletteItem struct {
@@ -245,6 +260,8 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 			Block:         block,
 			Definition:    block.Kind.Definition(),
 			Fields:        block.EditorFields(),
+			InputPorts:    inputPortViews(block),
+			OutputPorts:   outputPortViews(block),
 			Selected:      block.ID == selectedID,
 			ParameterText: block.Summary(),
 		}
@@ -259,19 +276,24 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 		source := blockByID(snapshot.Blocks, connection.SourceID)
 		target := blockByID(snapshot.Blocks, connection.TargetID)
 		view.Connections = append(view.Connections, connectionView{
-			Connection: connection,
-			Path:       edgePath(source.Position, target.Position),
-			SourceName: blockNames[connection.SourceID],
-			TargetName: blockNames[connection.TargetID],
+			Connection:   connection,
+			Path:         edgePath(source, connection.SourcePort, target, connection.TargetPort),
+			SourceName:   blockNames[connection.SourceID],
+			TargetName:   blockNames[connection.TargetID],
+			SourceCenter: portCenterOffset(source.OutputPortCount(), connection.SourcePort),
+			TargetCenter: portCenterOffset(target.InputPortCount(), connection.TargetPort),
 		})
+		portName := connectionPortName(source, connection.SourcePort, target, connection.TargetPort)
 		if connection.SourceID == selectedID {
 			view.SelectedLinks = append(view.SelectedLinks, inspectorLink{
 				ID: connection.ID, Direction: "to", OtherName: blockNames[connection.TargetID],
+				PortName: portName,
 			})
 		}
 		if connection.TargetID == selectedID {
 			view.SelectedLinks = append(view.SelectedLinks, inspectorLink{
 				ID: connection.ID, Direction: "from", OtherName: blockNames[connection.SourceID],
+				PortName: portName,
 			})
 		}
 	}
@@ -288,11 +310,86 @@ func blockByID(blocks []studio.Block, id int64) studio.Block {
 	return studio.Block{}
 }
 
-func edgePath(source, target studio.Point) string {
-	startX := float64(source.X + studio.BlockWidth)
-	startY := float64(source.Y + studio.BlockHeight/2)
-	endX := float64(target.X)
-	endY := float64(target.Y + studio.BlockHeight/2)
+func inputPortViews(block studio.Block) []portView {
+	ports := make([]portView, block.InputPortCount())
+	for index := range ports {
+		center := portCenterOffset(len(ports), index)
+		size := portSize(len(ports))
+		label := ""
+		if block.Kind == studio.BlockSum && index < len(block.Parameters.Signs) {
+			label = string(block.Parameters.Signs[index])
+		}
+		ports[index] = portView{
+			Index: index, Top: portTop(center, size), Center: center,
+			HitHeight: portHitHeight(len(ports)), Size: size,
+			Label: label, Name: inputPortName(block, index),
+		}
+	}
+	return ports
+}
+
+func outputPortViews(block studio.Block) []portView {
+	ports := make([]portView, block.OutputPortCount())
+	for index := range ports {
+		center := portCenterOffset(len(ports), index)
+		size := portSize(len(ports))
+		ports[index] = portView{
+			Index: index, Top: portTop(center, size), Center: center,
+			HitHeight: portHitHeight(len(ports)), Size: size,
+			Name: outputPortName(block, index),
+		}
+	}
+	return ports
+}
+
+func inputPortName(block studio.Block, port int) string {
+	if block.Kind == studio.BlockSum && port >= 0 && port < len(block.Parameters.Signs) {
+		return fmt.Sprintf("input %s (port %d)", string(block.Parameters.Signs[port]), port+1)
+	}
+	return fmt.Sprintf("input port %d", port+1)
+}
+
+func outputPortName(_ studio.Block, port int) string {
+	return fmt.Sprintf("output port %d", port+1)
+}
+
+func connectionPortName(source studio.Block, sourcePort int, target studio.Block, targetPort int) string {
+	return fmt.Sprintf("%s ← %s",
+		inputPortName(target, targetPort),
+		outputPortName(source, sourcePort),
+	)
+}
+
+func portCenterOffset(count, index int) int {
+	if count <= 0 || index < 0 || index >= count {
+		return studio.BlockHeight / 2
+	}
+	return int(math.Round(float64(studio.BlockHeight) * float64(index+1) / float64(count+1)))
+}
+
+func portHitHeight(count int) int {
+	if count <= 1 {
+		return studio.BlockHeight
+	}
+	return max(1, studio.BlockHeight/(count+1))
+}
+
+func portSize(count int) int {
+	return min(14, portHitHeight(count))
+}
+
+func portTop(center, size int) int {
+	if size == 14 {
+		return center - 8
+	}
+	return center - size/2
+}
+
+func edgePath(source studio.Block, sourcePort int, target studio.Block, targetPort int) string {
+	startX := float64(source.Position.X + studio.BlockWidth)
+	startY := float64(source.Position.Y + portCenterOffset(source.OutputPortCount(), sourcePort))
+	endX := float64(target.Position.X)
+	endY := float64(target.Position.Y + portCenterOffset(target.InputPortCount(), targetPort))
 	distance := math.Abs(endX - startX)
 	bend := math.Max(54, distance*0.45)
 	return fmt.Sprintf("M %.1f %.1f C %.1f %.1f, %.1f %.1f, %.1f %.1f",

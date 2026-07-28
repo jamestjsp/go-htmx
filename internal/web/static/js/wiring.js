@@ -28,9 +28,11 @@ export function cancelConnection(message = 'Wire cancelled') {
 
 export function beginConnection(button, event) {
   connectionSource = {
-    id: button.dataset.outputPort,
+    id: button.dataset.outputBlock,
+    port: button.dataset.outputPort,
     name: button.dataset.outputName,
-    node: button.closest('.block-card')
+    node: button.closest('.block-card'),
+    button
   }
   document.body.classList.add('is-connecting')
   document.querySelectorAll('.connecting-source').forEach((node) => node.classList.remove('connecting-source'))
@@ -107,7 +109,9 @@ export function finishConnection(button) {
     swap: 'outerHTML',
     values: {
       source_id: connectionSource.id,
-      target_id: button.dataset.inputPort
+      source_port: connectionSource.port,
+      target_id: button.dataset.inputBlock,
+      target_port: button.dataset.inputPort
     }
   })
   cancelConnection('Saving signal connection…')
@@ -117,11 +121,17 @@ export function drawDraft(event) {
   if (!connectionSource) return
   const draft = document.querySelector('#draft-edge')
   if (!draft) return
-  const { blockWidth, blockHeight } = geometry()
   const source = connectionSource.node
+  const { blockWidth } = geometry()
   const startX = source.offsetLeft + blockWidth
-  const startY = source.offsetTop + blockHeight / 2
-  const { x: endX, y: endY } = screenToSheet(event.clientX, event.clientY)
+  const startY = source.offsetTop + Number(connectionSource.button.dataset.portCenter)
+  let { x: endX, y: endY } = screenToSheet(event.clientX, event.clientY)
+  const targetPort = portUnderPointer(event)
+  if (targetIsValid(targetPort)) {
+    const target = targetPort.closest('.block-card')
+    endX = target.offsetLeft
+    endY = target.offsetTop + Number(targetPort.dataset.portCenter)
+  }
   const bend = Math.max(54, Math.abs(endX - startX) * 0.45)
   draft.setAttribute('d', `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`)
 }

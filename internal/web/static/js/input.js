@@ -169,15 +169,17 @@ document.addEventListener('pointerdown', (event) => {
   // Panning claims the gesture first: space-drag and middle-drag must
   // win over starting a block drag or a wire.
   if (beginPan(event)) return
-  const output = event.target.closest('[data-output-port]')
-  if (output) {
-    beginConnection(output, event)
-    return
-  }
-  const input = event.target.closest('[data-input-port]')
-  if (input) {
-    finishConnection(input)
-    return
+  if (event.button === 0) {
+    const output = event.target.closest('[data-output-port]')
+    if (output) {
+      beginConnection(output, event)
+      return
+    }
+    const input = event.target.closest('[data-input-port]')
+    if (input) {
+      finishConnection(input)
+      return
+    }
   }
   const node = event.target.closest('.block-card')
   if (node) {
@@ -203,10 +205,22 @@ document.addEventListener('pointerup', (event) => {
 document.addEventListener('pointercancel', (event) => {
   endPan(event)
   endMarquee(event)
-  endWiring(event)
+  cancelConnection()
   endDrag(event)
 })
 document.addEventListener('click', (event) => {
+  if (event.detail === 0) {
+    const output = event.target.closest('[data-output-port]')
+    if (output) {
+      beginConnection(output)
+      return
+    }
+    const input = event.target.closest('[data-input-port]')
+    if (input) {
+      finishConnection(input)
+      return
+    }
+  }
   if (event.target.closest('[data-selection-fit]')) fitSelection()
   else if (event.target.closest('[data-selection-delete]')) deleteSelection()
 })

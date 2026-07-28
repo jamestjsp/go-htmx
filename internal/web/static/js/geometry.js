@@ -26,12 +26,14 @@ export function geometry() {
 // and this redraws them during a drag, so the two curves have to be the
 // same curve; changing the bend here alone would make a wire jump the
 // moment it is touched.
-function edgePath(source, target) {
+function edgePath(source, sourceCenter, target, targetCenter) {
   const { blockWidth, blockHeight } = geometry()
+  const sourceOffset = Number(sourceCenter) || blockHeight / 2
+  const targetOffset = Number(targetCenter) || blockHeight / 2
   const startX = source.offsetLeft + blockWidth
-  const startY = source.offsetTop + blockHeight / 2
+  const startY = source.offsetTop + sourceOffset
   const endX = target.offsetLeft
-  const endY = target.offsetTop + blockHeight / 2
+  const endY = target.offsetTop + targetOffset
   const bend = Math.max(54, Math.abs(endX - startX) * 0.45)
   return `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`
 }
@@ -42,6 +44,8 @@ export function redrawEdges() {
   root.querySelectorAll('[data-edge-source]').forEach((path) => {
     const source = root.querySelector(`[data-block-id="${path.dataset.edgeSource}"]`)
     const target = root.querySelector(`[data-block-id="${path.dataset.edgeTarget}"]`)
-    if (source && target) path.setAttribute('d', edgePath(source, target))
+    if (source && target) {
+      path.setAttribute('d', edgePath(source, path.dataset.edgeSourceCenter, target, path.dataset.edgeTargetCenter))
+    }
   })
 }

@@ -28,6 +28,9 @@ import './input.js'
 onBeforeSwap(() => {
   if (hasConnectionSource()) cancelConnection('Workbench updated')
 })
+document.addEventListener('htmx:historyRestore', () => {
+  if (hasConnectionSource()) cancelConnection('Workbench restored')
+})
 
 // The order is the order the canvas is rebuilt in, and it matters: the
 // viewport first, because it decides the flowsheet on screen and every

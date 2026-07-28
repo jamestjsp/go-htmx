@@ -1310,10 +1310,10 @@ body.is-resizing-dock .studio-grid {
   position: absolute;
   z-index: 10;
   top: 34px;
-  width: 14px;
-  height: 14px;
+  width: var(--port-size, 14px);
+  height: var(--port-size, 14px);
   padding: 0;
-  border: 3px solid var(--sheet-card);
+  border: min(3px, calc(var(--port-size, 14px) / 4)) solid var(--sheet-card);
   border-radius: 50%;
   background: #6d817b;
   box-shadow: 0 0 0 1px #6d817b;
@@ -1330,7 +1330,7 @@ body.is-resizing-dock .studio-grid {
   top: 50%;
   left: 50%;
   width: calc(22px / var(--zoom, 1));
-  height: calc(22px / var(--zoom, 1));
+  height: min(calc(22px / var(--zoom, 1)), var(--port-hit-height, 84px));
   transform: translate(-50%, -50%);
   border-radius: 50%;
 }
@@ -1360,12 +1360,25 @@ body.is-resizing-dock .studio-grid {
 }
 
 .port-input {
-  left: -10px;
+  left: calc(-3px - var(--port-size, 14px) / 2);
+}
+
+.port-label {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--port-size, 14px) + 3px);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: min(var(--fs-100), var(--port-hit-height, var(--fs-100)));
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 /* Orange means "carries a signal", so only outputs and wires wear it. */
 .port-output {
-  right: -10px;
+  right: calc(-3px - var(--port-size, 14px) / 2);
   background: var(--signal);
   box-shadow: 0 0 0 1px var(--signal);
 }
@@ -2010,13 +2023,29 @@ body.is-resizing-dock .studio-grid {
   text-transform: uppercase;
 }
 
-.signal-list strong {
+.signal-peer {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.signal-list strong,
+.signal-list small {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.signal-list strong {
   color: var(--ink-inverse);
   font-size: var(--fs-200);
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.signal-list small {
+  color: var(--ink-inverse-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
 }
 
 .signal-list button {
