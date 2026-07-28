@@ -1,12 +1,11 @@
 # Simulation engine roadmap
 
 How Process Lab grows past the linear boundary that `README.md` states and
-`docs/simulink-block-expansion.md` explains. This is a decision document: it
-picks an engine strategy and orders the block families that strategy unlocks.
-No engine code is written here.
+`docs/simulink-block-expansion.md` explains. This began as the decision record
+for the engine strategy and now also records which layers have been delivered.
 
-Read this before adding any block that is not a continuous LTI realization —
-Unit Delay, discrete filters, Product, Saturation, Switch, Relay, or logic.
+Read this before changing sampled-data execution or adding a nonlinear block
+such as Product, Saturation, Switch, Relay, or logic.
 
 ## What controlsys v1.2.0 actually provides
 
@@ -160,6 +159,17 @@ What *is* usable, verified working:
 | Fractional discrete delay | `ThiranDelay(tau, order, dt)` | Explicit Thiran Transport Delay mode |
 
 The first three are methods on `*System`; the last two are package functions.
+
+Process Lab now exposes these capabilities directly:
+
+- Unit Delay, discrete Transfer Function, and named MIMO discrete State-Space
+  blocks use the declared or inherited `Dt`.
+- Discretized Transfer exposes ZOH, FOH, matched pole-zero, and
+  impulse-invariant conversion as explicit catalog choices.
+- Thiran Transport Delay exposes order and sample time, while its regression
+  checks low-frequency phase against the requested pure delay.
+- The sampled driver carries `XFinal`; it does not rebuild state from output
+  history or approximate Unit Delay outside controlsys.
 
 `DiscretizeZOH` was checked against every realization the catalog produces
 today — static gain (`n = 0`), first-order lag, integrator (pole at the

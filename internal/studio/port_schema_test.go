@@ -11,7 +11,8 @@ import (
 func TestScalarPortsKeepWidthOneAndExistingPortIDs(t *testing.T) {
 	for _, kind := range blockOrder {
 		if kind == BlockVectorConstant || kind == BlockMatrixGain ||
-			kind == BlockVectorSum || kind == BlockVectorScope {
+			kind == BlockVectorSum || kind == BlockVectorScope ||
+			kind == BlockDiscreteStateSpace {
 			continue
 		}
 		block := Block{Kind: kind, Parameters: defaultParameters(kind)}

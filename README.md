@@ -202,7 +202,7 @@ flowchart LR
     Studio["Studio service<br/>domain operations"]
     SQLite[("SQLite<br/>projects, flows, events, runs")]
     Compiler["Flow compiler<br/>graph to state space"]
-    Controlsys["controlsys v1.2.0<br/>Lsim"]
+    Controlsys["controlsys v1.2.0<br/>named composition, simulation, analysis"]
 
     Browser -- "HTML requests" --> HTTP
     HTTP -- "add, connect, tune, run" --> Studio
@@ -235,6 +235,10 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
 | Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
 | Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
+| Discrete | Unit Delay | Exact one-sample state at an explicit or inherited rate | Exactly one |
+| Discrete | Transfer Function | Proper SISO numerator/denominator model in `z` | Exactly one |
+| Discrete | State-Space | Named MIMO `x[k+1]=Ax[k]+Bu[k]`, `y[k]=Cx[k]+Du[k]` | One named vector input |
+| Discrete | Discretized Transfer | Explicit ZOH, FOH, matched pole-zero, or impulse-invariant conversion | Exactly one |
 | Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
 | Sinks | Vector Scope | Plots named vector channels | One vector input |
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
@@ -250,8 +254,10 @@ Scalar diagrams retain width one and their existing port numbers. A vector is
 one connection, not several unrelated wires: connections reject unequal
 widths before persistence, then the compiler expands compatible vector
 channels into deterministic `ConnectByName` pairs. Matrix Gain, Vector Sum,
-Vector Constant, and Vector Scope exercise the same named MIMO feedback path
-as future state-space and transfer-function blocks.
+Vector Constant, Vector Scope, and discrete State-Space exercise the same
+named MIMO feedback path. State-space channel names and matrix dimensions are
+validated together, so a stored model cannot claim a port width that differs
+from its realization.
 
 Transport Delay preserves exact delay metadata through named series and
 feedback composition. Exact time simulation requires the delay to be an
@@ -261,12 +267,24 @@ continuous rational model, while Thiran is a discrete all-pass model with its
 own sample time. Stored delays created before these choices existed retain
 their historical Padé behavior.
 
+Discrete blocks declare an explicit sample time or inherit the run step. Unit
+Delay carries its state exactly between samples. Discrete Transfer Function
+and State-Space blocks are realized directly at their declared `Dt`.
+Discretized Transfer makes conversion a visible model choice—ZOH, FOH,
+matched pole-zero, or impulse invariant—rather than silently choosing a
+method during compilation.
+
 Connections identify both endpoint ports. For a Sum, sign character `i`
 belongs to input port `i`, so deleting and redrawing another wire cannot change
 which inputs are added or subtracted. Editing the sign pattern adds ports;
 removing a sign is refused while that port still carries a wire.
 
-Each math or continuous block becomes a locally named `controlsys.System`. `controlsys.ConnectByName` composes those realizations into one state-space model, and `controlsys.Lsim` evaluates it on the requested time grid. Spectrum Analyzer sinks then apply Gonum's Hann window and real FFT to their selected response.
+Each linear block becomes a locally named `controlsys.System`.
+`controlsys.ConnectByName` composes compatible realizations into one
+state-space model. Continuous delay-free systems use `controlsys.Lsim`;
+discrete systems and delay-aware conversions use `System.Simulate` while
+carrying `XFinal` between segments. Spectrum Analyzer sinks then apply
+Gonum's Hann window and real FFT to their selected response.
 
 Compilation returns one owned model artifact containing the composed system,
 stable block/port channel identities, source excitations, selected outputs,
@@ -281,7 +299,12 @@ selected with `controlsys.SelectByName`. Scope and Spectrum Analyzer blocks
 remain simulation consumers, not the authority on which signals analysis may
 inspect.
 
-The linear boundary is deliberate. State-Space is deferred until the editor supports matrices and MIMO ports. Unit Delay and discrete filters require an explicit mixed-sample-time policy. Product, Saturation, Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this compiler does not silently linearize them.
+The linear boundary is deliberate. Continuous and discrete state-space,
+transfer-function, delay, and named MIMO models stay within controlsys.
+Continuous/discrete mixtures and unresolved multirate execution are refused
+with the required conversion or scheduling action. Product, Saturation,
+Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this
+compiler does not silently linearize them.
 
 The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.
 

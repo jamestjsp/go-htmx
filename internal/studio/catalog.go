@@ -382,6 +382,98 @@ func defaultVectorSumParameters() Parameters {
 	return Parameters{Signs: "+-", InputNames: &inputs, OutputNames: &outputs}
 }
 
+func defaultDiscreteStateSpaceParameters() Parameters {
+	a, _ := NewMatrixValue(2, 2, []float64{0.8, 0, 0, 0.5})
+	b, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
+	c, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
+	d, _ := NewMatrixValue(2, 2, []float64{0, 0, 0, 0})
+	inputs, _ := NewChannelNames([]string{"u1", "u2"})
+	outputs, _ := NewChannelNames([]string{"y1", "y2"})
+	states, _ := NewChannelNames([]string{"x1", "x2"})
+	return Parameters{
+		A: &a, B: &b, C: &c, D: &d,
+		InputNames: &inputs, OutputNames: &outputs, StateNames: &states,
+		SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+	}
+}
+
+func validateDiscreteStateSpaceParameters(parameters Parameters) error {
+	if err := validateDiscreteSampleTime(parameters); err != nil {
+		return err
+	}
+	if parameters.A == nil || parameters.B == nil || parameters.C == nil || parameters.D == nil ||
+		parameters.InputNames == nil || parameters.OutputNames == nil || parameters.StateNames == nil {
+		return invalid("A, B, C, D and input, output, state names are required")
+	}
+	states, aColumns := parameters.A.Dims()
+	if states != aColumns {
+		return invalid("A matrix must be square")
+	}
+	bRows, inputs := parameters.B.Dims()
+	outputs, cColumns := parameters.C.Dims()
+	dRows, dColumns := parameters.D.Dims()
+	if bRows != states || cColumns != states ||
+		dRows != outputs || dColumns != inputs {
+		return invalid(
+			"state-space dimensions must satisfy A n×n, B n×m, C p×n, D p×m",
+		)
+	}
+	if parameters.InputNames.Len() != inputs ||
+		parameters.OutputNames.Len() != outputs ||
+		parameters.StateNames.Len() != states {
+		return invalid(
+			"state-space channel-name counts must match input, output, and state dimensions",
+		)
+	}
+	return nil
+}
+
+func validateDiscretizedTransferParameters(parameters Parameters) error {
+	if err := validateDiscreteSampleTime(parameters); err != nil {
+		return err
+	}
+	if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
+		return invalid("transfer function coefficients are required")
+	}
+	if len(parameters.Numerator) > len(parameters.Denominator) {
+		return invalid("transfer function must be proper")
+	}
+	if parameters.Denominator[0] == 0 {
+		return invalid("denominator leading coefficient must be nonzero")
+	}
+	switch controlsys.C2DMethod(parameters.ConversionMethod) {
+	case controlsys.C2DMethodZOH,
+		controlsys.C2DMethodFOH,
+		controlsys.C2DMethodMatched,
+		controlsys.C2DMethodImpulse:
+		return nil
+	default:
+		return invalid("conversion method must be zoh, foh, matched, or impulse")
+	}
+}
+
+func realizeDiscretizedTransfer(block Block, _ []int) (*controlsys.System, error) {
+	result, err := (&controlsys.TransferFunc{
+		Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
+		Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
+	}).StateSpace(nil)
+	if err != nil {
+		return nil, err
+	}
+	switch controlsys.C2DMethod(block.Parameters.ConversionMethod) {
+	case controlsys.C2DMethodZOH:
+		return result.Sys.DiscretizeZOH(block.Parameters.SampleTime)
+	case controlsys.C2DMethodFOH:
+		return result.Sys.DiscretizeFOH(block.Parameters.SampleTime)
+	case controlsys.C2DMethodMatched:
+		return result.Sys.DiscretizeMatched(block.Parameters.SampleTime)
+	case controlsys.C2DMethodImpulse:
+		return result.Sys.DiscretizeImpulse(block.Parameters.SampleTime)
+	default:
+		return nil, invalid("unsupported conversion method %q", block.Parameters.ConversionMethod)
+	}
+}
+
 var blockOrder = []BlockKind{
 	BlockSource,
 	BlockConstant,
@@ -396,6 +488,10 @@ var blockOrder = []BlockKind{
 	BlockTransfer,
 	BlockPID,
 	BlockDelay,
+	BlockUnitDelay,
+	BlockDiscreteTransfer,
+	BlockDiscreteStateSpace,
+	BlockDiscretizedTransfer,
 	BlockScope,
 	BlockVectorScope,
 	BlockSpectrum,
@@ -1010,6 +1106,192 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			}
 		},
 	},
+	BlockUnitDelay: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockUnitDelay, Label: "Unit Delay", Category: "Discrete",
+			Description: "Exact one-sample memory", Glyph: "z⁻¹", Tag: "DISCRETE",
+		},
+		Defaults: Parameters{
+			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+		},
+		Parameters: sampleTimeFields(),
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.New(
+				mat.NewDense(1, 1, []float64{0}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{1}),
+				mat.NewDense(1, 1, []float64{0}),
+				block.Parameters.SampleTime,
+			)
+		},
+		timeDomain: func(parameters Parameters) blockTimeDomain {
+			return discreteTimeDomain(parameters)
+		},
+		validate: validateDiscreteSampleTime,
+		summary: func(parameters Parameters) string {
+			if normalizedSampleTimeMode(parameters) == sampleTimeInherited {
+				return "z⁻¹ @ run step"
+			}
+			return fmt.Sprintf("z⁻¹ @ %.3g s", parameters.SampleTime)
+		},
+	},
+	BlockDiscreteTransfer: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockDiscreteTransfer, Label: "Discrete Transfer Function", Category: "Discrete",
+			Description: "Proper SISO model in z", Glyph: "H(z)", Tag: "DISCRETE",
+		},
+		Defaults: Parameters{
+			Numerator: []float64{0.1}, Denominator: []float64{1, -0.9},
+			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+		},
+		Parameters: append([]parameterDefinition{
+			coefficientField("numerator", "Numerator coefficients", "0.1", func(parameters *Parameters) *[]float64 {
+				return &parameters.Numerator
+			}),
+			coefficientField("denominator", "Denominator coefficients", "1, -0.9", func(parameters *Parameters) *[]float64 {
+				return &parameters.Denominator
+			}),
+		}, sampleTimeFields()...),
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			result, err := (&controlsys.TransferFunc{
+				Num: [][][]float64{{append([]float64(nil), block.Parameters.Numerator...)}},
+				Den: [][]float64{append([]float64(nil), block.Parameters.Denominator...)},
+				Dt:  block.Parameters.SampleTime,
+			}).StateSpace(nil)
+			if err != nil {
+				return nil, err
+			}
+			return result.Sys, nil
+		},
+		timeDomain: func(parameters Parameters) blockTimeDomain {
+			return discreteTimeDomain(parameters)
+		},
+		validate: func(parameters Parameters) error {
+			if err := validateDiscreteSampleTime(parameters); err != nil {
+				return err
+			}
+			if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
+				return invalid("transfer function coefficients are required")
+			}
+			if len(parameters.Numerator) > len(parameters.Denominator) {
+				return invalid("transfer function must be proper")
+			}
+			if parameters.Denominator[0] == 0 {
+				return invalid("denominator leading coefficient must be nonzero")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return polynomialText(parameters.Numerator) + " / " +
+				polynomialText(parameters.Denominator) + " in z"
+		},
+	},
+	BlockDiscreteStateSpace: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockDiscreteStateSpace, Label: "Discrete State-Space", Category: "Discrete",
+			Description: "Named x[k+1]=Ax+Bu, y=Cx+Du", Glyph: "SSz", Tag: "MIMO",
+		},
+		Defaults: defaultDiscreteStateSpaceParameters(),
+		Parameters: append([]parameterDefinition{
+			matrixField("a", "A matrix", func(parameters *Parameters) **MatrixValue { return &parameters.A }),
+			matrixField("b", "B matrix", func(parameters *Parameters) **MatrixValue { return &parameters.B }),
+			matrixField("c", "C matrix", func(parameters *Parameters) **MatrixValue { return &parameters.C }),
+			matrixField("d", "D matrix", func(parameters *Parameters) **MatrixValue { return &parameters.D }),
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+			channelNamesField("state_names", "State names", func(parameters *Parameters) **ChannelNames {
+				return &parameters.StateNames
+			}),
+		}, sampleTimeFields()...),
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.B == nil || parameters.C == nil ||
+				parameters.InputNames == nil || parameters.OutputNames == nil {
+				return blockPortSchema{}
+			}
+			_, inputs := parameters.B.Dims()
+			outputs, _ := parameters.C.Dims()
+			input, _ := newSignalPort(inputs, parameters.InputNames.Names())
+			output, _ := newSignalPort(outputs, parameters.OutputNames.Names())
+			return blockPortSchema{
+				inputs: []SignalPort{input}, outputs: []SignalPort{output},
+			}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			n, _ := block.Parameters.A.Dims()
+			_, m := block.Parameters.B.Dims()
+			p, _ := block.Parameters.C.Dims()
+			system, err := controlsys.New(
+				mat.NewDense(n, n, block.Parameters.A.Values()),
+				mat.NewDense(n, m, block.Parameters.B.Values()),
+				mat.NewDense(p, n, block.Parameters.C.Values()),
+				mat.NewDense(p, m, block.Parameters.D.Values()),
+				block.Parameters.SampleTime,
+			)
+			if err != nil {
+				return nil, err
+			}
+			system.StateName = block.Parameters.StateNames.Names()
+			return system, nil
+		},
+		timeDomain: func(parameters Parameters) blockTimeDomain {
+			return discreteTimeDomain(parameters)
+		},
+		validate: validateDiscreteStateSpaceParameters,
+		summary: func(parameters Parameters) string {
+			if parameters.A == nil || parameters.B == nil || parameters.C == nil {
+				return "invalid state-space"
+			}
+			states, _ := parameters.A.Dims()
+			_, inputs := parameters.B.Dims()
+			outputs, _ := parameters.C.Dims()
+			return fmt.Sprintf("%d states · %d×%d I/O", states, outputs, inputs)
+		},
+	},
+	BlockDiscretizedTransfer: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockDiscretizedTransfer, Label: "Discretized Transfer", Category: "Discrete",
+			Description: "Explicit continuous-to-discrete conversion", Glyph: "c2d", Tag: "CONVERSION",
+		},
+		Defaults: Parameters{
+			Numerator: []float64{1}, Denominator: []float64{1, 1},
+			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+			ConversionMethod: string(controlsys.C2DMethodZOH),
+		},
+		Parameters: append([]parameterDefinition{
+			coefficientField("numerator", "Continuous numerator", "1", func(parameters *Parameters) *[]float64 {
+				return &parameters.Numerator
+			}),
+			coefficientField("denominator", "Continuous denominator", "1, 1", func(parameters *Parameters) *[]float64 {
+				return &parameters.Denominator
+			}),
+			{
+				Name: "conversion_method", Label: "Conversion method", Type: "select",
+				Options: []parameterOption{
+					{Value: string(controlsys.C2DMethodZOH), Label: "Zero-order hold"},
+					{Value: string(controlsys.C2DMethodFOH), Label: "First-order hold"},
+					{Value: string(controlsys.C2DMethodMatched), Label: "Matched pole-zero"},
+					{Value: string(controlsys.C2DMethodImpulse), Label: "Impulse invariant"},
+				},
+				set: func(parameters *Parameters, raw string) error {
+					parameters.ConversionMethod = strings.ToLower(strings.TrimSpace(raw))
+					return nil
+				},
+				text: func(parameters Parameters) string { return parameters.ConversionMethod },
+			},
+		}, sampleTimeFields()...),
+		realize: realizeDiscretizedTransfer,
+		timeDomain: func(parameters Parameters) blockTimeDomain {
+			return discreteTimeDomain(parameters)
+		},
+		validate: validateDiscretizedTransferParameters,
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("%s @ %.3g s", parameters.ConversionMethod, parameters.SampleTime)
+		},
+	},
 	BlockScope: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockScope, Label: "Scope", Category: "Sinks",
@@ -1102,6 +1384,41 @@ func conditionalNumberField(
 	)
 	definition.active = active
 	return definition
+}
+
+func sampleTimeFields() []parameterDefinition {
+	return []parameterDefinition{
+		{
+			Name: "sample_time_mode", Label: "Sample time source", Type: "select",
+			Options: []parameterOption{
+				{Value: string(sampleTimeExplicit), Label: "Explicit"},
+				{Value: string(sampleTimeInherited), Label: "Inherit run sample time"},
+			},
+			set: func(parameters *Parameters, raw string) error {
+				parameters.SampleTimeMode = strings.ToLower(strings.TrimSpace(raw))
+				return nil
+			},
+			text: func(parameters Parameters) string {
+				return string(normalizedSampleTimeMode(parameters))
+			},
+		},
+		conditionalNumberField(
+			"sample_time", "Sample time", "sample time",
+			"0.01", 0.001, 10, "sec",
+			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
+			func(parameters Parameters) bool {
+				return normalizedSampleTimeMode(parameters) == sampleTimeExplicit
+			},
+		),
+	}
+}
+
+func validateDiscreteSampleTime(parameters Parameters) error {
+	mode := normalizedSampleTimeMode(parameters)
+	if mode != sampleTimeExplicit && mode != sampleTimeInherited {
+		return invalid("sample time mode must be explicit or inherited")
+	}
+	return nil
 }
 
 // formatFloat renders a float64 the same way whether it backs a live
