@@ -34,6 +34,7 @@ const SHORTCUTS = [
   ]],
   ['Model', [
     ['Cmd/Ctrl + Enter', 'Run the simulation'],
+    ['Cmd/Ctrl + Shift + Enter', 'Run the selected control analysis'],
     ['?', 'Show this sheet']
   ]],
   ['Sheets', [

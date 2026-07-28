@@ -5,8 +5,12 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 func TestSimulateSeededBranchedFlow(t *testing.T) {
@@ -83,6 +87,7 @@ func TestSimulationRoundTripsThroughSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSamples := len(snapshot.LastRun.Times)
+	wantFidelity := snapshot.LastRun.Fidelity
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +103,9 @@ func TestSimulationRoundTripsThroughSQLite(t *testing.T) {
 	}
 	if snapshot.LastRun == nil || len(snapshot.LastRun.Times) != wantSamples {
 		t.Fatalf("persisted run = %#v", snapshot.LastRun)
+	}
+	if !reflect.DeepEqual(snapshot.LastRun.Fidelity, wantFidelity) {
+		t.Fatalf("persisted fidelity = %#v, want %#v", snapshot.LastRun.Fidelity, wantFidelity)
 	}
 }
 
@@ -141,30 +149,128 @@ func TestCompileRejectsMissingScope(t *testing.T) {
 		{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
 		{ID: 2, Kind: BlockGain, Name: "Gain", Parameters: Parameters{Gain: 2}},
 	}
-	_, err := compileFlow(blocks, []Connection{{SourceID: 1, TargetID: 2}})
+	_, err := compileModel(blocks, []Connection{{SourceID: 1, TargetID: 2}})
 	var validation *ValidationError
 	if !errors.As(err, &validation) || !strings.Contains(err.Error(), "Scope") {
 		t.Fatalf("error = %v, want missing Scope validation", err)
 	}
 }
 
-func TestCompileRejectsCycle(t *testing.T) {
+func TestPIDFeedbackLoopMatchesControlsysFeedback(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockSource, Name: "Setpoint", Parameters: Parameters{Amplitude: 1}},
+		{ID: 2, Kind: BlockSum, Name: "Error", Parameters: Parameters{Signs: "+-"}},
+		{ID: 3, Kind: BlockPID, Name: "Controller", Parameters: Parameters{
+			Proportional: 2, Integral: 1, Derivative: 0.2, FilterTime: 0.051,
+		}},
+		{ID: 4, Kind: BlockTransfer, Name: "Plant", Parameters: Parameters{
+			Numerator: []float64{1}, Denominator: []float64{1, 1},
+		}},
+		{ID: 5, Kind: BlockScope, Name: "Output"},
+	}
+	connections := []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3},
+		{ID: 3, SourceID: 3, TargetID: 4},
+		{ID: 4, SourceID: 4, TargetID: 2, TargetPort: 1},
+		{ID: 5, SourceID: 4, TargetID: 5},
+	}
+
+	run, err := simulate(blocks, connections, SimulationRequest{
+		Duration: 20, SampleTime: 0.1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	controller, err := realizeBlock(blocks[2], []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plant, err := realizeBlock(blocks[3], []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	openLoop, err := controlsys.Series(controller, plant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedLoop, err := controlsys.Feedback(openLoop, nil, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := mat.NewDense(len(run.Times), 1, make([]float64, len(run.Times)))
+	for sample := range run.Times {
+		input.Set(sample, 0, 1)
+	}
+	want, err := controlsys.Lsim(closedLoop, input, run.Times, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(run.Series) != 1 {
+		t.Fatalf("series = %d, want 1", len(run.Series))
+	}
+	for sample, got := range run.Series[0].Values {
+		if diff := math.Abs(got - want.Y.At(0, sample)); diff > 1e-10 {
+			t.Fatalf("sample %d = %.12g, controlsys.Feedback = %.12g (diff %.3g)",
+				sample, got, want.Y.At(0, sample), diff)
+		}
+	}
+}
+
+func TestWellPosedStaticFeedbackLoopSimulates(t *testing.T) {
 	blocks := []Block{
 		{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
-		{ID: 2, Kind: BlockSum, Name: "Sum A", Parameters: defaultParameters(BlockSum)},
-		{ID: 3, Kind: BlockSum, Name: "Sum B", Parameters: defaultParameters(BlockSum)},
+		{ID: 2, Kind: BlockSum, Name: "Error", Parameters: Parameters{Signs: "+-"}},
+		{ID: 3, Kind: BlockGain, Name: "Gain", Parameters: Parameters{Gain: 1}},
 		{ID: 4, Kind: BlockScope, Name: "Output"},
 	}
 	connections := []Connection{
-		{SourceID: 1, TargetID: 2},
-		{SourceID: 2, TargetID: 3},
-		{SourceID: 3, TargetID: 2},
-		{SourceID: 3, TargetID: 4},
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3},
+		{ID: 3, SourceID: 3, TargetID: 2, TargetPort: 1},
+		{ID: 4, SourceID: 3, TargetID: 4},
 	}
-	_, err := compileFlow(blocks, connections)
+
+	run, err := simulate(blocks, connections, SimulationRequest{
+		Duration: 1, SampleTime: 0.1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Series) != 1 {
+		t.Fatalf("series = %d, want 1", len(run.Series))
+	}
+	for sample, got := range run.Series[0].Values {
+		if diff := math.Abs(got - 0.5); diff > 1e-12 {
+			t.Fatalf("sample %d = %.12g, want 0.5 (diff %.3g)", sample, got, diff)
+		}
+	}
+}
+
+func TestCompileTranslatesUnsolvableAlgebraicLoop(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
+		{ID: 2, Kind: BlockSum, Name: "Sum", Parameters: Parameters{Signs: "++"}},
+		{ID: 3, Kind: BlockGain, Name: "Gain", Parameters: Parameters{Gain: 1}},
+		{ID: 4, Kind: BlockScope, Name: "Output"},
+	}
+	connections := []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3},
+		{ID: 3, SourceID: 3, TargetID: 2, TargetPort: 1},
+		{ID: 4, SourceID: 3, TargetID: 4},
+	}
+
+	_, err := compileModel(blocks, connections)
 	var validation *ValidationError
-	if !errors.As(err, &validation) || !strings.Contains(err.Error(), "cycle") {
-		t.Fatalf("error = %v, want cycle validation", err)
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %v, want ValidationError", err)
+	}
+	const want = "flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
 	}
 }
 
@@ -174,7 +280,7 @@ func TestCompileRejectsInvalidLag(t *testing.T) {
 		{ID: 2, Kind: BlockLag, Name: "Bad lag", Parameters: Parameters{TimeConstant: 0}},
 		{ID: 3, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{SourceID: 1, TargetID: 2},
 		{SourceID: 2, TargetID: 3},
 	})
@@ -341,7 +447,7 @@ func TestCompileRejectsTwoWiresOnOneInputPort(t *testing.T) {
 		{ID: 3, Kind: BlockSum, Name: "Difference", Parameters: Parameters{Signs: "+-"}},
 		{ID: 4, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{ID: 1, SourceID: 1, TargetID: 3, TargetPort: 0},
 		{ID: 2, SourceID: 2, TargetID: 3, TargetPort: 0},
 		{ID: 3, SourceID: 3, TargetID: 4},
@@ -363,7 +469,7 @@ func TestCompileRejectsANegativeInputPort(t *testing.T) {
 		{ID: 2, Kind: BlockSum, Name: "Total", Parameters: Parameters{Signs: "+"}},
 		{ID: 3, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: -1},
 		{ID: 2, SourceID: 2, TargetID: 3},
 	})

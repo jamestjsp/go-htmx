@@ -78,6 +78,11 @@ func (s *Studio) Workspace(ctx context.Context, projectID, flowID int64) (Worksp
 	if err != nil {
 		return Workspace{}, err
 	}
+	records, err := s.loadAnalysisRecords(ctx, flowID)
+	if err != nil {
+		return Workspace{}, err
+	}
+	workspace.Analysis = analysisWorkspace(workspace.Snapshot, records)
 	return workspace, nil
 }
 

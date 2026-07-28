@@ -2,6 +2,7 @@ package web
 
 import (
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -17,9 +18,10 @@ import (
 var assets embed.FS
 
 type Server struct {
-	studio    *studio.Studio
-	templates *template.Template
-	handler   http.Handler
+	studio               *studio.Studio
+	templates            *template.Template
+	handler              http.Handler
+	controllerCandidates *controllerCandidateRegistry
 }
 
 func New(studioService *studio.Studio) (*Server, error) {
@@ -32,7 +34,10 @@ func New(studioService *studio.Studio) (*Server, error) {
 		return nil, fmt.Errorf("load static assets: %w", err)
 	}
 
-	server := &Server{studio: studioService, templates: templates}
+	server := &Server{
+		studio: studioService, templates: templates,
+		controllerCandidates: newControllerCandidateRegistry(),
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /", server.page)
@@ -58,6 +63,30 @@ func New(studioService *studio.Studio) (*Server, error) {
 	mux.HandleFunc("DELETE /connections/{connectionID}", server.disconnect)
 	mux.HandleFunc("DELETE /blocks/{blockID}/connections", server.disconnectBlock)
 	mux.HandleFunc("POST /flows/{flowID}/simulations", server.runSimulation)
+	mux.HandleFunc("POST /flows/{flowID}/analyses", server.runAnalysis)
+	mux.HandleFunc("GET /flows/{flowID}/control-roles", server.getControlRoles)
+	mux.HandleFunc("PUT /flows/{flowID}/control-roles", server.assignControlRoles)
+	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/pid",
+		server.designPIDCandidate,
+	)
+	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/state-space",
+		server.designStateCandidate,
+	)
+	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/robust",
+		server.designRobustCandidate,
+	)
+	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/{candidateID}/apply",
+		server.applyControllerCandidate,
+	)
+	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/{candidateID}/undo",
+		server.undoControllerCandidate,
+	)
+	mux.HandleFunc("GET /flows/{flowID}/results.json", server.exportResults)
 	server.handler = securityHeaders(mux)
 	return server, nil
 }
@@ -108,7 +137,7 @@ func (s *Server) projectFlowPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Process Lab could not load the flowsheet.", http.StatusInternalServerError)
 		return
 	}
-	view := pageView{Workbench: newWorkbenchView(workspace, selectedID(r), "")}
+	view := pageView{Workbench: s.newWorkbenchView(workspace, selectedID(r), "")}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(w, "page", view); err != nil {
 		http.Error(w, "Process Lab could not render the page.", http.StatusInternalServerError)
@@ -194,7 +223,7 @@ func (s *Server) renameFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "workbench", newWorkbenchView(
+	if err := s.templates.ExecuteTemplate(w, "workbench", s.newWorkbenchView(
 		workspace, selectedID(r), "",
 	)); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
@@ -489,6 +518,74 @@ func (s *Server) runSimulation(w http.ResponseWriter, r *http.Request) {
 	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
 }
 
+func (s *Server) runAnalysis(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderFailure(w, r, flowID, selectedID(r), err)
+		return
+	}
+	input, inputErr := parseChannelRef(r.FormValue("analysis_input"))
+	output, outputErr := parseChannelRef(r.FormValue("analysis_output"))
+	baseStep, baseStepErr := optionalFormFloat(r, "analysis_base_step")
+	horizon, horizonErr := optionalFormFloat(r, "analysis_horizon")
+	points := formInt(r, "analysis_points", 200)
+	if inputErr != nil || outputErr != nil ||
+		baseStepErr != nil || horizonErr != nil {
+		s.renderFailure(w, r, flowID, selectedID(r), &studio.ValidationError{
+			Message: "analysis channels and numeric settings must be valid",
+		})
+		return
+	}
+	_, err := s.studio.RunAnalysis(r.Context(), flowID, studio.AnalysisWorkspaceRequest{
+		Intent:               studio.AnalysisIntent(r.FormValue("analysis_intent")),
+		Input:                input,
+		Output:               output,
+		FrequencyAllChannels: r.FormValue("analysis_all_channels") == "true",
+		BaseStep:             baseStep,
+		StepHorizon:          horizon,
+		Points:               points,
+	})
+	if err != nil {
+		s.renderFailure(w, r, flowID, selectedID(r), err)
+		return
+	}
+	snapshot, err := s.studio.Snapshot(r.Context(), flowID)
+	if err != nil {
+		s.renderFailure(w, r, flowID, selectedID(r), err)
+		return
+	}
+	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
+}
+
+func (s *Server) exportResults(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	results, err := s.studio.ExportResults(r.Context(), flowID)
+	if errors.Is(err, studio.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Process Lab could not export these results.", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="process-lab-flow-%d-results.json"`, flowID),
+	)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(results); err != nil {
+		return
+	}
+}
+
 func (s *Server) renderFailure(w http.ResponseWriter, r *http.Request, flowID, selected int64, failure any) {
 	var message string
 	switch value := failure.(type) {
@@ -530,7 +627,7 @@ func (s *Server) renderWorkbench(
 	workspace.Snapshot = snapshot
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(
-		w, "workbench", newWorkbenchView(workspace, selected, message),
+		w, "workbench", s.newWorkbenchView(workspace, selected, message),
 	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}
@@ -568,6 +665,34 @@ func formInt(r *http.Request, name string, fallback int) int {
 	return value
 }
 
+func optionalFormFloat(r *http.Request, name string) (float64, error) {
+	value := strings.TrimSpace(r.FormValue(name))
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(value, 64)
+}
+
+func parseChannelRef(value string) (studio.ChannelRef, error) {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 {
+		return studio.ChannelRef{}, fmt.Errorf("channel reference must contain block, port, and channel")
+	}
+	blockID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || blockID <= 0 {
+		return studio.ChannelRef{}, fmt.Errorf("invalid channel block")
+	}
+	port, err := strconv.Atoi(parts[1])
+	if err != nil || port < 0 {
+		return studio.ChannelRef{}, fmt.Errorf("invalid channel port")
+	}
+	channel, err := strconv.Atoi(parts[2])
+	if err != nil || channel < 0 {
+		return studio.ChannelRef{}, fmt.Errorf("invalid channel index")
+	}
+	return studio.ChannelRef{BlockID: blockID, Port: port, Channel: channel}, nil
+}
+
 func selectedID(r *http.Request) int64 {
 	value := r.URL.Query().Get("selected")
 	if value == "" {
@@ -583,7 +708,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Content-Security-Policy", strings.Join([]string{
 			"default-src 'self'",
-			"script-src 'self' https://cdn.jsdelivr.net",
+			"script-src 'self'",
 			"style-src 'self' 'unsafe-inline'",
 			"img-src 'self' data:",
 			"connect-src 'self'",

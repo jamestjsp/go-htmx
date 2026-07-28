@@ -15,7 +15,6 @@ The expected steady-state value is `1.8 + (0.3 × -0.7) = 1.59`, which is also a
 Requirements:
 
 - Go 1.26.3 or newer
-- an internet connection for the pinned HTMX 2.0.10 CDN script
 
 ```bash
 go run ./cmd/processlab
@@ -29,7 +28,10 @@ To use another address or database:
 go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
 ```
 
-All CSS, application JavaScript, and HTML templates are embedded in the Go binary. Only HTMX itself is loaded from the pinned CDN URL.
+All CSS, application JavaScript, HTMX 2.0.10, and HTML templates are embedded
+in the Go binary. The browser application therefore has no runtime CDN
+dependency. The vendored HTMX license is served from
+`/assets/htmx-LICENSE.txt`.
 
 ## Run with Docker Compose
 
@@ -202,7 +204,7 @@ flowchart LR
     Studio["Studio service<br/>domain operations"]
     SQLite[("SQLite<br/>projects, flows, events, runs")]
     Compiler["Flow compiler<br/>graph to state space"]
-    Controlsys["controlsys v1.2.0<br/>Lsim"]
+    Controlsys["controlsys v1.2.0<br/>named composition, simulation, analysis"]
 
     Browser -- "HTML requests" --> HTTP
     HTTP -- "add, connect, tune, run" --> Studio
@@ -216,7 +218,12 @@ HTMX performs every server mutation and swaps the returned `#workbench` fragment
 
 Because the swap replaces the whole fragment, all client-held state — viewport, selection, rail and dock sizing — is re-applied after each swap and stored in `localStorage` rather than in the flow record. Multi-selection is deliberately client-side, so the server keeps its single `selected` parameter for the inspector and a marquee costs no round trips.
 
-The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, cycle detection, persistence, graph compilation, simulation, and stale-result rules.
+The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, interconnection validation, persistence, graph compilation, simulation, and stale-result rules.
+
+The complete controlsys coverage map—including browser workflows, bounded
+Studio APIs, explicit deferrals, numerical evidence, and runnable
+representative fixtures—is in
+[`docs/controlsys-capability-matrix.md`](docs/controlsys-capability-matrix.md).
 
 ## Supported blocks
 
@@ -224,27 +231,205 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | --- | --- | --- | --- |
 | Sources | Step | Configurable initial value, final value, and step time | No input |
 | Sources | Constant | Constant signal | No input |
+| Sources | Vector Constant | Named constant vector | No input |
 | Sources | Sine Wave | Biased sinusoid with amplitude, angular frequency, and phase | No input |
 | Math | Gain | Multiplies its input by `K` | Exactly one |
+| Math | Matrix Gain | Named vector relation `y = Du` | One vector input |
+| Math | Mux / Demux | Assemble scalar channels into a named vector, or decompose one | Named scalar ports / one named vector |
+| Math | Selector / Permutation | Select a named subset, or reorder a complete named channel set | One named vector |
 | Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One input port per sign |
+| Math | Vector Sum | Adds or subtracts named vectors | One vector input port per sign |
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
 | Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
-| Continuous | Transport Delay | Continuous delay represented by a selectable Padé order | Exactly one |
+| Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
+| Models | State-Space | Named continuous or discrete MIMO `A,B,C,D` realization | One named vector input |
+| Models | MIMO Transfer Function | Output-row denominators, per-channel numerators and delays | One named vector input |
+| Models | Zero-Pole-Gain | Per-channel zeros, poles, and finite gain matrix | One named vector input |
+| Models | Frequency Response Data | Named complex MIMO samples on an explicit rad/s grid | Frequency-domain workflows only |
+| Discrete | Unit Delay | Exact one-sample state at an explicit or inherited rate | Exactly one |
+| Discrete | Transfer Function | Proper SISO numerator/denominator model in `z` | Exactly one |
+| Discrete | State-Space | Named MIMO `x[k+1]=Ax[k]+Bu[k]`, `y[k]=Cx[k]+Du[k]` | One named vector input |
+| Discrete | Discretized Transfer | Explicit ZOH, FOH, matched pole-zero, or impulse-invariant conversion | Exactly one |
 | Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
+| Sinks | Vector Scope | Plots named vector channels | One vector input |
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
-Flows may branch and merge. Cycles are rejected because this version compiles an acyclic signal graph. Every source owns a separate external input channel, so Step, Constant, and Sine Wave blocks remain independent when a model branches or merges.
+Flows may branch, merge, and close feedback loops. Named interconnections are
+passed to `controlsys.ConnectByName`, which resolves dynamic feedback and
+rejects only an unsolvable algebraic loop. Every source owns a separate
+external input channel, so Step, Constant, and Sine Wave blocks remain
+independent when a model branches or merges.
+
+Each terminal has one catalog-derived width and ordered channel-name list.
+Scalar diagrams retain width one and their existing port numbers. A vector is
+one connection, not several unrelated wires: connections reject unequal
+widths before persistence, then the compiler expands compatible vector
+channels into deterministic `ConnectByName` pairs. Matrix Gain, Vector Sum,
+Vector Constant, Vector Scope, State-Space, MIMO Transfer Function,
+Zero-Pole-Gain, and the routing blocks exercise the same named MIMO feedback
+path. Representation dimensions and channel names are validated together, so
+a stored model cannot claim a port width that differs from its realization.
+
+State-Space, MIMO Transfer Function, and Zero-Pole-Gain preserve their
+authored parameters while delegating realization and conversion to
+`controlsys`. Their explicit time-domain choice determines whether `Dt` is
+zero or a positive sample time. MIMO transfer functions use the package's
+native shape: one denominator per output row, one numerator and delay per
+output/input channel. Frequency Response Data owns a strictly increasing
+rad/s grid and finite row-major complex response samples. Because controlsys
+FRD has no state-space conversion, an FRD block is deliberately
+frequency-domain-only until an identification or fitting workflow creates a
+time realization.
+
+Transport Delay preserves exact delay metadata through named series and
+feedback composition. Exact time simulation requires the delay to be an
+integer multiple of the run sample time; otherwise the run reports the nearest
+aligned value and asks for an explicit Padé or Thiran approximation. Padé is a
+continuous rational model, while Thiran is a discrete all-pass model with its
+own sample time. Stored delays created before these choices existed retain
+their historical Padé behavior.
+
+Discrete blocks declare an explicit sample time or inherit the run step. Unit
+Delay carries its state exactly between samples. Discrete Transfer Function
+and State-Space blocks are realized directly at their declared `Dt`.
+Discretized Transfer makes conversion a visible model choice—ZOH, FOH,
+matched pole-zero, or impulse invariant—rather than silently choosing a
+method during compilation.
+
+Every stored run includes a fidelity record: base step, model domain, driver,
+segment count, source hold, discrete block rates, rate transitions, and delay
+provenance. The simulation dock renders the same record, naming exact,
+Padé-order, and Thiran-order delay behavior. Unsupported fractional delay
+alignment or unresolved mixed rates fail before simulation rather than
+falling back to a hidden approximation.
 
 Connections identify both endpoint ports. For a Sum, sign character `i`
 belongs to input port `i`, so deleting and redrawing another wire cannot change
 which inputs are added or subtracted. Editing the sign pattern adds ports;
 removing a sign is refused while that port still carries a wire.
 
-Each math or continuous block becomes a locally named `controlsys.System`. `controlsys.ConnectByName` composes those realizations into one state-space model, and `controlsys.Lsim` evaluates it on the requested time grid. Spectrum Analyzer sinks then apply Gonum's Hann window and real FFT to their selected response.
+Each linear block becomes a locally named `controlsys.System`.
+`controlsys.ConnectByName` composes compatible realizations into one
+state-space model. Continuous delay-free systems use `controlsys.Lsim`;
+discrete systems and delay-aware conversions use `System.Simulate` while
+carrying `XFinal` between segments. Spectrum Analyzer sinks then apply
+Gonum's Hann window and real FFT to their selected response.
 
-The linear boundary is deliberate. State-Space is deferred until the editor supports matrices and MIMO ports. Unit Delay and discrete filters require an explicit mixed-sample-time policy. Product, Saturation, Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this compiler does not silently linearize them.
+Plain continuous `Lsim` is used only when the model is delay-free. A connected
+exact delay must first be internalized by named composition and aligned to the
+run grid; the engine then takes the explicit delay-aware
+`DiscretizeWithOpts` + `Simulate` path so controlsys owns the delay buffers.
+
+Compilation returns one owned model artifact containing the composed system,
+stable block/port channel identities, source excitations, selected outputs,
+time-domain metadata, dimensions, and a snapshot of the diagram provenance.
+Simulation and analysis consume that artifact instead of reconstructing
+controlsys channel order or exposing its mutable matrices.
+
+Analysis probes identify a block and output port rather than spelling an
+internal controlsys name. The compiler coalesces duplicates in first-request
+order and exposes those signals while composing the graph; a later subset is
+selected with `controlsys.SelectByName`. Scope and Spectrum Analyzer blocks
+remain simulation consumers, not the authority on which signals analysis may
+inspect.
+
+`Studio.AnalyzeDynamics` selects one compiled input/output channel pair and
+exposes controlsys stability, poles, zeros, DC gain, and damping. A standard
+step response is calculated only when the caller declares a step experiment;
+its rise, settling, overshoot, undershoot, peak, peak-time, and steady-state
+metrics are separate from the arbitrary-source metrics stored on normal
+simulation runs. Undefined operations return named issues beside any valid
+partial results rather than non-finite JSON values.
+
+`Studio.AnalyzeFrequency` selects one or more named input/output channels.
+It reports Bode paths in dB and unwrapped degrees, SISO Nyquist and Nichols
+data, and linear singular values for rectangular MIMO models. Frequency grids
+are always angular frequency in rad/s; callers may provide a strictly
+increasing grid or request an automatic one. Discrete grids end at `π/Dt`.
+This model frequency response is distinct from the Spectrum Analyzer, which
+is an FFT of one sampled simulation signal.
+
+`Studio.AnalyzeLoop` requires one explicit named input/output channel pair. It
+does not infer a loop from diagram topology. The report uses controlsys for
+classical and all-crossing margins, bandwidth, peak-sensitivity modulus
+margin, root locus, and sampled passivity evidence. Every operation carries
+applicability metadata: exact internal delays retain frequency-crossing
+margins but do not claim finite-order bandwidth or root-locus results, and a
+sampled passivity pass is never presented as an analytic certificate.
+
+`Studio.RunAnalysis` is the workbench boundary for those analysis intents. It
+owns the snapshot, named-channel selection, calculation, persisted latest
+result per intent, and revision comparison. Dynamics, frequency, and loop
+results remain side by side across restarts; a model edit keeps them visible
+but marks them stale, while a layout-only move leaves their model revision
+current. Frequency analysis can select every named input and output, rendering
+each deterministic `output ← input` Bode magnitude and phase trace plus MIMO
+singular values. Legend controls hide or show the same stable trace key across
+HTMX swaps.
+
+`Studio.AssignControlRoles` persists an explicit, versioned control-model
+contract rather than inferring a plant or controller from canvas topology.
+The contract owns ordered plant and controller block membership, named
+exogenous/control/performance/measurement boundaries, and named MIMO analysis
+points at plant inputs or outputs. Channel names are the durable identity:
+consistent port reordering still resolves, while a rename reports the exact
+stale assignment.
+
+`Studio.BuildControlModels` resolves that contract once and returns the
+controlsys objects required by synthesis workflows: the control-to-measurement
+plant, controller, generalized plant ordered as
+`[exogenous; control] → [performance; measurement]`, estimator plant, one
+`GeneralizedClosedLoop`, and open/closed models for every analysis point.
+Subsystems compile independently through the same named block realizations as
+simulation. Their synthetic boundary sources exist only during compilation,
+so loop breaks and analysis points never alter the drawn model or a normal
+simulation. Exact-delay metadata is retained through selection and feedback;
+dependency failures are returned as named errors instead of escaping as a
+panic.
+
+`Studio.TuneController` adds bounded controlsys tuning without turning the
+handler into an optimization script. A request selects stable block/parameter
+identities, finite bounds, an explicit analysis point, and any combination of
+tracking, rejection, sensitivity, weighted-gain, loop-shape, margin, pole, and
+overshoot goals. Gain, Matrix Gain, PID, continuous/discrete transfer
+functions, MIMO transfer matrices, and continuous/discrete state-space
+controller blocks map to controlsys tunable blocks while retaining an exact
+path back to their authored parameters.
+
+GridTune, Systune, and Looptune candidates carry the source model revision,
+sampled values and bounds, per-goal diagnostics, failed-goal violations, the
+candidate controller, and closed-loop model. The current controlsys Systune
+and Looptune implementations use the same bounded Cartesian search as
+GridTune, so candidates say so rather than presenting it as continuous
+optimization. Candidate generation is read-only.
+`Studio.ApplyTuningCandidate` checks the exact source revision and replaces
+all selected parameters in one transaction; stale candidates are refused.
+Neutral gain controllers inherit a discrete plant's sample time.
+
+Simulation series, metrics, and spectra carry block, port, channel index, and
+channel name together. Vector results therefore keep deterministic labels and
+ordering through JSON persistence, rendering, and export instead of relying on
+slice position. A run is bounded to 5,000 samples and 16 plotted channels;
+frequency analysis is bounded to 2,000 points and 64 input-output traces.
+`/flows/{id}/results.json` exports the versioned latest simulation and all
+three latest analysis intents. Duplicating a flowsheet deliberately copies the
+model but not old results, because the new sheet has not been evaluated.
+
+Named vector routing is explicit diagram algebra. Mux assembles scalar ports
+into one named vector; Demux decomposes it; Selector emits a validated named
+subset; Permutation requires and reorders the complete channel set. Each is a
+static `controlsys.NewGain` selection matrix, so vector fan-out, MIMO sums,
+feedback, simulation, and analysis all use the same named interconnection
+compiler. Missing or duplicate channel names are rejected before compilation.
+
+The linear boundary is deliberate. Continuous and discrete state-space,
+transfer-function, delay, and named MIMO models stay within controlsys.
+Continuous/discrete mixtures and unresolved multirate execution are refused
+with the required conversion or scheduling action. Product, Saturation,
+Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this
+compiler does not silently linearize them.
 
 The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.
 
@@ -259,7 +444,9 @@ The database stores:
 - signal connections with source and target port indices, foreign keys, tuple
   uniqueness, and a domain rule that each target port accepts one wire;
 - recent activity events;
-- complete simulation runs as JSON time series.
+- complete simulation runs as identity-keyed JSON time series;
+- the latest dynamics, frequency, and loop analysis record per flowsheet.
+- one versioned plant/controller role specification per flowsheet.
 
 Model edits invalidate the displayed result, while layout-only moves and
 flowsheet renames do not. Historical runs remain in SQLite. Schema startup
@@ -299,10 +486,45 @@ duplicate fidelity down to block parameters and remapped connection ids, and
 reorder rejecting ids from another project — SQLite round trips, legacy
 migration and the per-project tab-order backfill, the register query's counts
 and stale-run flag, grid snapping and the sheet bounds, collision-free block
-placement, connection constraints, cycle rejection, analytic control-block
+placement, connection constraints, feedback and algebraic-loop handling, analytic control-block
 responses, FFT peak detection, HTML fragment behavior, embedded assets,
 multi-field HTTP editing flows, and the batch move, delete, and duplicate
 endpoints including rejection of ids from another flow.
+
+The control-model contract tests independently check SISO frequency response
+and closed-loop algebra, named 2×2 ordering, consistent channel reordering,
+mixed-domain refusal, exact-delay retention, corrupt and mismatched storage
+versions, legacy migration with no inferred roles, restart round trips,
+full-sheet role remapping, and atomic role removal when a referenced block is
+deleted.
+
+The generalized-tuning tests independently verify boundary optima,
+conflicting-goal evidence, all eight goal families, named MIMO matrix
+dimensions, transfer-function and state-space parameter round trips, discrete
+sample-time inheritance, non-mutating candidate generation, atomic apply, and
+stale-candidate refusal.
+
+The guided-controller tests cover every `controlsys.Pidtune` type, independent
+crossover and phase-margin calculations, PID2 reference/measurement sign
+semantics, discrete sample-time preservation, exact-delay disclosure, and
+atomic stale-safe apply. Named loop-sensitivity tests check `So+To=I` and
+`Si+Ti=I` for noncommutative MIMO models, preserve measurement and control
+channel names, and compare current and candidate Bode, singular-value,
+H-infinity, and SISO robustness evidence on one frequency grid. See
+`docs/pid-design.md` and `docs/loop-sensitivity.md`.
+
+State-design tests independently check CARE and estimator-covariance
+residuals, continuous and discrete closed-loop poles, Acker/Place pole
+multisets, LQI augmentation, named Estim/Reg/LQG construction, full-state
+measurement contracts, cost/covariance validation, signed-control-law
+normalization, non-mutating candidates, and atomic stale-safe whole-block
+apply. See `docs/state-design.md`.
+
+Controller-review tests cover normalized named-role fingerprints, role-only
+staleness, structured design goals, shared-grid time/frequency/robustness
+comparisons, PID2 reference-loop evidence, opaque HTMX candidate authority,
+atomic apply, and revision-checked undo. See
+`docs/controller-candidate-workflow.md`.
 
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks

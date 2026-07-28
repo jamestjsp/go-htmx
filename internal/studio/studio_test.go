@@ -102,7 +102,7 @@ func TestUpdateRejectsInvalidParameters(t *testing.T) {
 	}
 }
 
-func TestConnectRejectsDuplicateInvalidPortsAndCycle(t *testing.T) {
+func TestConnectRejectsDuplicateAndInvalidPortsButAllowsCycle(t *testing.T) {
 	ctx := context.Background()
 	studio := openTestStudio(t, ":memory:")
 	snapshot, err := studio.Current(ctx)
@@ -134,8 +134,16 @@ func TestConnectRejectsDuplicateInvalidPortsAndCycle(t *testing.T) {
 	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[1], TargetID: sums[2]}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[2], TargetID: sums[0]}); err == nil {
-		t.Fatal("cyclic connection succeeded")
+	snapshot, err = studio.Connect(ctx, snapshot.Flow.ID, Wire{SourceID: sums[2], TargetID: sums[0]})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feedback bool
+	for _, connection := range snapshot.Connections {
+		feedback = feedback || connection.SourceID == sums[2] && connection.TargetID == sums[0]
+	}
+	if !feedback {
+		t.Fatal("feedback connection was not persisted")
 	}
 }
 

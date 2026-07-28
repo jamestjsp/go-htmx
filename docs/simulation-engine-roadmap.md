@@ -1,23 +1,22 @@
 # Simulation engine roadmap
 
 How Process Lab grows past the linear boundary that `README.md` states and
-`docs/simulink-block-expansion.md` explains. This is a decision document: it
-picks an engine strategy and orders the block families that strategy unlocks.
-No engine code is written here.
+`docs/simulink-block-expansion.md` explains. This began as the decision record
+for the engine strategy and now also records which layers have been delivered.
 
-Read this before adding any block that is not a continuous LTI realization —
-Unit Delay, discrete filters, Product, Saturation, Switch, Relay, or logic.
+Read this before changing sampled-data execution or adding a nonlinear block
+such as Product, Saturation, Switch, Relay, or logic.
 
 ## What controlsys v1.2.0 actually provides
 
 Verified against the pinned module source, not the README. The package was
-read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.2.0/` and
-exercised from a throwaway module pinned to the same version and the same
-gonum fork.
+read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.2.0/`.
+The engine measurements below are persistent regressions in
+`internal/studio`, including `controlsys_delay_contract_test.go`.
 
 It is a large library — roughly 1,600 lines of exported API covering
 synthesis, reduction, identification, frequency response, and delays. Almost
-none of that is relevant here. Four facts decide the whole design.
+none of that is relevant here. Five facts decide the whole design.
 
 **1. A `System` has exactly one `Dt`, and compositions refuse to mix.**
 `ConnectByName` (`names.go:341`) delegates to `BlkDiag` (`connect.go:1078`),
@@ -96,6 +95,59 @@ the model the user drew. That is what the no-silent-linearization rule
 forbids, and it forbids it regardless of how correctly the Jacobian is
 computed. Nothing in the compiler may call `Linearize`.
 
+**5. Exact delay is metadata, and the simulation path must preserve it
+deliberately.** The four representations have different contracts:
+
+| Representation | Continuous value | Discrete value | Composition behavior |
+| --- | --- | --- | --- |
+| `InputDelay` | seconds per external input | integer samples | Stays external when the input remains externally visible |
+| `OutputDelay` | seconds per external output | integer samples | Stays external only while that output remains externally visible |
+| `Delay` (I/O matrix) | seconds per output/input path | integer samples | A connected nonseparable path is pulled into an LFT |
+| `LFT.Tau` | seconds | integer samples | Preserves delay inside series, named connection, and feedback algebra |
+
+`Lsim` calls plain `DiscretizeZOH` for a continuous system. Internal LFT
+delay is preserved when its seconds-to-grid ratio is integral, but a
+stateless system whose delay is still external takes an early return that
+drops the external delay fields. The checked-in regression records the
+surprising current result that `Lsim` of a continuous unity gain with
+`InputDelay = 0.2` returns 1 at `t = 0`. The explicit path
+`DiscretizeWithOpts` followed by `Simulate` produces `[0, 0, 1, ...]` at
+`dt = 0.1`, as the shifted-step oracle requires.
+
+For a discrete `System`, delay values are sample counts, not seconds, and
+must be integers. A fractional count returns `ErrFractionalDelay`. Converting
+a continuous delay that is not an integer multiple of `dt` likewise refuses
+the exact path; a declared Thiran order absorbs eligible SISO/decomposable
+delay into an all-pass discrete approximation. `Pade(order)` is the separate
+continuous rational approximation. Neither approximation retains exact-delay
+metadata, and both are checked against `exp(-jωτ)` at low frequency.
+
+Named composition preserves feedback delay when the Transport Delay output
+feeds both the loop and a separate Scope realization: the connected delay
+becomes an internal LFT while the Scope's output is selected externally.
+Pure-LTI strongly connected components, including these delay LFTs, must stay
+inside one controlsys segment.
+
+The Transport Delay UI now exposes one explicit model choice:
+
+- **Exact** (default): pure delay metadata, simulated through a delay-aware
+  conversion/step path; no approximation poles.
+- **Padé**: continuous rational approximation with visible order 1–10.
+- **Thiran**: discrete all-pass approximation with visible order 1–10 and a
+  declared or inherited sample time.
+
+No mode may silently fall back to another, and the run record must retain the
+chosen representation.
+
+The exact runtime uses `DiscretizeWithOpts` with internal delay modeling and
+then `Simulate`; it deliberately does not call plain `Lsim` for an exact-delay
+flowsheet. A delay must align to the requested sample grid within `1e-9`
+samples. Purely static acyclic paths are retained as external I/O delay
+metadata because controlsys cannot encode a zero-state internal LFT; parallel
+static paths with different delays and static delayed loops are refused
+instead of approximated. Once any plant dynamics are present, named feedback
+composition promotes connected delays to the normal controlsys LFT.
+
 What *is* usable, verified working:
 
 | Capability | Call | Use here |
@@ -104,9 +156,20 @@ What *is* usable, verified working:
 | Continuous to discrete | `(*System).DiscretizeZOH`, `.DiscretizeFOH`, `.DiscretizeMatched`, `.DiscretizeImpulse` | Prepares a segment for stepping |
 | Discrete to discrete resample | `(*System).D2D(newDt, opts)` | Not used; see the sample-time policy below |
 | Discrete realization | `New(A, B, C, D, dt)` with `dt > 0` | Discrete filters, if they are ever composed |
-| Fractional discrete delay | `ThiranDelay(tau, order, dt)` | A later discrete Transport Delay |
+| Fractional discrete delay | `ThiranDelay(tau, order, dt)` | Explicit Thiran Transport Delay mode |
 
 The first three are methods on `*System`; the last two are package functions.
+
+Process Lab now exposes these capabilities directly:
+
+- Unit Delay, discrete Transfer Function, and named MIMO discrete State-Space
+  blocks use the declared or inherited `Dt`.
+- Discretized Transfer exposes ZOH, FOH, matched pole-zero, and
+  impulse-invariant conversion as explicit catalog choices.
+- Thiran Transport Delay exposes order and sample time, while its regression
+  checks low-frequency phase against the requested pure delay.
+- The sampled driver carries `XFinal`; it does not rebuild state from output
+  history or approximate Unit Delay outside controlsys.
 
 `DiscretizeZOH` was checked against every realization the catalog produces
 today — static gain (`n = 0`), first-order lag, integrator (pole at the
@@ -198,8 +261,8 @@ whole numerical price is paid and the nonlinear boundary has not moved.
 
 ### C. Replace `Lsim` with a per-step evaluator everywhere
 
-One engine, one code path, uniform semantics. Walk `compileFlow`'s
-topological order once per step, evaluating each block from its own state.
+One engine, one code path, uniform semantics. Topologically order the
+executable units once, then evaluate each block from its own state per step.
 
 **Rejected**, for B's numeric reason plus a maintenance one. Whichever
 integrator is chosen — per-block ZOH, or a Runge-Kutta pass over a
@@ -213,8 +276,9 @@ it to gain Saturation is a bad trade.
 Partition the sheet into LTI segments separated by **step blocks** — blocks
 that have no continuous LTI realization. Compile each segment exactly as
 today. Drive the sheet one sample at a time: step blocks are evaluated
-algebraically between segments, in an order derived from the topological walk
-`compileFlow` already performs.
+algebraically between segments. Pure-LTI feedback must remain inside a
+segment; ordering applies to the resulting segment/step graph, not to the raw
+signal graph.
 
 The property that makes this the right answer: **a sheet with no step blocks
 partitions into exactly one segment, and one segment is compiled and run by
@@ -234,12 +298,12 @@ first. At that point every sheet in existence is one segment, the entire
 existing test suite must pass untouched, and the engine change is provably
 inert. Only then register the first nonlinear block.
 
-## The partition rule
+## The partition rule for an acyclic signal graph
 
 **The obvious rule is wrong.** "Delete the step-block vertices and take the
 weakly-connected components of what is left" works on a chain and fails on
 the most ordinary way anyone will place a Saturation — on one branch of a
-Sum. This sheet is legal and acyclic today, since `BlockSum` is
+Sum. This sheet is legal and acyclic, since `BlockSum` is
 `arityVariadic`:
 
 ```
@@ -255,7 +319,8 @@ graph, with no execution order to compute. Enumerating *every* DAG shape on
 cyclic segment graph on **26.0% of the 2,097,152 cases at six blocks**, first
 failing at three. It is not an edge case.
 
-**The rule that works** assigns each block a step depth and cuts on that:
+**For a block DAG, the rule that works** assigns each block a step depth and
+cuts on that:
 
 ```
 depth(b) = 0                                     if b has no incoming edges
@@ -281,6 +346,14 @@ crosses between two partition vertices strictly increases rank:
 A cycle would have to return to a rank it already left, so there are none.
 The exhaustive enumeration agrees: **zero** cyclic segment graphs across
 every DAG shape on 2 to 6 blocks and every step-block subset.
+
+That proof is intentionally scoped to DAGs. Linear feedback is now a supported
+`ConnectByName` interconnection, so the production segmenter cannot begin by
+rejecting every cycle or by topologically sorting individual blocks. The
+delay/mixed-domain spike must first establish how pure-LTI strongly connected
+components are retained inside a named segment. The depth construction then
+applies to the condensed graph. A cycle crossing a step-block boundary needs
+its own execution and algebraic-loop contract.
 
 Note the first row. **Segment-to-segment edges are real**, and they are the
 class the connected-component rule could not produce: one input pushes a
@@ -311,13 +384,14 @@ Step -> Gain(2) -> Saturation(±0.5) -> Lag(1) -> Scope
 
 Compilation:
 
-1. `compileFlow` runs unchanged: validation, arity, cycle rejection, and the
-   topological order.
-2. Compute step depths in that same topological pass and group the non-step
-   blocks by depth: `{Step, Gain}` at depth 0, `{Lag, Scope}` at depth 1,
-   with `Saturation` a step block at depth 0. Each segment is acyclic because
-   the whole graph is, so each compiles through `ConnectByName` exactly as
-   the whole sheet does today.
+1. Run the existing validation and named-port derivation without rejecting
+   feedback merely because it is cyclic.
+2. Retain each pure-LTI feedback component inside one segment, condense those
+   components, then compute step depths on the resulting acyclic graph. For
+   this acyclic example that groups `{Step, Gain}` at depth 0 and
+   `{Lag, Scope}` at depth 1, with `Saturation` a step block at depth 0. Each
+   segment compiles through `ConnectByName` exactly as the whole sheet does
+   today.
 3. Cut the boundary channels. **The rule is about leaving the segment, not
    about step blocks**: a segment's ports are its edges to and from anything
    outside it, whichever kind of vertex sits on the other end.
@@ -368,6 +442,27 @@ channel enumeration was.
 Remove the Saturation and every block sits at depth 0, so there is one
 segment and no step blocks: the driver falls back to a single batch `Lsim`
 over the whole grid — today's call, today's allocations, today's numbers.
+
+The execution-plan layer now implements this SCC condensation, depth rule,
+and complete boundary-channel enumeration. Pure-LTI feedback remains one
+segment, while a cycle containing a sample-stepped block is refused. The
+discrete driver carries `XFinal` between one-sample `Simulate` calls and is
+bit-identical to batch `Simulate` for delay-free discrete systems. Continuous
+delay-free sheets still take the original batch `Lsim` branch; aligned exact
+delay takes the explicit delay-aware conversion and batch `Simulate` branch
+so controlsys owns its delay buffers. Run fidelity records the chosen driver,
+base step, model domain, source hold, segment count, block rates, rate
+transitions, delay representations, approximation orders, and exact
+alignment. The dock renders that stored record rather than re-inferring
+fidelity from the current diagram.
+
+This preserves the exact-LTI and hybrid contracts simultaneously. Named
+continuous feedback remains one controlsys system and one exact LTI segment.
+Adding a sampled or future nonlinear boundary creates an explicit segment and
+an explicit hold disclosure; it never changes the arithmetic of an unrelated
+pure-LTI loop. Plain continuous `Lsim` is safe only for a delay-free composed
+model. Exact delay uses the aligned, delay-aware conversion and `Simulate`
+path after named composition has internalized connected delay metadata.
 
 **What the user pays, and must be told.** The signal entering the Saturation
 is held over each step; the second segment sees a piecewise-constant input
@@ -460,11 +555,11 @@ step closure. That makes the policy short.
 already user-visible, and is already bounded (0.01 to 2 seconds, at most
 5,000 samples).
 
-**A discrete block declares its own sample time as a parameter**, defaulting
-to `0` meaning "inherit the base rate". `0` rather than Simulink's `-1`
-because it matches this codebase's `omitempty` `Parameters` and reads as
-unset. The UI question is exactly one new numeric field, "Sample time", with
-`0 = inherit` in its help text — no new editor machinery.
+**A discrete block declares one sample-time source and one value.** The source
+is either `explicit` or `inherited`; inherited resolves to the simulation base
+step, while explicit requires a positive finite number. The inspector exposes
+that distinction directly instead of overloading numeric zero. Stored blocks
+without the source field retain the historical explicit meaning.
 
 **A declared sample time must be a positive integer multiple of the base
 step.** Compute `Ts / baseStep`, round it, and refuse if the rounding moved it
@@ -491,6 +586,14 @@ concrete reason the rate transition lives in a step closure rather than a
 `controlsys.System`, and it is why `D2D` is listed above as available but
 unused: resampling a block to the base rate would change the block.
 
+The catalog now owns this domain declaration and the compiler resolves
+inherited rates before realizing a block. Equal rates can share one named
+controlsys composition. Integer-related rates produce an `updateEvery = N`
+schedule with zero-order hold semantics; execution of that schedule belongs
+to the segmented driver. Noninteger rates report both configured values and
+the adjacent legal multiples. Continuous and discrete dynamic systems require
+an explicit sampled-data boundary rather than an inferred conversion.
+
 Sample-time *offset* (a block that updates on `k mod N == 1`) is out of scope
 for the first cut. Say so in the field's help text rather than accepting a
 value that is ignored.
@@ -513,33 +616,35 @@ Each row needs everything above it.
 today, and a Switch takes exactly three inputs where the second is the
 control, not a data input. That is neither value. Whoever files row 5 should
 expect to extend `arity` into a small port-list description rather than add a
-fourth enum value, and should check that `Connect`, `compileFlow`, and the
+fourth enum value, and should check that `Connect`, `compileModel`, and the
 palette's port glyphs all still read from the one derivation.
 
 **Row 6 has a type question with no type system.** Every signal here is a
 `float64`. Booleans are 0 and 1 by convention, and the docs must say so
 rather than pretend a signal type exists.
 
-**Feedback stays refused, and is the largest thing this roadmap does not
-solve.** `compileFlow` rejects cycles today. The most-wanted nonlinear
-sheet — a PID with output saturation and anti-windup — is a cycle, so
-Saturation lands useful but not yet useful for the thing people want it for.
-The hybrid driver does make cycles more tractable than the LTI composer does:
-a step block without direct feedthrough breaks an algebraic loop, so a loop
-containing a Unit Delay could be ordered around. That is a separate decision
-with its own numerics, and it should be spiked on its own once rows 1 to 3
-exist.
+**Linear feedback is supported; nonlinear and mixed-domain feedback remains
+an engine decision.** `compileModel` passes the full named graph to
+`controlsys.ConnectByName`, which accepts well-posed LTI feedback and rejects
+only an unsolvable direct-feedthrough algebraic loop. A PID with output
+saturation and anti-windup crosses an LTI/step boundary, however, so it is not
+covered by that contract. A stateful step block such as Unit Delay can break a
+loop at a sample boundary; a memoryless step block may instead require an
+algebraic solve or a precise refusal. The delay/mixed-domain spike and hybrid
+driver tasks own that distinction.
 
-## Task list, ready to file
+## Historical task decomposition
 
-None of these are filed in ergo yet. The list below is the intended shape;
-`.ergo/plans.jsonl` was being edited by concurrent work when this spike ran,
-so nothing was written to it.
+The table below records the spike's original decomposition. The live Ergo
+graph now carries the implementation work under epic `G3QP3P`, beginning with
+`WWTXZL` for delay and mixed-domain contracts and `AHANTK` for the segmented
+driver. Those task bodies are authoritative where this historical numbering
+differs.
 
 | Task | Depends on | Deliverable |
 | --- | --- | --- |
 | T1 Add the `step` hook and `isStepBlock` to the catalog | — | Two fields and one predicate in `catalog.go`; the exactly-one-of and not-a-source rules checked over `blockDefinitions`; no kind sets `step` yet |
-| T2 Partition `compileFlow` into step-depth segments | T1 | Depth computed in the existing topological pass; segments are depth classes, not connected components. Boundary channels enumerated by *leaving the segment*, so segment-to-segment edges are carried — the Sum-branch counterexample is the regression test, asserting `segment@1` compiles with two inputs. Exhaustive test over every DAG shape up to six blocks asserting the segment graph is acyclic. With no step blocks it holds exactly one segment and every existing test passes untouched |
+| T2 Partition `compileModel` into step-depth segments | T1 | Pure-LTI feedback components remain intact, then depth is computed on the condensed graph; for an acyclic graph, segments are depth classes rather than connected components. Boundary channels are enumerated by *leaving the segment*, so segment-to-segment edges are carried. The Sum-branch counterexample and exhaustive DAG cases remain regressions. With no step blocks it holds exactly one segment and every existing test passes untouched |
 | T3 Per-step driver behind the single-segment fast path | T2 | Segments `DiscretizeZOH(baseStep)`-ed once at compile time, then stepped through `Simulate` carrying `XFinal` (nil for stateless segments); single-segment sheets keep the batch `Lsim` call. Test asserts the two paths agree bit-for-bit on a single-segment sheet (measured max diff 0.000e+00) |
 | T4 Report simulation fidelity in the run record and dock | T3 | Segment count *and* whether every source is piecewise constant. A Sine sheet must not be shown as exact — it already carries 3.642e-02 at `dt = 0.1`. Blocks T5 because shipping a nonlinear block without the disclosure puts users on a different accuracy regime silently |
 | T5 Saturation block | T4 | First step block. Numeric check against the analytic response of a saturating first-order loop; refusal test that nothing linearizes |
@@ -549,7 +654,7 @@ so nothing was written to it.
 | T9 Discrete Transfer Function and Discrete State-Space | T8 | Realized as a discrete `controlsys.System` at `Ts`, stepped with `Simulate` |
 | T10 Port-list arity, then Switch and Relay | T6 | Extends `inputArity` past none/one/variadic without adding a fourth enum value |
 | T11 Logic and comparison blocks | T10 | States the 0/1 boolean convention in the docs |
-| T12 Spike: nonlinear feedback | T8 | Whether and how a cycle containing a delay-free-loop-breaking block can be ordered and run |
+| T12 Spike: nonlinear feedback | T8 | Whether and how a cycle crossing a step boundary is ordered, solved, or refused without regressing supported LTI feedback |
 
 ## What dependent tasks must know
 
@@ -565,6 +670,9 @@ so nothing was written to it.
 - **Segments are step-depth classes, not connected components.** The
   connected-component rule produces a cyclic segment graph on 26.0% of all
   six-block sheets, including a Saturation on one branch of a Sum.
+- **Pure-LTI feedback stays inside a controlsys-composed segment.** The DAG
+  proof applies after condensation; it is not permission to reject a cyclic
+  signal graph or to split its loop across independently stepped segments.
 - **A segment's boundary channels are its edges leaving the segment**, not
   its edges touching a step block. Segment-to-segment edges exist on 44.1% of
   six-block sheets, and enumerating only the step-block edges silently
@@ -578,8 +686,8 @@ so nothing was written to it.
 - **State-Space and MIMO are not blocked by any of this** and can be
   scheduled independently whenever the editor gains matrix fields.
 
-Unresolved questions: whether a cycle containing a delay can be ordered and
-run (T12); whether sample-time offset is ever wanted; whether the fidelity
+Unresolved questions: which step-boundary cycles are ordered, solved, or
+refused; whether sample-time offset is ever wanted; whether the fidelity
 summary belongs in the stored run JSON or is recomputed for display; and
 whether a Sine source should gain a first-order-hold option, since the
 measurement above shows it, not the segment cut, is the largest error on a

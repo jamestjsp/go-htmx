@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -15,23 +16,23 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
-type compiledFlow struct {
-	system  *controlsys.System
-	sources []Block
-	sinks   []Block
+const (
+	maxSimulationSamples        = 5000
+	maxSimulationResultChannels = 16
+	maxSimulationSamplesLabel   = "5,000"
+)
+
+func SimulationLimitsText() string {
+	return fmt.Sprintf(
+		"Up to %s samples and %d plotted channels per run.",
+		maxSimulationSamplesLabel, maxSimulationResultChannels,
+	)
 }
 
 func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationRequest) (Snapshot, error) {
-	if request.Duration < 1 || request.Duration > 120 {
-		return Snapshot{}, invalid("duration must be between 1 and 120 seconds")
+	if err := validateSimulationRequest(request); err != nil {
+		return Snapshot{}, err
 	}
-	if request.SampleTime < 0.01 || request.SampleTime > 2 {
-		return Snapshot{}, invalid("sample time must be between 0.01 and 2 seconds")
-	}
-	if request.Duration/request.SampleTime > 5000 {
-		return Snapshot{}, invalid("simulation is limited to 5,000 samples")
-	}
-
 	snapshot, err := s.snapshot(ctx, flowID)
 	if err != nil {
 		return Snapshot{}, err
@@ -70,70 +71,67 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 	return s.snapshot(ctx, flowID)
 }
 
+func validateSimulationRequest(request SimulationRequest) error {
+	if request.Duration < 1 || request.Duration > 120 {
+		return invalid("duration must be between 1 and 120 seconds")
+	}
+	if request.SampleTime < 0.01 || request.SampleTime > 2 {
+		return invalid("sample time must be between 0.01 and 2 seconds")
+	}
+	samples := int(math.Round(request.Duration/request.SampleTime)) + 1
+	if samples > maxSimulationSamples {
+		return invalid("simulation is limited to %s samples", maxSimulationSamplesLabel)
+	}
+	return nil
+}
+
 func simulate(blocks []Block, connections []Connection, request SimulationRequest) (*Simulation, error) {
-	compiled, err := compileFlow(blocks, connections)
+	model, err := compileRequestedModel(blocks, connections, modelCompileRequest{
+		includeSinks: true,
+		baseStep:     request.SampleTime,
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	steps := int(math.Round(request.Duration/request.SampleTime)) + 1
-	times := make([]float64, steps)
-	inputData := make([]float64, steps*len(compiled.sources))
-	for i := range steps {
-		times[i] = float64(i) * request.SampleTime
-		for sourceIndex, source := range compiled.sources {
-			inputData[i*len(compiled.sources)+sourceIndex] = sourceValue(source, times[i])
-		}
-	}
-	input := mat.NewDense(steps, len(compiled.sources), inputData)
-	response, err := controlsys.Lsim(compiled.system, input, times, nil)
-	if err != nil {
-		return nil, fmt.Errorf("simulate flowsheet: %w", err)
-	}
-
-	run := &Simulation{
-		Duration:   request.Duration,
-		SampleTime: request.SampleTime,
-		Times:      times,
-	}
-	for output, sink := range compiled.sinks {
-		values := make([]float64, steps)
-		for sample := range steps {
-			values[sample] = response.Y.At(output, sample)
-		}
-		if sink.Kind.isSpectrumSink() {
-			run.Spectra = append(run.Spectra, spectrumFor(sink, values, request.SampleTime))
-		} else {
-			run.Series = append(run.Series, Series{
-				BlockID: sink.ID,
-				Name:    sink.Name,
-				Values:  values,
-			})
-			run.Metrics = append(run.Metrics, metricFor(sink.Name, times, values))
-		}
-	}
-	return run, nil
+	return model.run(request)
 }
 
-func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error) {
+func compileModel(blocks []Block, connections []Connection) (*compiledModel, error) {
+	return compileRequestedModel(blocks, connections, modelCompileRequest{includeSinks: true})
+}
+
+func compileRequestedModel(
+	blocks []Block,
+	connections []Connection,
+	request modelCompileRequest,
+) (*compiledModel, error) {
 	if len(blocks) == 0 {
-		return compiledFlow{}, invalid("add blocks before running the simulation")
+		return nil, invalid("add blocks before running the simulation")
 	}
 
 	blockByID := make(map[int64]Block, len(blocks))
-	indegree := make(map[int64]int, len(blocks))
+	originalBlockByID := make(map[int64]Block, len(blocks))
 	incoming := make(map[int64][]Connection, len(blocks))
-	outgoing := make(map[int64][]int64, len(blocks))
 	var sources, sinks []Block
 	for _, block := range blocks {
+		if existing, ok := blockByID[block.ID]; ok {
+			return nil, invalid("%s and %s share block id %d", existing.Name, block.Name, block.ID)
+		}
 		if !block.Kind.Valid() {
-			return compiledFlow{}, invalid("%s has an unknown block type", block.Name)
+			return nil, invalid("%s has an unknown block type", block.Name)
+		}
+		original := block
+		original.Parameters = cloneParameters(block.Parameters)
+		block, err := resolveBlockForCompilation(block, request.baseStep)
+		if err != nil {
+			return nil, invalid("%s: %s", original.Name, err)
 		}
 		if err := validateParameters(block.Kind, block.Parameters); err != nil {
-			return compiledFlow{}, invalid("%s: %s", block.Name, err)
+			return nil, invalid("%s: %s", block.Name, err)
 		}
+		block.Parameters = cloneParameters(block.Parameters)
 		blockByID[block.ID] = block
-		indegree[block.ID] = 0
+		originalBlockByID[block.ID] = original
 		switch {
 		case block.Kind.isSource():
 			sources = append(sources, block)
@@ -142,68 +140,58 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		}
 	}
 	if len(sources) == 0 {
-		return compiledFlow{}, invalid("add at least one source block before simulating")
+		return nil, invalid("add at least one source block before simulating")
 	}
-	if len(sinks) == 0 {
-		return compiledFlow{}, invalid("add at least one Scope or Spectrum Analyzer before simulating")
+	if request.includeSinks && len(sinks) == 0 {
+		return nil, invalid("add at least one Scope or Spectrum Analyzer before simulating")
+	}
+	if !request.includeSinks && len(request.probes) == 0 {
+		return nil, invalid("select at least one output signal before compiling")
 	}
 
 	for _, connection := range connections {
 		source, sourceOK := blockByID[connection.SourceID]
 		target, targetOK := blockByID[connection.TargetID]
 		if !sourceOK || !targetOK {
-			return compiledFlow{}, invalid("a connection references a missing block")
+			return nil, invalid("a connection references a missing block")
 		}
 		if !source.Kind.HasOutput() || !target.Kind.HasInput() {
-			return compiledFlow{}, invalid("a connection uses an incompatible port")
+			return nil, invalid("a connection uses an incompatible port")
 		}
-		outgoing[source.ID] = append(outgoing[source.ID], target.ID)
+		if err := validateConnectionWidth(
+			source, connection.SourcePort, target, connection.TargetPort,
+		); err != nil {
+			return nil, err
+		}
 		incoming[target.ID] = append(incoming[target.ID], connection)
-		indegree[target.ID]++
 	}
 
-	ready := make([]int64, 0, len(blocks))
-	for _, block := range blocks {
-		if indegree[block.ID] == 0 {
-			ready = append(ready, block.ID)
-		}
+	orderedBlocks := make([]Block, 0, len(blockByID))
+	for _, block := range blockByID {
+		orderedBlocks = append(orderedBlocks, block)
 	}
-	sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
-	order := make([]int64, 0, len(blocks))
-	for len(ready) > 0 {
-		current := ready[0]
-		ready = ready[1:]
-		order = append(order, current)
-		for _, target := range outgoing[current] {
-			indegree[target]--
-			if indegree[target] == 0 {
-				ready = append(ready, target)
-				sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
-			}
-		}
-	}
-	if len(order) != len(blocks) {
-		return compiledFlow{}, invalid("flowsheet contains a cycle; remove a feedback connection")
-	}
+	sort.Slice(orderedBlocks, func(i, j int) bool {
+		return orderedBlocks[i].ID < orderedBlocks[j].ID
+	})
 
 	wiredPorts := make(map[int64][]int, len(incoming))
-	for _, block := range blocks {
+	for _, block := range orderedBlocks {
 		inputs := incoming[block.ID]
 		switch block.Kind.arity() {
 		case arityNone:
 			if len(inputs) != 0 {
-				return compiledFlow{}, invalid("%s cannot accept an input", block.Name)
+				return nil, invalid("%s cannot accept an input", block.Name)
 			}
 		case arityVariadic:
 			if len(inputs) == 0 {
-				return compiledFlow{}, invalid("%s needs at least one input", block.Name)
+				return nil, invalid("%s needs at least one input", block.Name)
 			}
 		default: // arityOne
 			if len(inputs) == 0 {
-				return compiledFlow{}, invalid("%s is not connected", block.Name)
+				return nil, invalid("%s is not connected", block.Name)
 			}
 			if len(inputs) > 1 {
-				return compiledFlow{}, invalid("%s accepts only one input", block.Name)
+				return nil, invalid("%s accepts only one input", block.Name)
 			}
 		}
 		// checkInputs is a kind's own rule tying its parameters to the
@@ -211,13 +199,13 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		// the generic arity check above rather than folded into it.
 		if check := blockDefinitions[block.Kind].checkInputs; check != nil {
 			if err := check(block, len(inputs)); err != nil {
-				return compiledFlow{}, err
+				return nil, err
 			}
 		}
 
 		ports, err := wiredInputPorts(block, inputs)
 		if err != nil {
-			return compiledFlow{}, err
+			return nil, err
 		}
 		wiredPorts[block.ID] = ports
 	}
@@ -225,37 +213,420 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	sort.Slice(sources, func(i, j int) bool { return sources[i].ID < sources[j].ID })
 	sort.Slice(sinks, func(i, j int) bool { return sinks[i].ID < sinks[j].ID })
 
+	execution, err := buildExecutionPartition(
+		orderedBlocks,
+		connections,
+		func(block Block) bool { return block.Kind.isStepBlock() },
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	systems := make([]*controlsys.System, 0, len(blocks))
-	for _, id := range order {
-		block := blockByID[id]
-		system, err := realizeBlock(block, wiredPorts[id])
+	sourceSignals := make(map[int64][]compiledSignal, len(sources))
+	inputSignals := make(map[compiledPort][]compiledSignal, len(connections))
+	outputSignals := make(map[compiledPort][]compiledSignal, len(blocks))
+	signals := make([]compiledSignal, 0, len(blocks)+len(connections)+len(sources))
+	for _, block := range orderedBlocks {
+		system, err := realizeBlock(block, wiredPorts[block.ID])
 		if err != nil {
-			return compiledFlow{}, err
+			return nil, err
 		}
 		systems = append(systems, system)
+
+		if block.Kind.isSource() {
+			port, _ := block.OutputPort(0)
+			blockSignals := make([]compiledSignal, port.Width)
+			for channel := range port.Width {
+				signal := compiledSignal{
+					Name: system.InputName[channel], BlockID: block.ID,
+					Port: 0, Channel: channel, ChannelName: port.Channels[channel],
+					Width: port.Width, Role: compiledExternalInput,
+				}
+				blockSignals[channel] = signal
+				signals = append(signals, signal)
+			}
+			sourceSignals[block.ID] = blockSignals
+		} else {
+			offset := 0
+			for _, portIndex := range wiredPorts[block.ID] {
+				port, _ := resolvedInputPort(block, portIndex)
+				portSignals := make([]compiledSignal, port.Width)
+				for channel := range port.Width {
+					signal := compiledSignal{
+						Name: system.InputName[offset], BlockID: block.ID,
+						Port: portIndex, Channel: channel, ChannelName: port.Channels[channel],
+						Width: port.Width, Role: compiledBlockInput,
+					}
+					offset++
+					portSignals[channel] = signal
+					signals = append(signals, signal)
+				}
+				inputSignals[compiledPort{blockID: block.ID, port: portIndex}] = portSignals
+			}
+		}
+		outputPorts := block.portSchema().outputs
+		if block.Kind.isSink() {
+			outputPorts = block.portSchema().inputs
+		}
+		offset := 0
+		for portIndex, port := range outputPorts {
+			portSignals := make([]compiledSignal, port.Width)
+			for channel := range port.Width {
+				signal := compiledSignal{
+					Name: system.OutputName[offset], BlockID: block.ID,
+					Port: portIndex, Channel: channel, ChannelName: port.Channels[channel],
+					Width: port.Width, Role: compiledBlockOutput,
+				}
+				offset++
+				portSignals[channel] = signal
+				signals = append(signals, signal)
+			}
+			outputSignals[compiledPort{blockID: block.ID, port: portIndex}] = portSignals
+		}
+	}
+	if err := applyCompiledTimeDomains(orderedBlocks, systems, request.baseStep); err != nil {
+		return nil, err
 	}
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
-		namedConnections = append(namedConnections, controlsys.Connection{
-			From: outputSignalName(connection.SourceID, connection.SourcePort),
-			To:   inputSignalName(connection.TargetID, connection.TargetPort),
-			Gain: 1,
-		})
+		fromChannels, ok := outputSignals[compiledPort{
+			blockID: connection.SourceID,
+			port:    connection.SourcePort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no output port %d",
+				blockByID[connection.SourceID].Name, connection.SourcePort)
+		}
+		toChannels, ok := inputSignals[compiledPort{
+			blockID: connection.TargetID,
+			port:    connection.TargetPort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no input port %d",
+				blockByID[connection.TargetID].Name, connection.TargetPort)
+		}
+		if len(fromChannels) != len(toChannels) {
+			return nil, invalid("a connection changed width during compilation")
+		}
+		for channel := range fromChannels {
+			namedConnections = append(namedConnections, controlsys.Connection{
+				From: fromChannels[channel].Name,
+				To:   toChannels[channel].Name,
+				Gain: 1,
+			})
+		}
 	}
-	inputs := make([]string, len(sources))
-	for i, source := range sources {
-		inputs[i] = sourceSignalName(source.ID)
+	var inputs []string
+	var compiledInputs []compiledInput
+	for _, source := range sources {
+		for _, signal := range sourceSignals[source.ID] {
+			inputs = append(inputs, signal.Name)
+			compiledInputs = append(compiledInputs, compiledInput{
+				signal: signal, source: originalBlockByID[source.ID],
+			})
+		}
 	}
-	outputs := make([]string, len(sinks))
-	for i, sink := range sinks {
-		outputs[i] = outputSignalName(sink.ID, 0)
+	requestedProbes := make([]modelProbe, 0, len(sinks)+len(request.probes))
+	if request.includeSinks {
+		for _, sink := range sinks {
+			requestedProbes = append(requestedProbes, modelProbe{
+				BlockID: sink.ID, OutputPort: 0,
+			})
+		}
+	}
+	requestedProbes = append(requestedProbes, request.probes...)
+	requestedProbes = uniqueModelProbes(requestedProbes)
+
+	var outputs []string
+	var compiledOutputs []compiledOutput
+	for _, probe := range requestedProbes {
+		block, ok := blockByID[probe.BlockID]
+		if !ok {
+			return nil, invalid("an analysis probe references missing block %d", probe.BlockID)
+		}
+		portSignals, ok := outputSignals[compiledPort{
+			blockID: probe.BlockID,
+			port:    probe.OutputPort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no output port %d", block.Name, probe.OutputPort)
+		}
+		for _, signal := range portSignals {
+			outputs = append(outputs, signal.Name)
+			compiledOutputs = append(compiledOutputs, compiledOutput{
+				signal: signal, block: originalBlockByID[block.ID],
+			})
+		}
+	}
+
+	staticDelays, err := prepareStaticExactDelays(
+		orderedBlocks, connections, sources, requestedProbes, systems,
+	)
+	if err != nil {
+		return nil, err
 	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
-		return compiledFlow{}, fmt.Errorf("compile flowsheet: %w", err)
+		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
+			return nil, invalid(
+				"flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain",
+			)
+		}
+		if errors.Is(err, controlsys.ErrDomainMismatch) {
+			return nil, invalid(
+				"flowsheet mixes continuous systems with discrete systems or incompatible sample times; use one time domain and one discrete sample time",
+			)
+		}
+		return nil, fmt.Errorf("compile flowsheet: %w", err)
 	}
-	return compiledFlow{system: system, sources: sources, sinks: sinks}, nil
+	if staticDelays != nil {
+		if err := system.SetDelay(staticDelays); err != nil {
+			return nil, fmt.Errorf("attach exact transport delays: %w", err)
+		}
+	}
+
+	provenanceConnections := append([]Connection(nil), connections...)
+	sort.Slice(provenanceConnections, func(i, j int) bool {
+		left, right := provenanceConnections[i], provenanceConnections[j]
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		if left.SourceID != right.SourceID {
+			return left.SourceID < right.SourceID
+		}
+		if left.SourcePort != right.SourcePort {
+			return left.SourcePort < right.SourcePort
+		}
+		if left.TargetID != right.TargetID {
+			return left.TargetID < right.TargetID
+		}
+		return left.TargetPort < right.TargetPort
+	})
+	provenanceBlocks := make([]Block, len(orderedBlocks))
+	for i, block := range orderedBlocks {
+		provenanceBlocks[i] = originalBlockByID[block.ID]
+	}
+	return &compiledModel{
+		system:  system,
+		inputs:  compiledInputs,
+		outputs: compiledOutputs,
+		signals: signals,
+		provenance: compiledModelProvenance{
+			Blocks:      provenanceBlocks,
+			Connections: provenanceConnections,
+		},
+		execution: execution,
+	}, nil
+}
+
+func resolveBlockForCompilation(block Block, baseStep float64) (Block, error) {
+	domain := blockDefinitions[block.Kind].domain(block.Parameters)
+	if domain.kind != timeDomainDiscrete {
+		return block, nil
+	}
+	sampleTime, err := domain.sampleTime.resolve(baseStep)
+	if err != nil {
+		return Block{}, err
+	}
+	block.Parameters.SampleTime = sampleTime
+	block.Parameters.SampleTimeMode = string(sampleTimeExplicit)
+	return block, nil
+}
+
+func applyCompiledTimeDomains(blocks []Block, systems []*controlsys.System, baseStep float64) error {
+	var (
+		hasContinuous bool
+		sampleTimes   []float64
+		discreteNames []string
+	)
+	for i, block := range blocks {
+		domain := blockDefinitions[block.Kind].domain(block.Parameters)
+		switch domain.kind {
+		case timeDomainContinuous:
+			hasContinuous = true
+		case timeDomainDiscrete:
+			sampleTime, err := domain.sampleTime.resolve(0)
+			if err != nil {
+				return invalid("%s: %s", block.Name, err)
+			}
+			if !systems[i].IsDiscrete() || math.Abs(systems[i].Dt-sampleTime) > 1e-9 {
+				return fmt.Errorf(
+					"%s realization sample time %.12g does not match its catalog sample time %.12g",
+					block.Name, systems[i].Dt, sampleTime,
+				)
+			}
+			sampleTimes = append(sampleTimes, sampleTime)
+			discreteNames = append(discreteNames, block.Name)
+		}
+	}
+	if len(sampleTimes) == 0 {
+		return nil
+	}
+	if hasContinuous {
+		return invalid(
+			"flowsheet mixes continuous dynamics with discrete dynamics; add an explicit sampled-data boundary",
+		)
+	}
+
+	if baseStep > 0 {
+		for i, blockSampleTime := range sampleTimes {
+			schedule, err := scheduleSampleTime(blockSampleTime, baseStep)
+			if err != nil {
+				return invalid("%s: %s", discreteNames[i], err)
+			}
+			if schedule.updateEvery > 1 {
+				return invalid(
+					"%s sample time %.12g s updates every %d run samples and requires segmented zero-order-hold execution",
+					discreteNames[i], blockSampleTime, schedule.updateEvery,
+				)
+			}
+		}
+	}
+
+	sampleTime := sampleTimes[0]
+	for _, other := range sampleTimes[1:] {
+		compatibility := compareSampleTimes(sampleTime, other)
+		switch compatibility.relation {
+		case sampleTimesEqual:
+			continue
+		case sampleTimesIntegerMultiple:
+			return invalid(
+				"discrete sample times %.12g s and %.12g s have integer ratio %d and require segmented zero-order-hold execution",
+				compatibility.fast, compatibility.slow, compatibility.ratio,
+			)
+		default:
+			return invalid(
+				"discrete sample times %.12g s and %.12g s are not integer multiples",
+				compatibility.fast, compatibility.slow,
+			)
+		}
+	}
+
+	for i, block := range blocks {
+		if blockDefinitions[block.Kind].domain(block.Parameters).kind == timeDomainNeutral {
+			systems[i].Dt = sampleTime
+		}
+	}
+	return nil
+}
+
+func prepareStaticExactDelays(
+	blocks []Block,
+	connections []Connection,
+	sources []Block,
+	probes []modelProbe,
+	systems []*controlsys.System,
+) (*mat.Dense, error) {
+	hasExactDelay := false
+	totalStates := 0
+	for i, block := range blocks {
+		states, _, _ := systems[i].Dims()
+		totalStates += states
+		if block.Kind == BlockDelay &&
+			normalizedDelayMode(block.Parameters) == delayModeExact &&
+			block.Parameters.Delay > 0 {
+			hasExactDelay = true
+		}
+	}
+	if !hasExactDelay || totalStates > 0 {
+		return nil, nil
+	}
+
+	outgoing := make(map[int64][]int64, len(blocks))
+	for _, connection := range connections {
+		outgoing[connection.SourceID] = append(outgoing[connection.SourceID], connection.TargetID)
+	}
+	blockByID := make(map[int64]Block, len(blocks))
+	for _, block := range blocks {
+		blockByID[block.ID] = block
+	}
+
+	delayData := make([]float64, len(probes)*len(sources))
+	for outputIndex, probe := range probes {
+		output := blockByID[probe.BlockID]
+		for inputIndex, source := range sources {
+			delays, cycle := exactPathDelays(
+				source.ID, probe.BlockID, 0, outgoing, blockByID, make(map[int64]bool),
+			)
+			if cycle {
+				return nil, invalid(
+					"%s to %s contains a static exact-delay loop that controlsys cannot realize; add plant dynamics or select Padé or Thiran",
+					source.Name, output.Name,
+				)
+			}
+			unique := uniqueDelays(delays)
+			if len(unique) > 1 {
+				return nil, invalid(
+					"%s to %s has parallel static paths with different exact delays; add dynamics or select Padé or Thiran",
+					source.Name, output.Name,
+				)
+			}
+			if len(unique) == 1 {
+				delayData[outputIndex*len(sources)+inputIndex] = unique[0]
+			}
+		}
+	}
+
+	for i, block := range blocks {
+		if block.Kind != BlockDelay || normalizedDelayMode(block.Parameters) != delayModeExact {
+			continue
+		}
+		systems[i].Delay = nil
+		systems[i].InputDelay = nil
+		systems[i].OutputDelay = nil
+		systems[i].LFT = nil
+	}
+	return mat.NewDense(len(probes), len(sources), delayData), nil
+}
+
+func exactPathDelays(
+	current, target int64,
+	delay float64,
+	outgoing map[int64][]int64,
+	blocks map[int64]Block,
+	visiting map[int64]bool,
+) ([]float64, bool) {
+	if block := blocks[current]; block.Kind == BlockDelay &&
+		normalizedDelayMode(block.Parameters) == delayModeExact {
+		delay += block.Parameters.Delay
+	}
+	if current == target {
+		return []float64{delay}, false
+	}
+	if visiting[current] {
+		return nil, true
+	}
+	visiting[current] = true
+	defer delete(visiting, current)
+
+	var delays []float64
+	for _, next := range outgoing[current] {
+		nextDelays, cycle := exactPathDelays(next, target, delay, outgoing, blocks, visiting)
+		if cycle {
+			return nil, true
+		}
+		delays = append(delays, nextDelays...)
+	}
+	return delays, false
+}
+
+func uniqueDelays(delays []float64) []float64 {
+	var unique []float64
+	for _, delay := range delays {
+		found := false
+		for _, existing := range unique {
+			if math.Abs(delay-existing) <= 1e-9 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			unique = append(unique, delay)
+		}
+	}
+	return unique
 }
 
 // wiredInputPorts is the block's input terminals that carry a wire, in
@@ -306,6 +677,7 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 	if err != nil {
 		return nil, fmt.Errorf("realize %s: %w", block.Name, err)
 	}
+	_, inputs, outputs := system.Dims()
 
 	// A source's one input is the flowsheet's own input, driven by the sampled
 	// waveform rather than by a wire, so it is the one input a port does not
@@ -313,18 +685,66 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 	// in the same order realize built its inputs, so the two agree column for
 	// column.
 	if block.Kind.isSource() {
-		system.InputName = []string{sourceSignalName(block.ID)}
+		schema, ok := block.OutputPort(0)
+		if !ok || inputs != schema.Width {
+			return nil, fmt.Errorf(
+				"realize %s: source realization has %d inputs for output width %d",
+				block.Name, inputs, schema.Width,
+			)
+		}
+		system.InputName = make([]string, schema.Width)
+		for channel := range schema.Width {
+			system.InputName[channel] = sourceChannelSignalName(
+				block.ID, channel, schema.Width,
+			)
+		}
 	} else {
-		system.InputName = make([]string, len(ports))
-		for i, port := range ports {
-			system.InputName[i] = inputSignalName(block.ID, port)
+		expectedInputs := 0
+		for _, port := range ports {
+			schema, ok := resolvedInputPort(block, port)
+			if !ok {
+				return nil, invalid("%s has no input port %d", block.Name, port)
+			}
+			expectedInputs += schema.Width
+		}
+		if inputs != expectedInputs {
+			return nil, fmt.Errorf(
+				"realize %s: controlsys input dimension %d does not match port width %d",
+				block.Name, inputs, expectedInputs,
+			)
+		}
+		system.InputName = make([]string, 0, expectedInputs)
+		for _, port := range ports {
+			schema, _ := resolvedInputPort(block, port)
+			for channel := range schema.Width {
+				system.InputName = append(system.InputName, inputChannelSignalName(
+					block.ID, port, channel, schema.Width,
+				))
+			}
 		}
 	}
-	// Every kind realizes a single output, so it is port 0 — including a sink,
-	// whose output the compiler reads even though the canvas draws no terminal
-	// there. A kind that one day drives more will name each of them here; the
-	// wires already say which one they leave from.
-	system.OutputName = []string{outputSignalName(block.ID, 0)}
+	outputSchemas := block.portSchema().outputs
+	if block.Kind.isSink() {
+		outputSchemas = block.portSchema().inputs
+	}
+	expectedOutputs := 0
+	for _, schema := range outputSchemas {
+		expectedOutputs += schema.Width
+	}
+	if outputs != expectedOutputs {
+		return nil, fmt.Errorf(
+			"realize %s: controlsys output dimension %d does not match port width %d",
+			block.Name, outputs, expectedOutputs,
+		)
+	}
+	system.OutputName = make([]string, 0, expectedOutputs)
+	for port, schema := range outputSchemas {
+		for channel := range schema.Width {
+			system.OutputName = append(system.OutputName, outputChannelSignalName(
+				block.ID, port, channel, schema.Width,
+			))
+		}
+	}
 	return system, nil
 }
 
@@ -332,16 +752,23 @@ func realizeBlock(block Block, ports []int) (*controlsys.System, error) {
 // with no waveform set (which registering a new source without one would
 // produce) is silent rather than a panic here, matching the old switch's
 // default case.
-func sourceValue(source Block, t float64) float64 {
+func sourceValue(source Block, channel int, t float64) float64 {
 	waveform := blockDefinitions[source.Kind].waveform
 	if waveform == nil {
 		return 0
 	}
-	return waveform(source.Parameters, t)
+	return waveform(source.Parameters, channel, t)
 }
 
 func sourceSignalName(id int64) string {
 	return fmt.Sprintf("block_%d_source", id)
+}
+
+func sourceChannelSignalName(id int64, channel, width int) string {
+	if width == 1 {
+		return sourceSignalName(id)
+	}
+	return fmt.Sprintf("block_%d_source_channel_%d", id, channel)
 }
 
 // inputSignalName and outputSignalName name a terminal, not a block: the port
@@ -356,8 +783,39 @@ func outputSignalName(id int64, port int) string {
 	return fmt.Sprintf("block_%d_output_%d", id, port)
 }
 
-func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {
-	spectrum := Spectrum{BlockID: block.ID, Name: block.Name}
+func inputChannelSignalName(id int64, port, channel, width int) string {
+	if width == 1 {
+		return inputSignalName(id, port)
+	}
+	return fmt.Sprintf("block_%d_input_%d_channel_%d", id, port, channel)
+}
+
+func outputChannelSignalName(id int64, port, channel, width int) string {
+	if width == 1 {
+		return outputSignalName(id, port)
+	}
+	return fmt.Sprintf("block_%d_output_%d_channel_%d", id, port, channel)
+}
+
+func resultChannelLabel(output compiledOutput) string {
+	if output.signal.Width <= 1 || output.signal.ChannelName == "" {
+		return output.block.Name
+	}
+	return output.block.Name + " · " + output.signal.ChannelName
+}
+
+func resultChannel(output compiledOutput, name string) ResultChannel {
+	return ResultChannel{
+		BlockID: output.block.ID, Port: output.signal.Port,
+		Channel: output.signal.Channel, ChannelName: output.signal.ChannelName,
+		Name: name,
+	}
+}
+
+func spectrumFor(output compiledOutput, values []float64, sampleTime float64) Spectrum {
+	spectrum := Spectrum{
+		ResultChannel: resultChannel(output, resultChannelLabel(output)),
+	}
 	if len(values) < 2 {
 		return spectrum
 	}
@@ -389,8 +847,10 @@ func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {
 	return spectrum
 }
 
-func metricFor(name string, times, values []float64) Metric {
-	metric := Metric{Name: name}
+func metricFor(output compiledOutput, times, values []float64) Metric {
+	metric := Metric{
+		ResultChannel: resultChannel(output, resultChannelLabel(output)),
+	}
 	if len(values) == 0 {
 		return metric
 	}

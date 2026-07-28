@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha512"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,7 +45,7 @@ func TestPageRendersTheRegister(t *testing.T) {
 		`href="/assets/tokens.css"`,
 		`href="/assets/register.css"`,
 		`src="/assets/register.js"`,
-		"htmx.org@2.0.10",
+		`src="/assets/htmx-2.0.10.min.js"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("register does not contain %q", expected)
@@ -58,9 +60,8 @@ func TestPageRendersTheRegister(t *testing.T) {
 			t.Errorf("the register loads %q", unwanted)
 		}
 	}
-	// A CSP of `script-src 'self' https://cdn.jsdelivr.net` drops an inline
-	// script in the browser while every test here still passes, so the absence
-	// has to be asserted rather than assumed.
+	// The CSP drops inline script in the browser while every test here still
+	// passes, so the absence has to be asserted rather than assumed.
 	if strings.Contains(body, "onclick=") || strings.Contains(body, "<script>") {
 		t.Error("the register carries inline script, which the CSP drops silently")
 	}
@@ -220,6 +221,88 @@ func TestRegisterViewCoversTheEmptyState(t *testing.T) {
 
 }
 
+func TestWorkbenchRendersValidatedParameterShapes(t *testing.T) {
+	server, _ := openTestServer(t)
+	workspace := studio.Workspace{
+		Project: studio.Project{ID: 1, Name: "Test"},
+		Flows:   []studio.Flow{{ID: 1, ProjectID: 1, Name: "Model"}},
+		Snapshot: studio.Snapshot{
+			Flow: studio.Flow{ID: 1, ProjectID: 1, Name: "Model"},
+			Blocks: []studio.Block{{
+				ID: 1, FlowID: 1, Kind: studio.BlockTransfer, Name: "Plant",
+				Parameters: studio.Parameters{
+					Numerator: []float64{1, 2}, Denominator: []float64{1, 3, 2},
+				},
+			}},
+		},
+	}
+	view := newWorkbenchView(workspace, 1, "")
+	var page strings.Builder
+	if err := server.templates.ExecuteTemplate(&page, "workbench", view); err != nil {
+		t.Fatal(err)
+	}
+	body := page.String()
+	for _, want := range []string{
+		`name="numerator"`,
+		`name="denominator"`,
+		`class="field-shape">1 × 2`,
+		`class="field-shape">1 × 3`,
+		"Descending powers of s",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered transfer editor does not contain %q", want)
+		}
+	}
+}
+
+func TestWorkbenchRendersNamedVectorPortWidth(t *testing.T) {
+	server, _ := openTestServer(t)
+	workspace := studio.Workspace{
+		Project: studio.Project{ID: 1, Name: "Test"},
+		Flows:   []studio.Flow{{ID: 1, ProjectID: 1, Name: "MIMO"}},
+		Snapshot: studio.Snapshot{
+			Flow: studio.Flow{ID: 1, ProjectID: 1, Name: "MIMO"},
+		},
+	}
+	matrixSnapshot, matrixID, err := func() (studio.Snapshot, int64, error) {
+		temporary, err := studio.Open(context.Background(), ":memory:")
+		if err != nil {
+			return studio.Snapshot{}, 0, err
+		}
+		defer temporary.Close()
+		current, err := temporary.Current(context.Background())
+		if err != nil {
+			return studio.Snapshot{}, 0, err
+		}
+		return temporary.AddBlock(
+			context.Background(), current.Flow.ID,
+			studio.BlockMatrixGain, studio.Point{X: 100, Y: 100},
+		)
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace.Snapshot.Blocks = []studio.Block{matrixSnapshot.Blocks[len(matrixSnapshot.Blocks)-1]}
+	workspace.Snapshot.Blocks[0].ID = matrixID
+
+	view := newWorkbenchView(workspace, matrixID, "")
+	var page strings.Builder
+	if err := server.templates.ExecuteTemplate(&page, "workbench", view); err != nil {
+		t.Fatal(err)
+	}
+	body := page.String()
+	for _, want := range []string{
+		`input port 1 (2 channels: u1, u2)`,
+		`output port 1 (2 channels: y1, y2)`,
+		`class="field-shape">2 × 2`,
+		`name="d"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered matrix gain does not contain %q", want)
+		}
+	}
+}
+
 // TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
 // `/` no longer leads to it.
 func TestWorkbenchPageRendersTheShell(t *testing.T) {
@@ -237,7 +320,7 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		`href="/assets/tokens.css"`,
 		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
-		"htmx.org@2.0.10",
+		`src="/assets/htmx-2.0.10.min.js"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body does not contain %q", expected)
@@ -580,6 +663,44 @@ func TestSpectrumAnalyzerThroughHTMXFlow(t *testing.T) {
 	}
 }
 
+func TestResultsExportReturnsVersionedJSONAttachment(t *testing.T) {
+	server, _ := openTestServer(t)
+	run := request(t, server, http.MethodPost, "/flows/1/simulations", url.Values{
+		"duration":    {"1"},
+		"sample_time": {"0.1"},
+	})
+	if run.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", run.Code, run.Body.String())
+	}
+
+	response := request(t, server, http.MethodGet, "/flows/1/results.json", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(
+		disposition, `process-lab-flow-1-results.json`,
+	) {
+		t.Fatalf("content disposition = %q", disposition)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`"schemaVersion": 1`,
+		`"flowId": 1`,
+		`"simulation":`,
+		`"analysis":`,
+		`"blockId":`,
+		`"port": 0`,
+		`"channel": 0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("export does not contain %q", expected)
+		}
+	}
+}
+
 func TestConnectionErrorRendersInline(t *testing.T) {
 	server, service := openTestServer(t)
 	snapshot, err := service.Current(context.Background())
@@ -597,6 +718,103 @@ func TestConnectionErrorRendersInline(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "already connected") {
 		t.Fatalf("body does not contain validation: %s", response.Body.String())
+	}
+}
+
+func TestAnalysisWorkspaceRetainsResultsAndMarksModelEditsStale(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findKindBlock(t, snapshot.Blocks, "source")
+	plant := findKindBlock(t, snapshot.Blocks, "lag")
+	channel := func(block studio.Block) string {
+		return fmt.Sprintf("%d:0:0", block.ID)
+	}
+	values := url.Values{
+		"analysis_intent":    {"dynamics"},
+		"analysis_input":     {channel(source)},
+		"analysis_output":    {channel(plant)},
+		"analysis_horizon":   {"8"},
+		"analysis_points":    {"40"},
+		"analysis_base_step": {"0.1"},
+	}
+	response := request(t, server, http.MethodPost, "/flows/1/analyses", values)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dynamics status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"Control analysis", "Dynamics &amp; time", "Step response",
+		"Pole-zero map", "CURRENT",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("dynamics workspace does not contain %q", expected)
+		}
+	}
+
+	values.Set("analysis_intent", "frequency")
+	response = request(t, server, http.MethodPost, "/flows/1/analyses", values)
+	if response.Code != http.StatusOK {
+		t.Fatalf("frequency status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"Dynamics &amp; time", "Frequency response", "Bode magnitude",
+		"Nyquist", "Nichols", "Singular values",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("retained workspace does not contain %q", expected)
+		}
+	}
+
+	_, err = service.UpdateBlock(ctx, plant.ID, studio.BlockUpdate{
+		Name: plant.Name,
+		Parameters: map[string]string{
+			"time_constant": "9",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = request(t, server, http.MethodGet, "/projects/1/flows/1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("edited workspace status = %d", response.Code)
+	}
+	for _, expected := range []string{
+		"Model changed · prior analysis is stale", "STALE",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("stale workspace does not contain %q", expected)
+		}
+	}
+}
+
+func TestDynamicsAnalysisCanSkipStepExperimentThroughHTTP(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findKindBlock(t, snapshot.Blocks, "source")
+	plant := findKindBlock(t, snapshot.Blocks, "lag")
+	channel := func(block studio.Block) string {
+		return fmt.Sprintf("%d:0:0", block.ID)
+	}
+	response := request(t, server, http.MethodPost, "/flows/1/analyses", url.Values{
+		"analysis_intent":  {"dynamics"},
+		"analysis_input":   {channel(source)},
+		"analysis_output":  {channel(plant)},
+		"analysis_horizon": {"0"},
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Dynamics &amp; time") {
+		t.Fatalf("dynamics result missing: %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "Step response") {
+		t.Fatalf("zero horizon still ran a step experiment: %s", response.Body.String())
 	}
 }
 
@@ -765,7 +983,14 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{"trend-chart", "Temperature", "controlsys", "Settling"} {
+	for _, expected := range []string{
+		"trend-chart", "Temperature", "controlsys", "Settling",
+		"SIMULATION FIDELITY", "Batch LTI · Lsim",
+		"Base step", "0.1 s", "piecewise constant",
+		"Up to 5,000 samples and 16 plotted channels per run.",
+		`data-series-toggle=`, `data-series-path=`,
+		`href="/flows/1/results.json"`,
+	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("body does not contain %q", expected)
 		}
@@ -777,6 +1002,7 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 	for _, path := range []string{
 		"/assets/app.css", "/assets/menu.js", "/assets/tabs.js",
 		"/assets/register.css", "/assets/register.js", "/assets/tokens.css",
+		"/assets/htmx-2.0.10.min.js",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {
@@ -785,6 +1011,20 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 		if response.Body.Len() < 1000 {
 			t.Fatalf("%s unexpectedly small", path)
 		}
+	}
+	htmx := request(
+		t, server, http.MethodGet, "/assets/htmx-2.0.10.min.js", nil,
+	)
+	digest := sha512.Sum384(htmx.Body.Bytes())
+	if got := base64.StdEncoding.EncodeToString(digest[:]); got !=
+		"H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" {
+		t.Fatalf("embedded HTMX SHA-384 = %s", got)
+	}
+	if policy := htmx.Header().Get("Content-Security-Policy"); policy == "" ||
+		strings.Contains(policy, "http:") ||
+		strings.Contains(policy, "https:") ||
+		!strings.Contains(policy, "script-src 'self'") {
+		t.Fatalf("self-contained CSP = %q", policy)
 	}
 }
 

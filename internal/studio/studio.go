@@ -161,6 +161,9 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		if err := checkWiredInputPorts(ctx, tx, block); err != nil {
 			return err
 		}
+		if err := checkWiredPortCompatibility(ctx, tx, block); err != nil {
+			return err
+		}
 		flowID = block.FlowID
 		encoded, err := encodeParameters(block.Parameters)
 		if err != nil {
@@ -207,6 +210,108 @@ func checkWiredInputPorts(ctx context.Context, tx *sql.Tx, block Block) error {
 	return invalid("%s has a wire on input port %d; disconnect it first", block.Name, port)
 }
 
+func checkWiredPortCompatibility(ctx context.Context, tx *sql.Tx, changed Block) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source_id, source_port, target_id, target_port
+		FROM connections
+		WHERE source_id = ? OR target_id = ?
+		ORDER BY id`,
+		changed.ID, changed.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("read connected port widths: %w", err)
+	}
+	defer rows.Close()
+
+	var wires []Wire
+	for rows.Next() {
+		var wire Wire
+		if err := rows.Scan(
+			&wire.SourceID, &wire.SourcePort, &wire.TargetID, &wire.TargetPort,
+		); err != nil {
+			return fmt.Errorf("scan connected port widths: %w", err)
+		}
+		wires = append(wires, wire)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate connected port widths: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close connected port widths: %w", err)
+	}
+	connected, err := blocksConnectedTo(ctx, tx, changed.ID)
+	if err != nil {
+		return err
+	}
+	for _, wire := range wires {
+		source := changed
+		if wire.SourceID != changed.ID {
+			var ok bool
+			source, ok = connected[wire.SourceID]
+			if !ok {
+				return fmt.Errorf("load connected source block %d: %w", wire.SourceID, ErrNotFound)
+			}
+		}
+		target := changed
+		if wire.TargetID != changed.ID {
+			var ok bool
+			target, ok = connected[wire.TargetID]
+			if !ok {
+				return fmt.Errorf("load connected target block %d: %w", wire.TargetID, ErrNotFound)
+			}
+		}
+		if err := validateConnectionWidth(
+			source, wire.SourcePort, target, wire.TargetPort,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func blocksConnectedTo(
+	ctx context.Context,
+	tx *sql.Tx,
+	blockID int64,
+) (map[int64]Block, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, flow_id, kind, name, x, y, parameters_json
+		FROM blocks
+		WHERE id IN (
+			SELECT target_id FROM connections WHERE source_id = ?
+			UNION
+			SELECT source_id FROM connections WHERE target_id = ?
+		)
+		ORDER BY id`,
+		blockID, blockID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load connected blocks: %w", err)
+	}
+	defer rows.Close()
+
+	blocks := make(map[int64]Block)
+	for rows.Next() {
+		var block Block
+		var encoded string
+		if err := rows.Scan(
+			&block.ID, &block.FlowID, &block.Kind, &block.Name,
+			&block.Position.X, &block.Position.Y, &encoded,
+		); err != nil {
+			return nil, fmt.Errorf("scan connected block: %w", err)
+		}
+		block.Parameters, err = decodeParameters(block.Kind, encoded)
+		if err != nil {
+			return nil, fmt.Errorf("decode parameters for %s: %w", block.Name, err)
+		}
+		blocks[block.ID] = block
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read connected blocks: %w", err)
+	}
+	return blocks, nil
+}
+
 func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, error) {
 	var flowID int64
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -215,6 +320,11 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 			return err
 		}
 		flowID = block.FlowID
+		if err := clearControlRoleSpecForBlocks(
+			ctx, tx, flowID, []int64{blockID},
+		); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE id = ?", blockID); err != nil {
 			return fmt.Errorf("delete block: %w", err)
 		}
@@ -247,6 +357,11 @@ func (s *Studio) DeleteBlocks(ctx context.Context, flowID int64, blockIDs []int6
 				return ErrNotFound
 			}
 			names = append(names, block.Name)
+		}
+		if err := clearControlRoleSpecForBlocks(
+			ctx, tx, flowID, blockIDs,
+		); err != nil {
+			return err
 		}
 		for _, blockID := range blockIDs {
 			if _, err := tx.ExecContext(ctx,
@@ -392,6 +507,11 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 		if !target.hasInputPort(wire.TargetPort) {
 			return invalid("%s has no input port %d", target.Name, wire.TargetPort)
 		}
+		if err := validateConnectionWidth(
+			source, wire.SourcePort, target, wire.TargetPort,
+		); err != nil {
+			return err
+		}
 
 		var duplicate int
 		err = tx.QueryRowContext(ctx, `
@@ -408,7 +528,7 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 		}
 		// An input port carries one signal. A second wire onto it would be a
 		// junction nobody drew, so it is refused here rather than left for
-		// compileFlow to discover. This is the whole of the old "everything
+		// compileModel to discover. This is the whole of the old "everything
 		// but Sum accepts one input" rule: a Sum has a port per sign, so its
 		// wires land on different ports and never meet this check.
 		var occupied int
@@ -425,14 +545,6 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 				return invalid("%s already has an input", target.Name)
 			}
 			return invalid("%s already has an input on port %d", target.Name, wire.TargetPort)
-		}
-
-		connections, err := connectionsInTx(ctx, tx, flowID)
-		if err != nil {
-			return err
-		}
-		if pathExists(connections, wire.TargetID, wire.SourceID) {
-			return invalid("that connection would create a cycle")
 		}
 
 		if _, err := tx.ExecContext(ctx, `
@@ -588,54 +700,6 @@ func abs(value int) int {
 		return -value
 	}
 	return value
-}
-
-func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connection, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, flow_id, source_id, source_port, target_id, target_port
-		FROM connections WHERE flow_id = ?`,
-		flowID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var connections []Connection
-	for rows.Next() {
-		var connection Connection
-		if err := rows.Scan(
-			&connection.ID, &connection.FlowID,
-			&connection.SourceID, &connection.SourcePort,
-			&connection.TargetID, &connection.TargetPort,
-		); err != nil {
-			return nil, err
-		}
-		connections = append(connections, connection)
-	}
-	return connections, rows.Err()
-}
-
-func pathExists(connections []Connection, start, goal int64) bool {
-	adjacency := make(map[int64][]int64)
-	for _, connection := range connections {
-		adjacency[connection.SourceID] = append(adjacency[connection.SourceID], connection.TargetID)
-	}
-	seen := map[int64]bool{start: true}
-	queue := []int64{start}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if current == goal {
-			return true
-		}
-		for _, next := range adjacency[current] {
-			if !seen[next] {
-				seen[next] = true
-				queue = append(queue, next)
-			}
-		}
-	}
-	return false
 }
 
 func ValidationMessage(err error) string {

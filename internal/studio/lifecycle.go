@@ -202,9 +202,9 @@ func (s *Studio) RenameFlow(ctx context.Context, flowID int64, name string) (Wor
 // silently rewired itself is harder to reason about; duplicating a whole sheet
 // has no such ambiguity, since the copy contains both ends of every wire.
 //
-// Simulation runs are not copied — the copy has never been run, and the amber
-// tab dot should say so — and neither is the source's history. The copy opens
-// with one event of its own, naming where it came from.
+// Simulation and analysis results are not copied — the copy has never been
+// evaluated, and the amber tab dot should say so — and neither is the source's
+// history. The copy opens with one event of its own, naming where it came from.
 func (s *Studio) DuplicateFlow(ctx context.Context, flowID int64) (Workspace, error) {
 	var projectID, copyID int64
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -244,6 +244,9 @@ func (s *Studio) DuplicateFlow(ctx context.Context, flowID int64) (Workspace, er
 			return err
 		}
 		if err := copyConnections(ctx, tx, flowID, copyID, moved); err != nil {
+			return err
+		}
+		if err := copyControlRoleSpec(ctx, tx, flowID, copyID, moved); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,

@@ -237,7 +237,8 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') cancelConnection()
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
     event.preventDefault()
-    document.querySelector('#run-form')?.requestSubmit()
+    const form = event.shiftKey ? '#analysis-form' : '#run-form'
+    document.querySelector(form)?.requestSubmit()
   }
 })
 window.addEventListener('resize', redrawEdges)

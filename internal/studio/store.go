@@ -73,11 +73,27 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 	sample_time REAL NOT NULL,
 	result_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS analysis_runs (
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+	intent TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	model_updated_at TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	PRIMARY KEY(flow_id, intent)
+);
+CREATE TABLE IF NOT EXISTS control_model_specs (
+	flow_id INTEGER PRIMARY KEY REFERENCES flows(id) ON DELETE CASCADE,
+	version INTEGER NOT NULL,
+	spec_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
 ` + connectionsFlowIndex + `;
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);
 CREATE INDEX IF NOT EXISTS simulation_runs_flow_id_created_at_idx
 	ON simulation_runs(flow_id, created_at);
+CREATE INDEX IF NOT EXISTS analysis_runs_flow_id_idx
+	ON analysis_runs(flow_id);
 `
 
 const defaultProjectName = "Process Lab project"
@@ -253,7 +269,7 @@ func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
 // from running twice and renumbering a flowsheet a user has since rewired.
 //
 // Ports are numbered per target in connection-id order — exactly the order
-// compileFlow hands a Sum's signs to its inbound wires today — so no stored
+// compileModel hands a Sum's signs to its inbound wires today — so no stored
 // flowsheet changes what it computes. Nothing here names a block kind: every
 // target is numbered the same way, and a target that has only ever held one
 // wire lands on port 0 by arithmetic rather than by a rule about Sum. That
@@ -271,7 +287,7 @@ func ensureConnectionPorts(ctx context.Context, db *sql.DB) error {
 	// per-connection state, and it is turned off for the duration because
 	// DROP TABLE performs an implicit delete of every row while they are
 	// enforced, and because the copy would otherwise reject rows an older
-	// version could have orphaned — compileFlow's "a connection references a
+	// version could have orphaned — compileModel's "a connection references a
 	// missing block" exists precisely because such rows are possible. Those
 	// rows open today, so refusing to migrate them would take a database the
 	// user can still repair and make it unopenable.
@@ -401,7 +417,7 @@ func ensureDeclaredInputPorts(ctx context.Context, db *sql.DB) error {
 			if err != nil {
 				return fmt.Errorf("decode parameters for block %d: %w", block.id, err)
 			}
-			if definition.inputPortCount(parameters) >= block.ports ||
+			if len(definition.ports(parameters).inputs) >= block.ports ||
 				definition.declareWiredPorts == nil {
 				continue
 			}
@@ -887,12 +903,26 @@ func encodeParameters(parameters Parameters) (string, error) {
 }
 
 func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
-	parameters := defaultParameters(kind)
 	if encoded == "" {
-		return parameters, nil
+		return defaultParameters(kind), nil
 	}
-	if err := json.Unmarshal([]byte(encoded), &parameters); err != nil {
+	stored := struct {
+		Parameters
+		DelayMode *string `json:"delayMode"`
+	}{
+		Parameters: defaultParameters(kind),
+	}
+	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 		return Parameters{}, err
+	}
+	parameters := stored.Parameters
+	if stored.DelayMode != nil {
+		parameters.DelayMode = *stored.DelayMode
+	}
+	if kind == BlockDelay {
+		if stored.DelayMode == nil {
+			parameters.DelayMode = delayModePade
+		}
 	}
 	return parameters, nil
 }

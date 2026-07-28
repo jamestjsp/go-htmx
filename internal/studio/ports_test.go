@@ -90,7 +90,7 @@ INSERT INTO connections(id, flow_id, source_id, target_id) VALUES
 // database is opened without the foreign-key pragma, which is how row 16 —
 // a wire whose target block no longer exists — gets in. Databases written
 // before foreign keys were enforced can hold such rows, which is why
-// compileFlow has a message for them.
+// compileModel has a message for them.
 func openLegacyPortsDatabase(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy-ports.db")
@@ -137,7 +137,7 @@ func portedWires(t *testing.T, service *Studio) []portedWire {
 }
 
 // Ports are numbered per target in connection-id order because that is the
-// order compileFlow hands a Sum's signs to its inbound wires. Numbering them
+// order compileModel hands a Sum's signs to its inbound wires. Numbering them
 // any other way would quietly change which sign each stored wire carries.
 func TestOpenNumbersLegacyConnectionsOntoPorts(t *testing.T) {
 	ctx := context.Background()
@@ -477,8 +477,8 @@ func TestEveryVariadicKindDerivesItsInputPortsFromParameters(t *testing.T) {
 		if definition.arity() == arityVariadic && definition.inputPorts == nil {
 			t.Fatalf("%s is variadic but does not derive its input ports", kind)
 		}
-		if got, want := block.OutputPortCount(), boolToPorts(kind.HasOutput()); got != want {
-			t.Fatalf("%s output ports = %d, want %d", kind, got, want)
+		if got := block.OutputPortCount(); kind.HasOutput() != (got > 0) {
+			t.Fatalf("%s HasOutput = %t for %d output ports", kind, kind.HasOutput(), got)
 		}
 		switch definition.arity() {
 		case arityNone:
@@ -486,14 +486,8 @@ func TestEveryVariadicKindDerivesItsInputPortsFromParameters(t *testing.T) {
 				t.Fatalf("%s input ports = %d, want 0", kind, got)
 			}
 		case arityVariadic:
-			// Sum's default is one sign, so a fresh one starts with the same
-			// single port every other block has and grows as it is edited.
-			if got := block.InputPortCount(); got != 1 {
-				t.Fatalf("%s input ports at defaults = %d, want 1", kind, got)
-			}
-			block.Parameters.Signs = "+-+"
-			if got := block.InputPortCount(); got != 3 {
-				t.Fatalf("%s input ports for three signs = %d, want 3", kind, got)
+			if got, want := block.InputPortCount(), definition.inputPorts(block.Parameters); got != want {
+				t.Fatalf("%s input ports at defaults = %d, want %d", kind, got, want)
 			}
 		default:
 			if got := block.InputPortCount(); got != 1 {
@@ -501,13 +495,6 @@ func TestEveryVariadicKindDerivesItsInputPortsFromParameters(t *testing.T) {
 			}
 		}
 	}
-}
-
-func boolToPorts(present bool) int {
-	if present {
-		return 1
-	}
-	return 0
 }
 
 // twoPortSum adds a Sum and widens it to two input ports, which is the only
