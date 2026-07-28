@@ -382,6 +382,87 @@ func defaultVectorSumParameters() Parameters {
 	return Parameters{Signs: "+-", InputNames: &inputs, OutputNames: &outputs}
 }
 
+func defaultRoutingParameters() Parameters {
+	inputs, err := NewChannelNames([]string{"u1", "u2"})
+	if err != nil {
+		panic(err)
+	}
+	outputs, err := NewChannelNames([]string{"u2", "u1"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{InputNames: &inputs, OutputNames: &outputs}
+}
+
+func defaultMuxParameters() Parameters {
+	outputs, err := NewChannelNames([]string{"u1", "u2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{OutputNames: &outputs}
+}
+
+func defaultDemuxParameters() Parameters {
+	inputs, err := NewChannelNames([]string{"u1", "u2"})
+	if err != nil {
+		panic(err)
+	}
+	return Parameters{InputNames: &inputs}
+}
+
+func routingGain(inputNames, outputNames []string) (*mat.Dense, error) {
+	inputIndex := make(map[string]int, len(inputNames))
+	for index, name := range inputNames {
+		inputIndex[name] = index
+	}
+	values := make([]float64, len(outputNames)*len(inputNames))
+	for output, name := range outputNames {
+		input, ok := inputIndex[name]
+		if !ok {
+			return nil, invalid("output channel %q is not present in the input channels", name)
+		}
+		values[output*len(inputNames)+input] = 1
+	}
+	return mat.NewDense(len(outputNames), len(inputNames), values), nil
+}
+
+func routingPortSchema(parameters Parameters) blockPortSchema {
+	if parameters.InputNames == nil || parameters.OutputNames == nil {
+		return blockPortSchema{}
+	}
+	input, _ := newSignalPort(
+		parameters.InputNames.Len(),
+		parameters.InputNames.Names(),
+	)
+	output, _ := newSignalPort(
+		parameters.OutputNames.Len(),
+		parameters.OutputNames.Names(),
+	)
+	return blockPortSchema{inputs: []SignalPort{input}, outputs: []SignalPort{output}}
+}
+
+func realizeRoutingBlock(block Block, _ []int) (*controlsys.System, error) {
+	gain, err := routingGain(
+		block.Parameters.InputNames.Names(),
+		block.Parameters.OutputNames.Names(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return controlsys.NewGain(gain, 0)
+}
+
+func validateSelectorParameters(parameters Parameters) error {
+	if parameters.InputNames == nil || parameters.OutputNames == nil {
+		return invalid("input and output channel names are required")
+	}
+	_, err := routingGain(
+		parameters.InputNames.Names(),
+		parameters.OutputNames.Names(),
+	)
+	return err
+}
+
 func defaultDiscreteStateSpaceParameters() Parameters {
 	a, _ := NewMatrixValue(2, 2, []float64{0.8, 0, 0, 0.5})
 	b, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
@@ -481,6 +562,10 @@ var blockOrder = []BlockKind{
 	BlockSine,
 	BlockGain,
 	BlockMatrixGain,
+	BlockMux,
+	BlockDemux,
+	BlockSelector,
+	BlockPermutation,
 	BlockSum,
 	BlockVectorSum,
 	BlockLag,
@@ -679,6 +764,142 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			}
 			rows, columns := parameters.D.Dims()
 			return fmt.Sprintf("%d×%d named gain", rows, columns)
+		},
+	},
+	BlockMux: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockMux, Label: "Mux", Category: "Routing",
+			Description: "Assemble named scalar channels", Glyph: "M", Tag: "MIMO ROUTING",
+		},
+		Defaults: defaultMuxParameters(),
+		Parameters: []parameterDefinition{
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		variadic: true,
+		inputPorts: func(parameters Parameters) int {
+			if parameters.OutputNames == nil {
+				return 0
+			}
+			return parameters.OutputNames.Len()
+		},
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.OutputNames == nil {
+				return blockPortSchema{}
+			}
+			names := parameters.OutputNames.Names()
+			inputs := make([]SignalPort, len(names))
+			for port, name := range names {
+				inputs[port], _ = newSignalPort(1, []string{name})
+			}
+			output, _ := newSignalPort(len(names), names)
+			return blockPortSchema{inputs: inputs, outputs: []SignalPort{output}}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewGain(identityDense(block.Parameters.OutputNames.Len()), 0)
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.OutputNames == nil {
+				return invalid("output channel names are required")
+			}
+			return nil
+		},
+		checkInputs: func(block Block, inputs int) error {
+			want := block.Parameters.OutputNames.Len()
+			if inputs != want {
+				return invalid("%s needs one scalar input for each of its %d output channels", block.Name, want)
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("assemble %d channels", parameters.OutputNames.Len())
+		},
+	},
+	BlockDemux: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockDemux, Label: "Demux", Category: "Routing",
+			Description: "Decompose a named vector", Glyph: "D", Tag: "MIMO ROUTING",
+		},
+		Defaults: defaultDemuxParameters(),
+		Parameters: []parameterDefinition{
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+		},
+		portSchema: func(parameters Parameters) blockPortSchema {
+			if parameters.InputNames == nil {
+				return blockPortSchema{}
+			}
+			names := parameters.InputNames.Names()
+			input, _ := newSignalPort(len(names), names)
+			outputs := make([]SignalPort, len(names))
+			for port, name := range names {
+				outputs[port], _ = newSignalPort(1, []string{name})
+			}
+			return blockPortSchema{inputs: []SignalPort{input}, outputs: outputs}
+		},
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			return controlsys.NewGain(identityDense(block.Parameters.InputNames.Len()), 0)
+		},
+		validate: func(parameters Parameters) error {
+			if parameters.InputNames == nil {
+				return invalid("input channel names are required")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("decompose %d channels", parameters.InputNames.Len())
+		},
+	},
+	BlockSelector: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockSelector, Label: "Selector", Category: "Routing",
+			Description: "Select a named channel subset", Glyph: "S", Tag: "MIMO ROUTING",
+		},
+		Defaults: defaultRoutingParameters(),
+		Parameters: []parameterDefinition{
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Selected channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		portSchema: routingPortSchema,
+		realize:    realizeRoutingBlock,
+		validate:   validateSelectorParameters,
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("select %d of %d channels", parameters.OutputNames.Len(), parameters.InputNames.Len())
+		},
+	},
+	BlockPermutation: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockPermutation, Label: "Permutation", Category: "Routing",
+			Description: "Reorder named vector channels", Glyph: "P", Tag: "MIMO ROUTING",
+		},
+		Defaults: defaultRoutingParameters(),
+		Parameters: []parameterDefinition{
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output order", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		},
+		portSchema: routingPortSchema,
+		realize:    realizeRoutingBlock,
+		validate: func(parameters Parameters) error {
+			if err := validateSelectorParameters(parameters); err != nil {
+				return err
+			}
+			if parameters.InputNames.Len() != parameters.OutputNames.Len() {
+				return invalid("permutation output must contain every input channel exactly once")
+			}
+			return nil
+		},
+		summary: func(parameters Parameters) string {
+			return fmt.Sprintf("reorder %d channels", parameters.InputNames.Len())
 		},
 	},
 	BlockSum: {

@@ -343,6 +343,13 @@ stale, while a layout-only move leaves their model revision current. The dock
 renders step, pole-zero, Bode, Nyquist, Nichols, singular-value, and root-locus
 views from that shared channel and revision metadata.
 
+Named vector routing is explicit diagram algebra. Mux assembles scalar ports
+into one named vector; Demux decomposes it; Selector emits a validated named
+subset; Permutation requires and reorders the complete channel set. Each is a
+static `controlsys.NewGain` selection matrix, so vector fan-out, MIMO sums,
+feedback, simulation, and analysis all use the same named interconnection
+compiler. Missing or duplicate channel names are rejected before compilation.
+
 The linear boundary is deliberate. Continuous and discrete state-space,
 transfer-function, delay, and named MIMO models stay within controlsys.
 Continuous/discrete mixtures and unresolved multirate execution are refused
