@@ -228,6 +228,8 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Sources | Sine Wave | Biased sinusoid with amplitude, angular frequency, and phase | No input |
 | Math | Gain | Multiplies its input by `K` | Exactly one |
 | Math | Matrix Gain | Named vector relation `y = Du` | One vector input |
+| Math | Mux / Demux | Assemble scalar channels into a named vector, or decompose one | Named scalar ports / one named vector |
+| Math | Selector / Permutation | Select a named subset, or reorder a complete named channel set | One named vector |
 | Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One input port per sign |
 | Math | Vector Sum | Adds or subtracts named vectors | One vector input port per sign |
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
@@ -235,6 +237,10 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
 | Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
 | Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
+| Models | State-Space | Named continuous or discrete MIMO `A,B,C,D` realization | One named vector input |
+| Models | MIMO Transfer Function | Output-row denominators, per-channel numerators and delays | One named vector input |
+| Models | Zero-Pole-Gain | Per-channel zeros, poles, and finite gain matrix | One named vector input |
+| Models | Frequency Response Data | Named complex MIMO samples on an explicit rad/s grid | Frequency-domain workflows only |
 | Discrete | Unit Delay | Exact one-sample state at an explicit or inherited rate | Exactly one |
 | Discrete | Transfer Function | Proper SISO numerator/denominator model in `z` | Exactly one |
 | Discrete | State-Space | Named MIMO `x[k+1]=Ax[k]+Bu[k]`, `y[k]=Cx[k]+Du[k]` | One named vector input |
@@ -254,10 +260,21 @@ Scalar diagrams retain width one and their existing port numbers. A vector is
 one connection, not several unrelated wires: connections reject unequal
 widths before persistence, then the compiler expands compatible vector
 channels into deterministic `ConnectByName` pairs. Matrix Gain, Vector Sum,
-Vector Constant, Vector Scope, and discrete State-Space exercise the same
-named MIMO feedback path. State-space channel names and matrix dimensions are
-validated together, so a stored model cannot claim a port width that differs
-from its realization.
+Vector Constant, Vector Scope, State-Space, MIMO Transfer Function,
+Zero-Pole-Gain, and the routing blocks exercise the same named MIMO feedback
+path. Representation dimensions and channel names are validated together, so
+a stored model cannot claim a port width that differs from its realization.
+
+State-Space, MIMO Transfer Function, and Zero-Pole-Gain preserve their
+authored parameters while delegating realization and conversion to
+`controlsys`. Their explicit time-domain choice determines whether `Dt` is
+zero or a positive sample time. MIMO transfer functions use the package's
+native shape: one denominator per output row, one numerator and delay per
+output/input channel. Frequency Response Data owns a strictly increasing
+rad/s grid and finite row-major complex response samples. Because controlsys
+FRD has no state-space conversion, an FRD block is deliberately
+frequency-domain-only until an identification or fitting workflow creates a
+time realization.
 
 Transport Delay preserves exact delay metadata through named series and
 feedback composition. Exact time simulation requires the delay to be an

@@ -40,6 +40,10 @@ const (
 	BlockTransfer            BlockKind = "transfer"
 	BlockPID                 BlockKind = "pid"
 	BlockDelay               BlockKind = "delay"
+	BlockStateSpace          BlockKind = "state_space"
+	BlockMIMOTransfer        BlockKind = "mimo_transfer"
+	BlockZPK                 BlockKind = "zpk"
+	BlockFRD                 BlockKind = "frd"
 	BlockUnitDelay           BlockKind = "unit_delay"
 	BlockDiscreteTransfer    BlockKind = "discrete_transfer"
 	BlockDiscreteStateSpace  BlockKind = "discrete_state_space"
@@ -70,36 +74,46 @@ func (k BlockKind) HasOutput() bool {
 }
 
 type Parameters struct {
-	Amplitude        float64       `json:"amplitude,omitempty"`
-	InitialValue     float64       `json:"initialValue,omitempty"`
-	StepTime         float64       `json:"stepTime,omitempty"`
-	Value            float64       `json:"value,omitempty"`
-	Bias             float64       `json:"bias,omitempty"`
-	Frequency        float64       `json:"frequency,omitempty"`
-	Phase            float64       `json:"phase,omitempty"`
-	Gain             float64       `json:"gain,omitempty"`
-	Signs            string        `json:"signs,omitempty"`
-	TimeConstant     float64       `json:"timeConstant,omitempty"`
-	Numerator        []float64     `json:"numerator,omitempty"`
-	Denominator      []float64     `json:"denominator,omitempty"`
-	Proportional     float64       `json:"proportional,omitempty"`
-	Integral         float64       `json:"integral,omitempty"`
-	Derivative       float64       `json:"derivative,omitempty"`
-	FilterTime       float64       `json:"filterTime,omitempty"`
-	Delay            float64       `json:"delay,omitempty"`
-	DelayMode        string        `json:"delayMode,omitempty"`
-	Approximation    int           `json:"approximation,omitempty"`
-	SampleTime       float64       `json:"sampleTime,omitempty"`
-	SampleTimeMode   string        `json:"sampleTimeMode,omitempty"`
-	ConversionMethod string        `json:"conversionMethod,omitempty"`
-	A                *MatrixValue  `json:"a,omitempty"`
-	B                *MatrixValue  `json:"b,omitempty"`
-	C                *MatrixValue  `json:"c,omitempty"`
-	D                *MatrixValue  `json:"d,omitempty"`
-	InputNames       *ChannelNames `json:"inputNames,omitempty"`
-	OutputNames      *ChannelNames `json:"outputNames,omitempty"`
-	StateNames       *ChannelNames `json:"stateNames,omitempty"`
-	Vector           *VectorValue  `json:"vector,omitempty"`
+	Amplitude            float64                 `json:"amplitude,omitempty"`
+	InitialValue         float64                 `json:"initialValue,omitempty"`
+	StepTime             float64                 `json:"stepTime,omitempty"`
+	Value                float64                 `json:"value,omitempty"`
+	Bias                 float64                 `json:"bias,omitempty"`
+	Frequency            float64                 `json:"frequency,omitempty"`
+	Phase                float64                 `json:"phase,omitempty"`
+	Gain                 float64                 `json:"gain,omitempty"`
+	Signs                string                  `json:"signs,omitempty"`
+	TimeConstant         float64                 `json:"timeConstant,omitempty"`
+	Numerator            []float64               `json:"numerator,omitempty"`
+	Denominator          []float64               `json:"denominator,omitempty"`
+	Proportional         float64                 `json:"proportional,omitempty"`
+	Integral             float64                 `json:"integral,omitempty"`
+	Derivative           float64                 `json:"derivative,omitempty"`
+	FilterTime           float64                 `json:"filterTime,omitempty"`
+	Delay                float64                 `json:"delay,omitempty"`
+	DelayMode            string                  `json:"delayMode,omitempty"`
+	Approximation        int                     `json:"approximation,omitempty"`
+	SampleTime           float64                 `json:"sampleTime,omitempty"`
+	SampleTimeMode       string                  `json:"sampleTimeMode,omitempty"`
+	ConversionMethod     string                  `json:"conversionMethod,omitempty"`
+	TimeDomain           string                  `json:"timeDomain,omitempty"`
+	FrequencyUnit        string                  `json:"frequencyUnit,omitempty"`
+	ResponseUnit         string                  `json:"responseUnit,omitempty"`
+	A                    *MatrixValue            `json:"a,omitempty"`
+	B                    *MatrixValue            `json:"b,omitempty"`
+	C                    *MatrixValue            `json:"c,omitempty"`
+	D                    *MatrixValue            `json:"d,omitempty"`
+	InputNames           *ChannelNames           `json:"inputNames,omitempty"`
+	OutputNames          *ChannelNames           `json:"outputNames,omitempty"`
+	StateNames           *ChannelNames           `json:"stateNames,omitempty"`
+	Vector               *VectorValue            `json:"vector,omitempty"`
+	TransferNumerators   *PolynomialMatrixValue  `json:"transferNumerators,omitempty"`
+	TransferDenominators *PolynomialMatrixValue  `json:"transferDenominators,omitempty"`
+	TransferDelays       *MatrixValue            `json:"transferDelays,omitempty"`
+	Zeros                *ComplexRootMatrixValue `json:"zeros,omitempty"`
+	Poles                *ComplexRootMatrixValue `json:"poles,omitempty"`
+	Frequencies          *VectorValue            `json:"frequencies,omitempty"`
+	FrequencyResponse    *ComplexResponseValue   `json:"frequencyResponse,omitempty"`
 }
 
 // Sheet geometry. The flowsheet is a fixed world measured in sheet

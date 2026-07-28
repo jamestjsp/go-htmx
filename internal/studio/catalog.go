@@ -573,6 +573,10 @@ var blockOrder = []BlockKind{
 	BlockTransfer,
 	BlockPID,
 	BlockDelay,
+	BlockStateSpace,
+	BlockMIMOTransfer,
+	BlockZPK,
+	BlockFRD,
 	BlockUnitDelay,
 	BlockDiscreteTransfer,
 	BlockDiscreteStateSpace,
@@ -1327,6 +1331,188 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			}
 		},
 	},
+	BlockStateSpace: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockStateSpace, Label: "State-Space", Category: "Models",
+			Description: "Named continuous or discrete MIMO model", Glyph: "SS", Tag: "MIMO",
+		},
+		Defaults: defaultStateSpaceParameters(),
+		Parameters: append([]parameterDefinition{
+			matrixField("a", "A matrix", func(parameters *Parameters) **MatrixValue { return &parameters.A }),
+			matrixField("b", "B matrix", func(parameters *Parameters) **MatrixValue { return &parameters.B }),
+			matrixField("c", "C matrix", func(parameters *Parameters) **MatrixValue { return &parameters.C }),
+			matrixField("d", "D matrix", func(parameters *Parameters) **MatrixValue { return &parameters.D }),
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+			channelNamesField("state_names", "State names", func(parameters *Parameters) **ChannelNames {
+				return &parameters.StateNames
+			}),
+		}, representationTimeFields()...),
+		portSchema: namedLTIPortSchema,
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			system, err := stateSpaceFromParameters(block.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("controlsys state-space construction: %w", err)
+			}
+			return system, nil
+		},
+		timeDomain: representationTimeDomain,
+		validate:   validateStateSpaceParameters,
+		summary: func(parameters Parameters) string {
+			states, _ := parameters.A.Dims()
+			return fmt.Sprintf(
+				"%d-state %d×%d · %s",
+				states, parameters.OutputNames.Len(), parameters.InputNames.Len(),
+				normalizedModelDomain(parameters),
+			)
+		},
+	},
+	BlockMIMOTransfer: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockMIMOTransfer, Label: "MIMO Transfer Function", Category: "Models",
+			Description: "Named transfer matrix with row denominators and pairwise delays",
+			Glyph:       "G(s)", Tag: "MIMO",
+		},
+		Defaults: defaultMIMOTransferParameters(),
+		Parameters: append([]parameterDefinition{
+			polynomialMatrixField(
+				"transfer_numerators", "Numerator matrix",
+				func(parameters *Parameters) **PolynomialMatrixValue {
+					return &parameters.TransferNumerators
+				},
+			),
+			polynomialMatrixField(
+				"transfer_denominators", "Denominator rows",
+				func(parameters *Parameters) **PolynomialMatrixValue {
+					return &parameters.TransferDenominators
+				},
+			),
+			matrixField("transfer_delays", "Pairwise delays", func(parameters *Parameters) **MatrixValue {
+				return &parameters.TransferDelays
+			}),
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		}, representationTimeFields()...),
+		portSchema: namedLTIPortSchema,
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			system, err := transferSystemFromParameters(block.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("controlsys transfer conversion: %w", err)
+			}
+			return system, nil
+		},
+		timeDomain: representationTimeDomain,
+		validate:   validateMIMOTransferParameters,
+		summary: func(parameters Parameters) string {
+			outputs, inputs := parameters.TransferNumerators.Dims()
+			return fmt.Sprintf("%d×%d transfer matrix · %s", outputs, inputs, normalizedModelDomain(parameters))
+		},
+	},
+	BlockZPK: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockZPK, Label: "Zero-Pole-Gain", Category: "Models",
+			Description: "Named MIMO zero-pole-gain model", Glyph: "ZPK", Tag: "MIMO",
+		},
+		Defaults: defaultZPKParameters(),
+		Parameters: append([]parameterDefinition{
+			complexRootMatrixField(
+				"zeros", "Zero matrix", func(parameters *Parameters) **ComplexRootMatrixValue {
+					return &parameters.Zeros
+				},
+			),
+			complexRootMatrixField(
+				"poles", "Pole matrix", func(parameters *Parameters) **ComplexRootMatrixValue {
+					return &parameters.Poles
+				},
+			),
+			matrixField("d", "Gain matrix", func(parameters *Parameters) **MatrixValue {
+				return &parameters.D
+			}),
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+		}, representationTimeFields()...),
+		portSchema: namedLTIPortSchema,
+		realize: func(block Block, _ []int) (*controlsys.System, error) {
+			system, err := zpkSystemFromParameters(block.Parameters)
+			if err != nil {
+				return nil, fmt.Errorf("controlsys ZPK conversion: %w", err)
+			}
+			return system, nil
+		},
+		timeDomain: representationTimeDomain,
+		validate:   validateZPKParameters,
+		summary: func(parameters Parameters) string {
+			outputs, inputs := parameters.D.Dims()
+			return fmt.Sprintf("%d×%d zero-pole-gain · %s", outputs, inputs, normalizedModelDomain(parameters))
+		},
+	},
+	BlockFRD: {
+		BlockDefinition: BlockDefinition{
+			Kind: BlockFRD, Label: "Frequency Response Data", Category: "Models",
+			Description: "Named complex MIMO samples for frequency-domain workflows",
+			Glyph:       "FRD", Tag: "FREQUENCY",
+		},
+		Defaults: defaultFRDParameters(),
+		Parameters: append([]parameterDefinition{
+			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.InputNames
+			}),
+			channelNamesField("output_names", "Output channels", func(parameters *Parameters) **ChannelNames {
+				return &parameters.OutputNames
+			}),
+			vectorField("frequencies", "Frequency grid", func(parameters *Parameters) **VectorValue {
+				return &parameters.Frequencies
+			}),
+			complexResponseField(
+				"frequency_response", "Complex response samples",
+				func(parameters *Parameters) **ComplexResponseValue {
+					return &parameters.FrequencyResponse
+				},
+			),
+			{
+				Name: "frequency_unit", Label: "Frequency unit", Type: "select",
+				Options: []parameterOption{
+					{Value: frequencyUnitRadiansPerSecond, Label: "Radians per second"},
+				},
+				set: func(parameters *Parameters, raw string) error {
+					parameters.FrequencyUnit = strings.TrimSpace(raw)
+					return nil
+				},
+				text: func(parameters Parameters) string { return parameters.FrequencyUnit },
+			},
+			{
+				Name: "response_unit", Label: "Response unit", Type: "select",
+				Options: []parameterOption{
+					{Value: responseUnitLinearComplexGain, Label: "Linear complex gain"},
+				},
+				set: func(parameters *Parameters, raw string) error {
+					parameters.ResponseUnit = strings.TrimSpace(raw)
+					return nil
+				},
+				text: func(parameters Parameters) string { return parameters.ResponseUnit },
+			},
+		}, representationTimeFields()...),
+		portSchema: namedLTIPortSchema,
+		realize:    realizeFRDBlock,
+		timeDomain: representationTimeDomain,
+		validate:   validateFRDParameters,
+		summary: func(parameters Parameters) string {
+			samples, outputs, inputs := parameters.FrequencyResponse.Dims()
+			return fmt.Sprintf("%d×%d · %d frequencies", outputs, inputs, samples)
+		},
+	},
 	BlockUnitDelay: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockUnitDelay, Label: "Unit Delay", Category: "Discrete",
@@ -1711,6 +1897,111 @@ func matrixField(
 	}
 }
 
+func polynomialMatrixField(
+	name, label string,
+	field func(*Parameters) **PolynomialMatrixValue,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "textarea",
+		Placeholder: "1 | 0\n0 | 1",
+		Help:        "Rows use new lines, channels use |, coefficients use commas in descending powers.",
+		set: func(parameters *Parameters, raw string) error {
+			value, err := ParsePolynomialMatrixValue(raw)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			return value.Dims()
+		},
+	}
+}
+
+func complexRootMatrixField(
+	name, label string,
+	field func(*Parameters) **ComplexRootMatrixValue,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "textarea",
+		Placeholder: "-1+2i, -1-2i | -",
+		Help:        "Rows use new lines, channels use |, roots use commas, and - means no roots.",
+		set: func(parameters *Parameters, raw string) error {
+			value, err := ParseComplexRootMatrixValue(raw)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			return value.Dims()
+		},
+	}
+}
+
+func complexResponseField(
+	name, label string,
+	field func(*Parameters) **ComplexResponseValue,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "textarea",
+		Placeholder: "1-0.1i | 0 | 0 | 0.5-0.02i",
+		Help:        "One frequency per row; response channels are row-major output-by-input values separated by |.",
+		set: func(parameters *Parameters, raw string) error {
+			if parameters.InputNames == nil || parameters.OutputNames == nil {
+				return invalid("input and output channel names are required before frequency responses")
+			}
+			value, err := ParseComplexResponseValue(
+				raw, parameters.OutputNames.Len(), parameters.InputNames.Len(),
+			)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			samples, outputs, inputs := value.Dims()
+			return samples, outputs * inputs
+		},
+	}
+}
+
 func vectorField(
 	name, label string,
 	field func(*Parameters) **VectorValue,
@@ -1802,10 +2093,17 @@ func cloneParameters(parameters Parameters) Parameters {
 	parameters.B = cloneMatrixValue(parameters.B)
 	parameters.C = cloneMatrixValue(parameters.C)
 	parameters.D = cloneMatrixValue(parameters.D)
+	parameters.TransferDelays = cloneMatrixValue(parameters.TransferDelays)
 	parameters.InputNames = cloneChannelNames(parameters.InputNames)
 	parameters.OutputNames = cloneChannelNames(parameters.OutputNames)
 	parameters.StateNames = cloneChannelNames(parameters.StateNames)
 	parameters.Vector = cloneVectorValue(parameters.Vector)
+	parameters.TransferNumerators = clonePolynomialMatrixValue(parameters.TransferNumerators)
+	parameters.TransferDenominators = clonePolynomialMatrixValue(parameters.TransferDenominators)
+	parameters.Zeros = cloneComplexRootMatrixValue(parameters.Zeros)
+	parameters.Poles = cloneComplexRootMatrixValue(parameters.Poles)
+	parameters.Frequencies = cloneVectorValue(parameters.Frequencies)
+	parameters.FrequencyResponse = cloneComplexResponseValue(parameters.FrequencyResponse)
 	return parameters
 }
 

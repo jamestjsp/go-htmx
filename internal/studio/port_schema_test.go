@@ -14,7 +14,9 @@ func TestScalarPortsKeepWidthOneAndExistingPortIDs(t *testing.T) {
 			kind == BlockVectorSum || kind == BlockVectorScope ||
 			kind == BlockDiscreteStateSpace ||
 			kind == BlockMux || kind == BlockDemux ||
-			kind == BlockSelector || kind == BlockPermutation {
+			kind == BlockSelector || kind == BlockPermutation ||
+			kind == BlockStateSpace || kind == BlockMIMOTransfer ||
+			kind == BlockZPK || kind == BlockFRD {
 			continue
 		}
 		block := Block{Kind: kind, Parameters: defaultParameters(kind)}
