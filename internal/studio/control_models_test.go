@@ -407,6 +407,38 @@ func TestBuildControlModelsRejectsMixedDomains(t *testing.T) {
 	}
 }
 
+func TestBuildControlModelsLetsNeutralControllerInheritDiscretePlantRate(t *testing.T) {
+	snapshot, spec := sisoControlFixture()
+	snapshot.Blocks[0].Kind = BlockUnitDelay
+	snapshot.Blocks[0].Parameters = defaultParameters(BlockUnitDelay)
+	resolved, err := resolveControlRoleSpec(
+		snapshot.Blocks, snapshot.Connections, spec,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := buildControlModels(
+		snapshot, resolved, ControlModelBuildRequest{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if models.Plant.Dt != 0.1 || models.Controller.Dt != 0.1 {
+		t.Fatalf(
+			"discrete rates = plant %g, controller %g",
+			models.Plant.Dt, models.Controller.Dt,
+		)
+	}
+	for _, point := range models.Points {
+		if point.OpenLoop.Dt != 0.1 || point.ClosedLoop.Dt != 0.1 {
+			t.Fatalf(
+				"%s rates = open %g, closed %g",
+				point.Name, point.OpenLoop.Dt, point.ClosedLoop.Dt,
+			)
+		}
+	}
+}
+
 func TestBuildControlModelsPreservesExactDelayMetadata(t *testing.T) {
 	snapshot, _ := sisoControlFixture()
 	snapshot.Blocks[0].Kind = BlockDelay

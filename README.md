@@ -382,6 +382,25 @@ simulation. Exact-delay metadata is retained through selection and feedback;
 dependency failures are returned as named errors instead of escaping as a
 panic.
 
+`Studio.TuneController` adds bounded controlsys tuning without turning the
+handler into an optimization script. A request selects stable block/parameter
+identities, finite bounds, an explicit analysis point, and any combination of
+tracking, rejection, sensitivity, weighted-gain, loop-shape, margin, pole, and
+overshoot goals. Gain, Matrix Gain, PID, continuous/discrete transfer
+functions, MIMO transfer matrices, and continuous/discrete state-space
+controller blocks map to controlsys tunable blocks while retaining an exact
+path back to their authored parameters.
+
+GridTune, Systune, and Looptune candidates carry the source model revision,
+sampled values and bounds, per-goal diagnostics, failed-goal violations, the
+candidate controller, and closed-loop model. The current controlsys Systune
+and Looptune implementations use the same bounded Cartesian search as
+GridTune, so candidates say so rather than presenting it as continuous
+optimization. Candidate generation is read-only.
+`Studio.ApplyTuningCandidate` checks the exact source revision and replaces
+all selected parameters in one transaction; stale candidates are refused.
+Neutral gain controllers inherit a discrete plant's sample time.
+
 Simulation series, metrics, and spectra carry block, port, channel index, and
 channel name together. Vector results therefore keep deterministic labels and
 ordering through JSON persistence, rendering, and export instead of relying on
@@ -471,6 +490,12 @@ mixed-domain refusal, exact-delay retention, corrupt and mismatched storage
 versions, legacy migration with no inferred roles, restart round trips,
 full-sheet role remapping, and atomic role removal when a referenced block is
 deleted.
+
+The generalized-tuning tests independently verify boundary optima,
+conflicting-goal evidence, all eight goal families, named MIMO matrix
+dimensions, transfer-function and state-space parameter round trips, discrete
+sample-time inheritance, non-mutating candidate generation, atomic apply, and
+stale-candidate refusal.
 
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks

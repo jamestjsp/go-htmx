@@ -556,6 +556,10 @@ func buildControlModels(
 	if err != nil {
 		return ControlModelSet{}, fmt.Errorf("build controller: %w", err)
 	}
+	if plant.IsDiscrete() &&
+		subsystemUsesOnlyNeutralTimeDomain(snapshot.Blocks, spec.Controller.Blocks) {
+		controller.Dt = plant.Dt
+	}
 	if err := validateControlModelDomains(plant, controller); err != nil {
 		return ControlModelSet{}, err
 	}
@@ -603,6 +607,22 @@ func buildControlModels(
 		}
 	}
 	return result, nil
+}
+
+func subsystemUsesOnlyNeutralTimeDomain(blocks []Block, blockIDs []int64) bool {
+	selected := make(map[int64]struct{}, len(blockIDs))
+	for _, blockID := range blockIDs {
+		selected[blockID] = struct{}{}
+	}
+	for _, block := range blocks {
+		if _, ok := selected[block.ID]; !ok {
+			continue
+		}
+		if blockDefinitions[block.Kind].domain(block.Parameters).kind != timeDomainNeutral {
+			return false
+		}
+	}
+	return true
 }
 
 func controlPointSystems(
