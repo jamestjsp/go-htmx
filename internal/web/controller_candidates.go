@@ -42,6 +42,7 @@ type pendingControllerCandidate struct {
 	Review   studio.ControllerCandidateReview
 	PID      *studio.PIDDesignCandidate
 	State    *studio.StateDesignCandidate
+	Robust   *studio.RobustSynthesisCandidate
 	Undo     *studio.ControllerUndoCandidate
 	Applied  bool
 	applying bool
@@ -361,6 +362,67 @@ func (s *Server) designStateCandidate(w http.ResponseWriter, r *http.Request) {
 	s.renderControllerCandidate(w, r, pending, "")
 }
 
+func (s *Server) designRobustCandidate(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderControllerCandidateFailure(
+			w, r, flowID, "Invalid robust-synthesis settings.",
+		)
+		return
+	}
+	horizon, horizonErr := optionalFormFloat(r, "review_horizon")
+	baseStep, baseStepErr := optionalFormFloat(r, "base_step")
+	if horizonErr != nil || baseStepErr != nil {
+		s.renderControllerCandidateFailure(
+			w, r, flowID, "Robust-synthesis settings must be finite numbers.",
+		)
+		return
+	}
+	candidate, err := s.studio.DesignRobustController(
+		r.Context(),
+		flowID,
+		studio.RobustSynthesisRequest{
+			Method:   studio.RobustSynthesisMethod(r.FormValue("method")),
+			BaseStep: baseStep,
+		},
+	)
+	if err != nil {
+		s.renderControllerCandidateFailure(
+			w, r, flowID, studio.ValidationMessage(err),
+		)
+		return
+	}
+	review, err := s.studio.ReviewRobustSynthesisCandidate(
+		r.Context(), candidate, horizon,
+	)
+	if err != nil {
+		s.renderControllerCandidateFailure(
+			w, r, flowID, studio.ValidationMessage(err),
+		)
+		return
+	}
+	id, err := newControllerCandidateID()
+	if err != nil {
+		http.Error(
+			w, "Process Lab could not create a candidate.",
+			http.StatusInternalServerError,
+		)
+		return
+	}
+	pending := &pendingControllerCandidate{
+		ID: id, FlowID: flowID, Kind: "robust-synthesis",
+		Review: review, Robust: &candidate,
+	}
+	if conflict := s.controllerCandidates.put(pending); conflict != controllerCandidatePutOK {
+		s.renderControllerCandidatePutConflict(w, r, flowID, conflict)
+		return
+	}
+	s.renderControllerCandidate(w, r, pending, "")
+}
+
 func (s *Server) applyControllerCandidate(w http.ResponseWriter, r *http.Request) {
 	flowID, ok := pathID(w, r, "flowID")
 	if !ok {
@@ -386,6 +448,10 @@ func (s *Server) applyControllerCandidate(w http.ResponseWriter, r *http.Request
 	case "state-space":
 		result, err = s.studio.ApplyStateDesignCandidateWithUndo(
 			r.Context(), *candidate.State,
+		)
+	case "robust-synthesis":
+		result, err = s.studio.ApplyRobustSynthesisCandidateWithUndo(
+			r.Context(), *candidate.Robust,
 		)
 	default:
 		err = fmt.Errorf("unsupported controller candidate kind %q", candidate.Kind)
@@ -597,6 +663,8 @@ func newControllerCandidateView(
 	view.RefreshFormID = "pid-controller-design-form"
 	if pending.Kind == "state-space" {
 		view.RefreshFormID = "state-controller-design-form"
+	} else if pending.Kind == "robust-synthesis" {
+		view.RefreshFormID = "robust-controller-design-form"
 	}
 	if pending.PID != nil {
 		gains := pending.PID.Gains
@@ -639,6 +707,35 @@ func newControllerCandidateView(
 				Value: strconv.Itoa(len(pending.State.EstimatorPoles)),
 			},
 		)
+	}
+	if pending.Robust != nil {
+		evidence := pending.Robust.Evidence
+		view.Details = append(view.Details,
+			analysisMetricView{
+				Label: "Achieved norm",
+				Value: formatAnalysisNumber(evidence.AchievedNorm),
+			},
+			analysisMetricView{
+				Label: "Stable closed loop",
+				Value: strconv.FormatBool(evidence.StableClosedLoop),
+			},
+			analysisMetricView{
+				Label: "Closed-loop poles",
+				Value: strconv.Itoa(len(evidence.ClosedLoopPoles)),
+			},
+		)
+		if pending.Robust.Method == studio.RobustSynthesisHinf {
+			view.Details = append(view.Details,
+				analysisMetricView{
+					Label: "Gamma bound",
+					Value: formatAnalysisNumber(evidence.GammaBound),
+				},
+				analysisMetricView{
+					Label: "Peak frequency",
+					Value: formatAnalysisNumber(evidence.PeakFrequency) + " rad/s",
+				},
+			)
+		}
 	}
 	appendControllerComparisons(&view, review)
 	appendControllerPlots(&view, review)

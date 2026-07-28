@@ -405,6 +405,50 @@ func TestLQGCandidateReviewAndApplyThroughHTMX(t *testing.T) {
 	}
 }
 
+func TestRobustSynthesisIsAvailableThroughTheControllerWorkspace(t *testing.T) {
+	server, _ := openTestServer(t)
+	page := request(
+		t, server, http.MethodGet, "/projects/1/flows/1", nil,
+	)
+	for _, expected := range []string{
+		`id="robust-controller-design-form"`,
+		`action="/flows/1/controller-candidates/robust"`,
+		`<option value="h2">H2</option>`,
+		`<option value="hinf">H∞</option>`,
+	} {
+		if !strings.Contains(page.Body.String(), expected) {
+			t.Errorf("controller workspace does not contain %q", expected)
+		}
+	}
+
+	invalid := requestHX(
+		t, server, http.MethodPost,
+		"/flows/1/controller-candidates/robust",
+		url.Values{"method": {"unknown"}, "review_horizon": {"10"}},
+	)
+	if invalid.Code != http.StatusOK {
+		t.Fatalf(
+			"invalid robust request status = %d: %s",
+			invalid.Code,
+			invalid.Body.String(),
+		)
+	}
+	if !strings.Contains(
+		invalid.Body.String(),
+		`robust synthesis method must be &#34;h2&#34; or &#34;hinf&#34;`,
+	) {
+		t.Fatalf("robust validation response = %s", invalid.Body.String())
+	}
+	if invalid.Header().Get("HX-Retarget") != "#controller-candidate" ||
+		invalid.Header().Get("HX-Reswap") != "innerHTML" {
+		t.Fatalf(
+			"robust HTMX swap = target %q, swap %q",
+			invalid.Header().Get("HX-Retarget"),
+			invalid.Header().Get("HX-Reswap"),
+		)
+	}
+}
+
 func TestControllerCandidateRejectsWrongFlowAndStaleModel(t *testing.T) {
 	server, service := openTestServer(t)
 	flowID, _, _ := webPIDDesignFlow(t, service)

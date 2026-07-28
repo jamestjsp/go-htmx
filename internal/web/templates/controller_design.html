@@ -62,6 +62,31 @@
         <span class="htmx-indicator">Designing…</span>
       </button>
     </form>
+
+    <form
+      class="analysis-form"
+      id="robust-controller-design-form"
+      method="post"
+      action="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/robust"
+      hx-post="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/robust"
+      hx-target="#controller-candidate"
+      hx-swap="innerHTML"
+      hx-disabled-elt="button">
+      <strong>H2 / H∞ synthesis</strong>
+      <label>
+        <span>Method</span>
+        <select name="method">
+          <option value="h2">H2</option>
+          <option value="hinf">H∞</option>
+        </select>
+      </label>
+      <label><span>Base step</span><input name="base_step" type="number" min=".000001" step=".001" placeholder="continuous default"></label>
+      <label><span>Review horizon</span><input name="review_horizon" type="number" min=".1" max="120" step=".1" value="10"></label>
+      <button class="run-button analysis-run-button" type="submit">
+        <span class="run-label">Synthesize robust candidate</span>
+        <span class="htmx-indicator">Synthesizing…</span>
+      </button>
+    </form>
   </div>
 
   <div id="controller-candidate" aria-live="polite">

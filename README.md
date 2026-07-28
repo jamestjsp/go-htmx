@@ -15,7 +15,6 @@ The expected steady-state value is `1.8 + (0.3 × -0.7) = 1.59`, which is also a
 Requirements:
 
 - Go 1.26.3 or newer
-- an internet connection for the pinned HTMX 2.0.10 CDN script
 
 ```bash
 go run ./cmd/processlab
@@ -29,7 +28,10 @@ To use another address or database:
 go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
 ```
 
-All CSS, application JavaScript, and HTML templates are embedded in the Go binary. Only HTMX itself is loaded from the pinned CDN URL.
+All CSS, application JavaScript, HTMX 2.0.10, and HTML templates are embedded
+in the Go binary. The browser application therefore has no runtime CDN
+dependency. The vendored HTMX license is served from
+`/assets/htmx-LICENSE.txt`.
 
 ## Run with Docker Compose
 
@@ -217,6 +219,11 @@ HTMX performs every server mutation and swaps the returned `#workbench` fragment
 Because the swap replaces the whole fragment, all client-held state — viewport, selection, rail and dock sizing — is re-applied after each swap and stored in `localStorage` rather than in the flow record. Multi-selection is deliberately client-side, so the server keeps its single `selected` parameter for the inspector and a marquee costs no round trips.
 
 The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, interconnection validation, persistence, graph compilation, simulation, and stale-result rules.
+
+The complete controlsys coverage map—including browser workflows, bounded
+Studio APIs, explicit deferrals, numerical evidence, and runnable
+representative fixtures—is in
+[`docs/controlsys-capability-matrix.md`](docs/controlsys-capability-matrix.md).
 
 ## Supported blocks
 

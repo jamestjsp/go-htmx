@@ -75,6 +75,10 @@ func New(studioService *studio.Studio) (*Server, error) {
 		server.designStateCandidate,
 	)
 	mux.HandleFunc(
+		"POST /flows/{flowID}/controller-candidates/robust",
+		server.designRobustCandidate,
+	)
+	mux.HandleFunc(
 		"POST /flows/{flowID}/controller-candidates/{candidateID}/apply",
 		server.applyControllerCandidate,
 	)
@@ -707,7 +711,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Content-Security-Policy", strings.Join([]string{
 			"default-src 'self'",
-			"script-src 'self' https://cdn.jsdelivr.net",
+			"script-src 'self'",
 			"style-src 'self' 'unsafe-inline'",
 			"img-src 'self' data:",
 			"connect-src 'self'",

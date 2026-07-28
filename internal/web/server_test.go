@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/sha512"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,7 +45,7 @@ func TestPageRendersTheRegister(t *testing.T) {
 		`href="/assets/tokens.css"`,
 		`href="/assets/register.css"`,
 		`src="/assets/register.js"`,
-		"htmx.org@2.0.10",
+		`src="/assets/htmx-2.0.10.min.js"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("register does not contain %q", expected)
@@ -58,9 +60,8 @@ func TestPageRendersTheRegister(t *testing.T) {
 			t.Errorf("the register loads %q", unwanted)
 		}
 	}
-	// A CSP of `script-src 'self' https://cdn.jsdelivr.net` drops an inline
-	// script in the browser while every test here still passes, so the absence
-	// has to be asserted rather than assumed.
+	// The CSP drops inline script in the browser while every test here still
+	// passes, so the absence has to be asserted rather than assumed.
 	if strings.Contains(body, "onclick=") || strings.Contains(body, "<script>") {
 		t.Error("the register carries inline script, which the CSP drops silently")
 	}
@@ -319,7 +320,7 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		`href="/assets/tokens.css"`,
 		`id="workbench"`,
 		`hx-post="/flows/1/blocks"`,
-		"htmx.org@2.0.10",
+		`src="/assets/htmx-2.0.10.min.js"`,
 	} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body does not contain %q", expected)
@@ -973,6 +974,7 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 	for _, path := range []string{
 		"/assets/app.css", "/assets/menu.js", "/assets/tabs.js",
 		"/assets/register.css", "/assets/register.js", "/assets/tokens.css",
+		"/assets/htmx-2.0.10.min.js",
 	} {
 		response := request(t, server, http.MethodGet, path, nil)
 		if response.Code != http.StatusOK {
@@ -981,6 +983,20 @@ func TestStaticAssetsAreEmbedded(t *testing.T) {
 		if response.Body.Len() < 1000 {
 			t.Fatalf("%s unexpectedly small", path)
 		}
+	}
+	htmx := request(
+		t, server, http.MethodGet, "/assets/htmx-2.0.10.min.js", nil,
+	)
+	digest := sha512.Sum384(htmx.Body.Bytes())
+	if got := base64.StdEncoding.EncodeToString(digest[:]); got !=
+		"H5SrcfygHmAuTDZphMHqBJLc3FhssKjG7w/CeCpFReSfwBWDTKpkzPP8c+cLsK+V" {
+		t.Fatalf("embedded HTMX SHA-384 = %s", got)
+	}
+	if policy := htmx.Header().Get("Content-Security-Policy"); policy == "" ||
+		strings.Contains(policy, "http:") ||
+		strings.Contains(policy, "https:") ||
+		!strings.Contains(policy, "script-src 'self'") {
+		t.Fatalf("self-contained CSP = %q", policy)
 	}
 }
 
