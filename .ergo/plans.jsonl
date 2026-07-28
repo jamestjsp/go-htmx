@@ -577,3 +577,7 @@
 {"type":"state","ts":"2026-07-28T07:59:49.661714Z","data":{"id":"UNHKP6","state":"done","ts":"2026-07-28T07:59:49.661714Z"}}
 {"type":"claim","ts":"2026-07-28T08:00:06.251824Z","data":{"id":"WZFQ6W","agent_id":"codex@Jamess-MacBook-Pro.local","ts":"2026-07-28T08:00:06.251824Z"}}
 {"type":"state","ts":"2026-07-28T08:00:06.251824Z","data":{"id":"WZFQ6W","state":"doing","ts":"2026-07-28T08:00:06.251824Z"}}
+{"type":"message","ts":"2026-07-28T09:01:39.173982Z","data":{"task_id":"WZFQ6W","kind":"done","text":"Added non-mutating PID/PID2/LQG review, named-role provenance, shared time/frequency/robustness comparisons, atomic stale-safe apply, exact one-use undo, HTMX and normal-form workflows, race tests, and Docker browser verification.","ts":"2026-07-28T09:01:39.173982Z"}}
+{"type":"result","ts":"2026-07-28T09:01:39.173982Z","data":{"task_id":"WZFQ6W","summary":"docs/controller-candidate-workflow.md","path":"docs/controller-candidate-workflow.md","sha256_at_attach":"ff0087ab9ea60024928c7d458041852c4107bc808ae3098056f3e62b2813a362","mtime_at_attach":"2026-07-28T08:20:49.895937999Z","git_commit_at_attach":"1b8729b6444edb46a6ad6d3ea9f3218674babfad","ts":"2026-07-28T09:01:39.173982Z"}}
+{"type":"unclaim","ts":"2026-07-28T09:01:39.173982Z","data":{"id":"WZFQ6W","ts":"2026-07-28T09:01:39.173982Z"}}
+{"type":"state","ts":"2026-07-28T09:01:39.173982Z","data":{"id":"WZFQ6W","state":"done","ts":"2026-07-28T09:01:39.173982Z"}}
