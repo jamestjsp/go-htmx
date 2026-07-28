@@ -97,21 +97,22 @@ func plural(count int, one, many string) string {
 }
 
 type workbenchView struct {
-	Workspace       studio.Workspace
-	Snapshot        studio.Snapshot
-	Blocks          []blockView
-	Connections     []connectionView
-	Selected        *blockView
-	SelectedLinks   []inspectorLink
-	Palette         []paletteItem
-	Sheet           sheetGeometry
-	Tabs            []flowTabView
-	Chart           chartView
-	Analysis        analysisView
-	Error           string
-	Updated         string
-	BlockCount      int
-	ConnectionCount int
+	Workspace        studio.Workspace
+	Snapshot         studio.Snapshot
+	Blocks           []blockView
+	Connections      []connectionView
+	Selected         *blockView
+	SelectedLinks    []inspectorLink
+	Palette          []paletteItem
+	Sheet            sheetGeometry
+	Tabs             []flowTabView
+	Chart            chartView
+	Analysis         analysisView
+	Error            string
+	Updated          string
+	BlockCount       int
+	ConnectionCount  int
+	SimulationLimits string
 }
 
 // flowTabView is one sheet in the tab strip, in the project's `position`
@@ -215,6 +216,7 @@ type fidelityView struct {
 
 type chartPath struct {
 	Name  string
+	Key   string
 	D     string
 	Color string
 }
@@ -282,12 +284,13 @@ type analysisMarkerView struct {
 func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
 	snapshot := workspace.Snapshot
 	view := workbenchView{
-		Workspace:       workspace,
-		Snapshot:        snapshot,
-		Error:           errorMessage,
-		Updated:         relativeTime(snapshot.Flow.UpdatedAt),
-		BlockCount:      len(snapshot.Blocks),
-		ConnectionCount: len(snapshot.Connections),
+		Workspace:        workspace,
+		Snapshot:         snapshot,
+		Error:            errorMessage,
+		Updated:          relativeTime(snapshot.Flow.UpdatedAt),
+		BlockCount:       len(snapshot.Blocks),
+		ConnectionCount:  len(snapshot.Connections),
+		SimulationLimits: studio.SimulationLimitsText(),
 		Sheet: sheetGeometry{
 			Width:       studio.SheetWidth,
 			Height:      studio.SheetHeight,
@@ -477,7 +480,14 @@ func frequencyResultView(record studio.FrequencyAnalysisRecord) analysisResultVi
 		Stale:    record.Stale,
 	}
 	if len(result.Inputs) > 0 && len(result.Outputs) > 0 {
-		view.Channel = result.Inputs[0].Name + " → " + result.Outputs[0].Name
+		if len(result.Inputs) == 1 && len(result.Outputs) == 1 {
+			view.Channel = result.Inputs[0].Name + " → " + result.Outputs[0].Name
+		} else {
+			view.Channel = fmt.Sprintf(
+				"%d named inputs → %d named outputs",
+				len(result.Inputs), len(result.Outputs),
+			)
+		}
 	}
 	view.Metrics = append(view.Metrics,
 		analysisMetricView{Label: "Grid", Value: fmt.Sprintf("%d points", len(result.Grid.Omega))},
@@ -485,10 +495,40 @@ func frequencyResultView(record studio.FrequencyAnalysisRecord) analysisResultVi
 		analysisMetricView{Label: "Magnitude", Value: result.Units.Magnitude},
 	)
 	if len(result.Bode) > 0 {
-		view.Plots = append(view.Plots, analysisPointerPlot(
-			"Bode magnitude", "log₁₀ ω", "dB",
-			result.Grid.Omega, result.Bode[0].MagnitudeDB, true, "#e17845",
-		))
+		magnitudeSeries := make([]analysisSeries, 0, len(result.Bode))
+		phaseSeries := make([]analysisSeries, 0, len(result.Bode))
+		for index, trace := range result.Bode {
+			if trace.InputIndex < 0 || trace.InputIndex >= len(result.Inputs) ||
+				trace.OutputIndex < 0 || trace.OutputIndex >= len(result.Outputs) {
+				continue
+			}
+			input := result.Inputs[trace.InputIndex]
+			output := result.Outputs[trace.OutputIndex]
+			name := output.Name + " ← " + input.Name
+			key := fmt.Sprintf(
+				"frequency:%d:%d:%d:%d:%d:%d",
+				output.BlockID, output.Port, output.Channel,
+				input.BlockID, input.Port, input.Channel,
+			)
+			color := chartColors[index%len(chartColors)]
+			x := transformedFrequencies(result.Grid.Omega)
+			magnitudeSeries = append(magnitudeSeries, analysisSeries{
+				Name: name, Key: key, Color: color, X: x,
+				Y: pointerValues(trace.MagnitudeDB),
+			})
+			phaseSeries = append(phaseSeries, analysisSeries{
+				Name: name, Key: key, Color: color, X: x,
+				Y: pointerValues(trace.PhaseDegrees),
+			})
+		}
+		view.Plots = append(view.Plots,
+			analysisLinePlot(
+				"Bode magnitude", "log₁₀ ω", "dB", magnitudeSeries, nil,
+			),
+			analysisLinePlot(
+				"Bode phase", "log₁₀ ω", "degrees", phaseSeries, nil,
+			),
+		)
 	}
 	if result.Nyquist != nil {
 		view.Plots = append(view.Plots, complexSamplePlot(
@@ -509,6 +549,7 @@ func frequencyResultView(record studio.FrequencyAnalysisRecord) analysisResultVi
 		for index, values := range result.SingularValues.Values {
 			series = append(series, analysisSeries{
 				Name:  fmt.Sprintf("σ%d", index+1),
+				Key:   fmt.Sprintf("frequency:sigma:%d", index+1),
 				Color: chartColors[index%len(chartColors)],
 				X:     transformedFrequencies(result.Grid.Omega),
 				Y:     pointerValues(values),
@@ -597,6 +638,7 @@ var chartColors = []string{"#e17845", "#2a8f83", "#c9a13b", "#5277a8"}
 
 type analysisSeries struct {
 	Name  string
+	Key   string
 	Color string
 	X     []float64
 	Y     []float64
@@ -642,7 +684,8 @@ func analysisLinePlot(
 		}
 		if path.Len() > 0 {
 			plot.Paths = append(plot.Paths, chartPath{
-				Name: values.Name, D: strings.TrimSpace(path.String()), Color: values.Color,
+				Name: values.Name, Key: values.Key,
+				D: strings.TrimSpace(path.String()), Color: values.Color,
 			})
 		}
 	}
@@ -960,7 +1003,11 @@ func newChartView(run *studio.Simulation) chartView {
 				}
 			}
 			view.Paths = append(view.Paths, chartPath{
-				Name: series.Name, D: path.String(), Color: colors[index%len(colors)],
+				Name: series.Name,
+				Key: fmt.Sprintf(
+					"%d:%d:%d", series.BlockID, series.Port, series.Channel,
+				),
+				D: path.String(), Color: colors[index%len(colors)],
 			})
 		}
 		for i := range 5 {

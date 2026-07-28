@@ -210,6 +210,8 @@
               <span class="run-label">Run model</span>
               <span class="htmx-indicator">Running…</span>
             </button>
+            <a class="results-export" href="/flows/{{.Snapshot.Flow.ID}}/results.json">Export JSON</a>
+            <small class="run-limits">{{.SimulationLimits}}</small>
           </form>
         </header>
 
@@ -220,7 +222,7 @@
           {{if .Chart.Paths}}
           <div class="trend-panel">
             <div class="trend-legend">
-              {{range .Chart.Paths}}<span><i style="background:{{.Color}}"></i>{{.Name}}</span>{{end}}
+              {{range .Chart.Paths}}<button type="button" class="series-toggle" data-series-toggle="{{.Key}}" aria-pressed="true"><i style="background:{{.Color}}"></i>{{.Name}}</button>{{end}}
               <small>Last run {{.Chart.CreatedAt}}</small>
             </div>
             <svg class="trend-chart" viewBox="0 0 780 228" role="img" aria-label="Simulation trend">
@@ -233,7 +235,7 @@
               <text x="{{.Position}}" y="218" class="chart-label x-label">{{.Label}}</text>
               {{end}}
               {{range .Chart.Paths}}
-              <path d="{{.D}}" fill="none" stroke="{{.Color}}" class="trend-path"></path>
+              <path d="{{.D}}" fill="none" stroke="{{.Color}}" class="trend-path" data-series-path="{{.Key}}"></path>
               {{end}}
               <text x="760" y="218" class="axis-title">seconds</text>
             </svg>
@@ -347,6 +349,10 @@
               <span>Freq points</span>
               <input name="analysis_points" type="number" min="2" max="2000" step="1" value="200">
             </label>
+            <label class="analysis-all-channels">
+              <input name="analysis_all_channels" type="checkbox" value="true">
+              <span>All named channels for frequency analysis</span>
+            </label>
             <button class="run-button analysis-run-button" type="submit">
               <span class="run-icon">⌁</span>
               <span class="run-label">Analyze</span>
@@ -390,11 +396,16 @@
                 {{range .Plots}}
                 <figure class="analysis-plot">
                   <figcaption><strong>{{.Title}}</strong><span>{{.YLabel}} / {{.XLabel}}</span></figcaption>
+                  {{if .Paths}}
+                  <div class="analysis-series-controls">
+                    {{range .Paths}}{{if .Key}}<button type="button" class="series-toggle" data-series-toggle="{{.Key}}" aria-pressed="true"><i style="background:{{.Color}}"></i>{{.Name}}</button>{{end}}{{end}}
+                  </div>
+                  {{end}}
                   <svg viewBox="0 0 400 140" role="img" aria-label="{{.Title}}">
                     <line x1="18" x2="390" y1="124" y2="124" class="analysis-axis"></line>
                     <line x1="18" x2="18" y1="10" y2="124" class="analysis-axis"></line>
                     {{range .Paths}}
-                    <path d="{{.D}}" fill="none" stroke="{{.Color}}" class="analysis-path"></path>
+                    <path d="{{.D}}" fill="none" stroke="{{.Color}}" class="analysis-path"{{if .Key}} data-series-path="{{.Key}}"{{end}}></path>
                     {{end}}
                     {{range .Markers}}
                     <text x="{{.X}}" y="{{.Y}}" class="analysis-marker analysis-marker-{{.Kind}}">{{.Label}}</text>
@@ -416,7 +427,7 @@
           {{else}}
           <div class="analysis-empty">
             <strong>No analysis yet</strong>
-            <p>Select named channels and an analysis intent. Results remain for comparison until the process restarts; model edits mark them stale.</p>
+            <p>Select named channels and an analysis intent. Latest results persist for comparison; model edits mark them stale.</p>
           </div>
           {{end}}
         </section>

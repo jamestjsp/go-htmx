@@ -353,12 +353,23 @@ margins but do not claim finite-order bandwidth or root-locus results, and a
 sampled passivity pass is never presented as an analytic certificate.
 
 `Studio.RunAnalysis` is the workbench boundary for those analysis intents. It
-owns the snapshot, named-channel selection, calculation, ephemeral per-flow
-cache, and revision comparison. Dynamics, frequency, and loop results remain
-side by side for comparison; a model edit keeps them visible but marks them
-stale, while a layout-only move leaves their model revision current. The dock
-renders step, pole-zero, Bode, Nyquist, Nichols, singular-value, and root-locus
-views from that shared channel and revision metadata.
+owns the snapshot, named-channel selection, calculation, persisted latest
+result per intent, and revision comparison. Dynamics, frequency, and loop
+results remain side by side across restarts; a model edit keeps them visible
+but marks them stale, while a layout-only move leaves their model revision
+current. Frequency analysis can select every named input and output, rendering
+each deterministic `output ← input` Bode magnitude and phase trace plus MIMO
+singular values. Legend controls hide or show the same stable trace key across
+HTMX swaps.
+
+Simulation series, metrics, and spectra carry block, port, channel index, and
+channel name together. Vector results therefore keep deterministic labels and
+ordering through JSON persistence, rendering, and export instead of relying on
+slice position. A run is bounded to 5,000 samples and 16 plotted channels;
+frequency analysis is bounded to 2,000 points and 64 input-output traces.
+`/flows/{id}/results.json` exports the versioned latest simulation and all
+three latest analysis intents. Duplicating a flowsheet deliberately copies the
+model but not old results, because the new sheet has not been evaluated.
 
 Named vector routing is explicit diagram algebra. Mux assembles scalar ports
 into one named vector; Demux decomposes it; Selector emits a validated named
@@ -387,7 +398,8 @@ The database stores:
 - signal connections with source and target port indices, foreign keys, tuple
   uniqueness, and a domain rule that each target port accepts one wire;
 - recent activity events;
-- complete simulation runs as JSON time series.
+- complete simulation runs as identity-keyed JSON time series;
+- the latest dynamics, frequency, and loop analysis record per flowsheet.
 
 Model edits invalidate the displayed result, while layout-only moves and
 flowsheet renames do not. Historical runs remain in SQLite. Schema startup

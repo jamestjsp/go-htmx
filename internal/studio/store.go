@@ -73,11 +73,22 @@ CREATE TABLE IF NOT EXISTS simulation_runs (
 	sample_time REAL NOT NULL,
 	result_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS analysis_runs (
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE CASCADE,
+	intent TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	model_updated_at TEXT NOT NULL,
+	request_json TEXT NOT NULL,
+	result_json TEXT NOT NULL,
+	PRIMARY KEY(flow_id, intent)
+);
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
 ` + connectionsFlowIndex + `;
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);
 CREATE INDEX IF NOT EXISTS simulation_runs_flow_id_created_at_idx
 	ON simulation_runs(flow_id, created_at);
+CREATE INDEX IF NOT EXISTS analysis_runs_flow_id_idx
+	ON analysis_runs(flow_id);
 `
 
 const defaultProjectName = "Process Lab project"

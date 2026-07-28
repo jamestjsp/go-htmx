@@ -16,17 +16,23 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
-func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationRequest) (Snapshot, error) {
-	if request.Duration < 1 || request.Duration > 120 {
-		return Snapshot{}, invalid("duration must be between 1 and 120 seconds")
-	}
-	if request.SampleTime < 0.01 || request.SampleTime > 2 {
-		return Snapshot{}, invalid("sample time must be between 0.01 and 2 seconds")
-	}
-	if request.Duration/request.SampleTime > 5000 {
-		return Snapshot{}, invalid("simulation is limited to 5,000 samples")
-	}
+const (
+	maxSimulationSamples        = 5000
+	maxSimulationResultChannels = 16
+	maxSimulationSamplesLabel   = "5,000"
+)
 
+func SimulationLimitsText() string {
+	return fmt.Sprintf(
+		"Up to %s samples and %d plotted channels per run.",
+		maxSimulationSamplesLabel, maxSimulationResultChannels,
+	)
+}
+
+func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationRequest) (Snapshot, error) {
+	if err := validateSimulationRequest(request); err != nil {
+		return Snapshot{}, err
+	}
 	snapshot, err := s.snapshot(ctx, flowID)
 	if err != nil {
 		return Snapshot{}, err
@@ -63,6 +69,20 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+func validateSimulationRequest(request SimulationRequest) error {
+	if request.Duration < 1 || request.Duration > 120 {
+		return invalid("duration must be between 1 and 120 seconds")
+	}
+	if request.SampleTime < 0.01 || request.SampleTime > 2 {
+		return invalid("sample time must be between 0.01 and 2 seconds")
+	}
+	samples := int(math.Round(request.Duration/request.SampleTime)) + 1
+	if samples > maxSimulationSamples {
+		return invalid("simulation is limited to %s samples", maxSimulationSamplesLabel)
+	}
+	return nil
 }
 
 func simulate(blocks []Block, connections []Connection, request SimulationRequest) (*Simulation, error) {
@@ -777,8 +797,25 @@ func outputChannelSignalName(id int64, port, channel, width int) string {
 	return fmt.Sprintf("block_%d_output_%d_channel_%d", id, port, channel)
 }
 
-func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {
-	spectrum := Spectrum{BlockID: block.ID, Name: block.Name}
+func resultChannelLabel(output compiledOutput) string {
+	if output.signal.Width <= 1 || output.signal.ChannelName == "" {
+		return output.block.Name
+	}
+	return output.block.Name + " · " + output.signal.ChannelName
+}
+
+func resultChannel(output compiledOutput, name string) ResultChannel {
+	return ResultChannel{
+		BlockID: output.block.ID, Port: output.signal.Port,
+		Channel: output.signal.Channel, ChannelName: output.signal.ChannelName,
+		Name: name,
+	}
+}
+
+func spectrumFor(output compiledOutput, values []float64, sampleTime float64) Spectrum {
+	spectrum := Spectrum{
+		ResultChannel: resultChannel(output, resultChannelLabel(output)),
+	}
 	if len(values) < 2 {
 		return spectrum
 	}
@@ -810,8 +847,10 @@ func spectrumFor(block Block, values []float64, sampleTime float64) Spectrum {
 	return spectrum
 }
 
-func metricFor(name string, times, values []float64) Metric {
-	metric := Metric{Name: name}
+func metricFor(output compiledOutput, times, values []float64) Metric {
+	metric := Metric{
+		ResultChannel: resultChannel(output, resultChannelLabel(output)),
+	}
 	if len(values) == 0 {
 		return metric
 	}

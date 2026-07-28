@@ -2,6 +2,7 @@ package web
 
 import (
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -59,6 +60,7 @@ func New(studioService *studio.Studio) (*Server, error) {
 	mux.HandleFunc("DELETE /blocks/{blockID}/connections", server.disconnectBlock)
 	mux.HandleFunc("POST /flows/{flowID}/simulations", server.runSimulation)
 	mux.HandleFunc("POST /flows/{flowID}/analyses", server.runAnalysis)
+	mux.HandleFunc("GET /flows/{flowID}/results.json", server.exportResults)
 	server.handler = securityHeaders(mux)
 	return server, nil
 }
@@ -515,12 +517,13 @@ func (s *Server) runAnalysis(w http.ResponseWriter, r *http.Request) {
 		horizon = 10
 	}
 	_, err := s.studio.RunAnalysis(r.Context(), flowID, studio.AnalysisWorkspaceRequest{
-		Intent:      studio.AnalysisIntent(r.FormValue("analysis_intent")),
-		Input:       input,
-		Output:      output,
-		BaseStep:    baseStep,
-		StepHorizon: horizon,
-		Points:      points,
+		Intent:               studio.AnalysisIntent(r.FormValue("analysis_intent")),
+		Input:                input,
+		Output:               output,
+		FrequencyAllChannels: r.FormValue("analysis_all_channels") == "true",
+		BaseStep:             baseStep,
+		StepHorizon:          horizon,
+		Points:               points,
 	})
 	if err != nil {
 		s.renderFailure(w, r, flowID, selectedID(r), err)
@@ -532,6 +535,32 @@ func (s *Server) runAnalysis(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.renderWorkbench(w, r, snapshot, selectedID(r), "")
+}
+
+func (s *Server) exportResults(w http.ResponseWriter, r *http.Request) {
+	flowID, ok := pathID(w, r, "flowID")
+	if !ok {
+		return
+	}
+	results, err := s.studio.ExportResults(r.Context(), flowID)
+	if errors.Is(err, studio.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Process Lab could not export these results.", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(
+		"Content-Disposition",
+		fmt.Sprintf(`attachment; filename="process-lab-flow-%d-results.json"`, flowID),
+	)
+	encoder := json.NewEncoder(w)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(results); err != nil {
+		return
+	}
 }
 
 func (s *Server) renderFailure(w http.ResponseWriter, r *http.Request, flowID, selected int64, failure any) {

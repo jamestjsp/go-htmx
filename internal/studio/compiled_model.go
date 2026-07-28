@@ -520,6 +520,18 @@ func (m *compiledModel) validateExactDelaySampling(sampleTime float64) error {
 }
 
 func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
+	resultChannels := 0
+	for _, output := range m.outputs {
+		if output.block.Kind.isSink() {
+			resultChannels++
+		}
+	}
+	if resultChannels > maxSimulationResultChannels {
+		return nil, invalid(
+			"simulation is limited to %d plotted result channels; reduce the connected Scope channels",
+			maxSimulationResultChannels,
+		)
+	}
 	response, err := m.response(request)
 	if err != nil {
 		return nil, err
@@ -543,14 +555,14 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 			values[sample] = response.Y.At(outputIndex, sample)
 		}
 		if output.block.Kind.isSpectrumSink() {
-			run.Spectra = append(run.Spectra, spectrumFor(output.block, values, request.SampleTime))
+			run.Spectra = append(run.Spectra, spectrumFor(output, values, request.SampleTime))
 		} else {
+			name := resultChannelLabel(output)
 			run.Series = append(run.Series, Series{
-				BlockID: output.block.ID,
-				Name:    output.block.Name,
-				Values:  values,
+				ResultChannel: resultChannel(output, name),
+				Values:        values,
 			})
-			run.Metrics = append(run.Metrics, metricFor(output.block.Name, response.T, values))
+			run.Metrics = append(run.Metrics, metricFor(output, response.T, values))
 		}
 	}
 	return run, nil

@@ -542,3 +542,8 @@
 {"type":"message","ts":"2026-07-28T06:17:02.254442Z","data":{"task_id":"V7PDQS","kind":"done","text":"Added validated named continuous/discrete State-Space, MIMO transfer-function, ZPK, and frequency-domain-only FRD blocks. Cross-representation 2x2 frequency and time responses match independent analytic oracles; JSON ownership, delay metadata, conversion context, full tests, vet, and race pass.","ts":"2026-07-28T06:17:02.254442Z"}}
 {"type":"unclaim","ts":"2026-07-28T06:17:02.254442Z","data":{"id":"V7PDQS","ts":"2026-07-28T06:17:02.254442Z"}}
 {"type":"state","ts":"2026-07-28T06:17:02.254442Z","data":{"id":"V7PDQS","state":"done","ts":"2026-07-28T06:17:02.254442Z"}}
+{"type":"claim","ts":"2026-07-28T06:17:30.166138Z","data":{"id":"XU2I47","agent_id":"codex@Jamess-MacBook-Pro.local","ts":"2026-07-28T06:17:30.166138Z"}}
+{"type":"state","ts":"2026-07-28T06:17:30.166138Z","data":{"id":"XU2I47","state":"doing","ts":"2026-07-28T06:17:30.166138Z"}}
+{"type":"message","ts":"2026-07-28T06:50:43.180159Z","data":{"task_id":"XU2I47","kind":"done","text":"Persisted full block-port-channel result identity; added deterministic channel visibility, explicit sample/channel/frequency limits, multichannel analysis persistence and export, legacy scalar compatibility, and Docker/browser validation for 1x1, 2x2, and 2x3 models.","ts":"2026-07-28T06:50:43.180159Z"}}
+{"type":"unclaim","ts":"2026-07-28T06:50:43.180159Z","data":{"id":"XU2I47","ts":"2026-07-28T06:50:43.180159Z"}}
+{"type":"state","ts":"2026-07-28T06:50:43.180159Z","data":{"id":"XU2I47","state":"done","ts":"2026-07-28T06:50:43.180159Z"}}

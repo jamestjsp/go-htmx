@@ -203,14 +203,27 @@ type SimulationRequest struct {
 	SampleTime float64
 }
 
+type ResultChannel struct {
+	BlockID     int64  `json:"blockId"`
+	Port        int    `json:"port"`
+	Channel     int    `json:"channel"`
+	ChannelName string `json:"channelName,omitempty"`
+	Name        string `json:"name"`
+}
+
+func (channel ResultChannel) Ref() ChannelRef {
+	return ChannelRef{
+		BlockID: channel.BlockID, Port: channel.Port, Channel: channel.Channel,
+	}
+}
+
 type Series struct {
-	BlockID int64     `json:"blockId"`
-	Name    string    `json:"name"`
-	Values  []float64 `json:"values"`
+	ResultChannel
+	Values []float64 `json:"values"`
 }
 
 type Metric struct {
-	Name       string  `json:"name"`
+	ResultChannel
 	Peak       float64 `json:"peak"`
 	Final      float64 `json:"final"`
 	Settled    bool    `json:"settled"`
@@ -218,8 +231,7 @@ type Metric struct {
 }
 
 type Spectrum struct {
-	BlockID       int64     `json:"blockId"`
-	Name          string    `json:"name"`
+	ResultChannel
 	Frequencies   []float64 `json:"frequencies"`
 	Magnitudes    []float64 `json:"magnitudes"`
 	PeakFrequency float64   `json:"peakFrequency"`

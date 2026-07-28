@@ -1480,7 +1480,34 @@ body.is-resizing-dock .studio-grid {
 .run-form {
   display: flex;
   align-items: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.run-limits {
+  flex-basis: 100%;
+  color: var(--ink-inverse-muted);
+  font-size: var(--fs-100);
+  text-align: right;
+}
+
+.results-export {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid var(--housing-line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--ink-inverse);
+  font-size: var(--fs-100);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.results-export:hover,
+.results-export:focus-visible {
+  border-color: var(--probe);
+  color: var(--probe);
 }
 
 .run-form label {
@@ -1642,7 +1669,8 @@ body.is-resizing-dock .studio-grid {
   font-size: var(--fs-100);
 }
 
-.trend-legend span {
+.trend-legend span,
+.series-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1650,7 +1678,28 @@ body.is-resizing-dock .studio-grid {
   font-weight: 650;
 }
 
-.trend-legend i {
+.series-toggle {
+  padding: 3px 5px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+
+.series-toggle:hover,
+.series-toggle:focus-visible {
+  background: var(--probe-glow);
+}
+
+.series-toggle[aria-pressed="false"] {
+  color: var(--ink-muted);
+  text-decoration: line-through;
+  opacity: .65;
+}
+
+.trend-legend i,
+.series-toggle i {
   width: 16px;
   height: 3px;
   border-radius: 1px;
@@ -1716,6 +1765,10 @@ body.is-resizing-dock .studio-grid {
 .trend-path {
   stroke-width: 2.25;
   vector-effect: non-scaling-stroke;
+}
+
+[data-series-path][hidden] {
+  display: none;
 }
 
 .metric-panel {
@@ -1837,6 +1890,7 @@ body.is-resizing-dock .studio-grid {
     minmax(86px, .55fr)
     minmax(86px, .55fr)
     minmax(96px, .6fr)
+    minmax(150px, .8fr)
     auto;
   align-items: end;
   gap: 8px;
@@ -1876,6 +1930,27 @@ body.is-resizing-dock .studio-grid {
 
 .analysis-form select {
   font-family: var(--font-ui);
+}
+
+.analysis-form .analysis-all-channels {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  letter-spacing: 0;
+  line-height: 1.2;
+  text-transform: none;
+}
+
+.analysis-form .analysis-all-channels input {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin: 0;
+}
+
+.analysis-form .analysis-all-channels span {
+  margin: 0;
 }
 
 .analysis-run-button {
@@ -2048,6 +2123,20 @@ body.is-resizing-dock .studio-grid {
 .analysis-plot figcaption span {
   color: var(--ink-muted);
   font-family: var(--font-mono);
+}
+
+.analysis-series-controls {
+  display: flex;
+  gap: 3px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--sheet-line-soft);
+  scrollbar-width: thin;
+}
+
+.analysis-series-controls .series-toggle {
+  flex: none;
+  font-size: 9px;
 }
 
 .analysis-plot svg {

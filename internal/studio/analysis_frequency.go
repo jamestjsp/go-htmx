@@ -9,7 +9,11 @@ import (
 	"github.com/jamestjsp/controlsys"
 )
 
-const defaultFrequencyPoints = 200
+const (
+	defaultFrequencyPoints     = 200
+	maxAnalysisChannelsPerAxis = 16
+	maxFrequencyResponseTraces = 64
+)
 
 type FrequencyAnalysisRequest struct {
 	Inputs   []ChannelRef `json:"inputs"`
@@ -220,6 +224,19 @@ func analyzeFrequency(
 func validateFrequencyRequest(request FrequencyAnalysisRequest) error {
 	if len(request.Inputs) == 0 || len(request.Outputs) == 0 {
 		return invalid("select at least one input and one output channel")
+	}
+	if len(request.Inputs) > maxAnalysisChannelsPerAxis ||
+		len(request.Outputs) > maxAnalysisChannelsPerAxis {
+		return invalid(
+			"frequency analysis is limited to %d input and %d output channels",
+			maxAnalysisChannelsPerAxis, maxAnalysisChannelsPerAxis,
+		)
+	}
+	if len(request.Inputs)*len(request.Outputs) > maxFrequencyResponseTraces {
+		return invalid(
+			"frequency analysis is limited to %d input-output traces",
+			maxFrequencyResponseTraces,
+		)
 	}
 	if request.Points < 0 || request.Points == 1 || request.Points > 2000 {
 		return invalid("automatic frequency points must be 0 for the default or between 2 and 2,000")

@@ -18,6 +18,7 @@ import { redrawEdges } from './geometry.js'
 import { initViewport, reapplyViewport } from './viewport.js'
 import { applySelection } from './selection.js'
 import { applyShellState, initShell } from './shell.js'
+import { applySeriesVisibility } from './charts.js'
 import { cancelConnection, hasConnectionSource } from './wiring.js'
 import { onBeforeSwap, onReapply } from './reapply.js'
 import './contextmenu.js'
@@ -40,6 +41,7 @@ document.addEventListener('htmx:historyRestore', () => {
 onReapply(reapplyViewport)
 onReapply(applySelection)
 onReapply(redrawEdges)
+onReapply(applySeriesVisibility)
 onReapply(applyShellState)
 
 // The same order on first load, and the shell last for the same reason
@@ -49,4 +51,5 @@ onReapply(applyShellState)
 initViewport()
 applySelection()
 redrawEdges()
+applySeriesVisibility()
 initShell()

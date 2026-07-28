@@ -662,6 +662,44 @@ func TestSpectrumAnalyzerThroughHTMXFlow(t *testing.T) {
 	}
 }
 
+func TestResultsExportReturnsVersionedJSONAttachment(t *testing.T) {
+	server, _ := openTestServer(t)
+	run := request(t, server, http.MethodPost, "/flows/1/simulations", url.Values{
+		"duration":    {"1"},
+		"sample_time": {"0.1"},
+	})
+	if run.Code != http.StatusOK {
+		t.Fatalf("run status = %d, body = %s", run.Code, run.Body.String())
+	}
+
+	response := request(t, server, http.MethodGet, "/flows/1/results.json", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("export status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); contentType != "application/json" {
+		t.Fatalf("content type = %q", contentType)
+	}
+	if disposition := response.Header().Get("Content-Disposition"); !strings.Contains(
+		disposition, `process-lab-flow-1-results.json`,
+	) {
+		t.Fatalf("content disposition = %q", disposition)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`"schemaVersion": 1`,
+		`"flowId": 1`,
+		`"simulation":`,
+		`"analysis":`,
+		`"blockId":`,
+		`"port": 0`,
+		`"channel": 0`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("export does not contain %q", expected)
+		}
+	}
+}
+
 func TestConnectionErrorRendersInline(t *testing.T) {
 	server, service := openTestServer(t)
 	snapshot, err := service.Current(context.Background())
@@ -920,6 +958,9 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 		"trend-chart", "Temperature", "controlsys", "Settling",
 		"SIMULATION FIDELITY", "Batch LTI · Lsim",
 		"Base step", "0.1 s", "piecewise constant",
+		"Up to 5,000 samples and 16 plotted channels per run.",
+		`data-series-toggle=`, `data-series-path=`,
+		`href="/flows/1/results.json"`,
 	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("body does not contain %q", expected)

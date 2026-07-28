@@ -2,6 +2,7 @@ package studio
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -128,5 +129,82 @@ func TestAnalysisWorkspaceRejectsNegativeStepHorizon(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("negative step horizon succeeded")
+	}
+}
+
+func TestFrequencyWorkspaceUsesAllNamedChannelsAndPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "analysis.db")
+	service, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, outputs := analysisChannels(snapshot.Blocks)
+	analysis, err := service.RunAnalysis(ctx, snapshot.Flow.ID, AnalysisWorkspaceRequest{
+		Intent:               AnalysisIntentFrequency,
+		Input:                inputs[0].ChannelRef,
+		Output:               outputs[len(outputs)-1].ChannelRef,
+		FrequencyAllChannels: true,
+		Points:               30,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Frequency == nil ||
+		len(analysis.Frequency.Result.Inputs) != len(inputs) ||
+		len(analysis.Frequency.Result.Outputs) != len(outputs) ||
+		len(analysis.Frequency.Result.Bode) != len(inputs)*len(outputs) {
+		t.Fatalf("all-channel frequency result = %#v", analysis.Frequency)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	workspace, err := reopened.Workspace(ctx, snapshot.Flow.ProjectID, snapshot.Flow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.Analysis.Frequency == nil ||
+		len(workspace.Analysis.Frequency.Result.Bode) != len(inputs)*len(outputs) ||
+		workspace.Analysis.Frequency.Stale {
+		t.Fatalf("reloaded frequency analysis = %#v", workspace.Analysis.Frequency)
+	}
+
+	workspace.Analysis.Frequency.Result.Grid.Omega[0] = 999
+	reloaded, err := reopened.Workspace(ctx, snapshot.Flow.ProjectID, snapshot.Flow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Analysis.Frequency.Result.Grid.Omega[0] == 999 {
+		t.Fatal("analysis workspace leaked mutable cached slices")
+	}
+
+	duplicated, err := reopened.DuplicateFlow(ctx, snapshot.Flow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if duplicated.Analysis.Dynamics != nil ||
+		duplicated.Analysis.Frequency != nil ||
+		duplicated.Analysis.Loop != nil {
+		t.Fatalf("duplicated flow copied analysis results: %#v", duplicated.Analysis)
+	}
+	var copiedResults int
+	if err := reopened.db.QueryRowContext(
+		ctx, "SELECT COUNT(*) FROM analysis_runs WHERE flow_id = ?",
+		duplicated.Snapshot.Flow.ID,
+	).Scan(&copiedResults); err != nil {
+		t.Fatal(err)
+	}
+	if copiedResults != 0 {
+		t.Fatalf("duplicated analysis rows = %d", copiedResults)
 	}
 }

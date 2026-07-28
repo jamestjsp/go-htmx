@@ -175,6 +175,24 @@ func TestFrequencyAnalysisCapsAutomaticDiscreteGridAtNyquist(t *testing.T) {
 	}
 }
 
+func TestFrequencyAnalysisLimitsChannelAxesAndTraceProduct(t *testing.T) {
+	inputs := make([]ChannelRef, maxAnalysisChannelsPerAxis+1)
+	outputs := []ChannelRef{{BlockID: 1}}
+	if err := validateFrequencyRequest(FrequencyAnalysisRequest{
+		Inputs: inputs, Outputs: outputs,
+	}); err == nil || !strings.Contains(err.Error(), "16 input") {
+		t.Fatalf("axis limit error = %v", err)
+	}
+
+	inputs = make([]ChannelRef, 9)
+	outputs = make([]ChannelRef, 8)
+	if err := validateFrequencyRequest(FrequencyAnalysisRequest{
+		Inputs: inputs, Outputs: outputs,
+	}); err == nil || !strings.Contains(err.Error(), "64 input-output traces") {
+		t.Fatalf("trace limit error = %v", err)
+	}
+}
+
 func TestFrequencyAnalysisValidatesExplicitGrid(t *testing.T) {
 	request := FrequencyAnalysisRequest{
 		Inputs:  []ChannelRef{{BlockID: 1}},
