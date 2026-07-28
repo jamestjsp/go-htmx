@@ -315,6 +315,12 @@
               <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
               {{end}}
             </select>
+            {{else if .Multiline}}
+            <textarea
+              name="{{.Name}}"
+              {{if .Placeholder}}placeholder="{{.Placeholder}}"{{end}}
+              rows="{{if gt .Rows 2}}{{.Rows}}{{else}}3{{end}}"
+              required>{{.Value}}</textarea>
             {{else}}
             <input
               type="{{.Type}}"
@@ -328,6 +334,7 @@
             {{end}}
             {{if .Unit}}<small>{{.Unit}}</small>{{end}}
           </div>
+          {{if .Rows}}<small class="field-shape">{{.Rows}} × {{.Columns}}</small>{{end}}
           {{if .Help}}<small class="field-help">{{.Help}}</small>{{end}}
         </label>
         {{end}}

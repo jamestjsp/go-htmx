@@ -32,6 +32,9 @@ type ParameterField struct {
 	Type        string
 	Value       string
 	Options     []ParameterOption
+	Rows        int
+	Columns     int
+	Multiline   bool
 	Step        string
 	Min         string
 	Max         string
@@ -75,6 +78,7 @@ type parameterDefinition struct {
 	Help        string
 	Options     []parameterOption
 	active      func(Parameters) bool
+	shape       func(Parameters) (int, int)
 	// set and text are the field's own read/write: the one place that knows
 	// which Parameters member this name maps to. Nothing outside the
 	// definition switches on Name again.
@@ -821,15 +825,88 @@ func coefficientField(name, label, placeholder string, field func(*Parameters) *
 		Name: name, Label: label, Type: "text",
 		Placeholder: placeholder, Help: "Descending powers of s",
 		set: func(parameters *Parameters, raw string) error {
-			coefficients, err := parseCoefficients(strings.TrimSpace(raw))
+			value, err := ParseVectorValue(raw)
 			if err != nil {
 				return invalid("%s coefficients must be comma or space separated numbers", name)
 			}
-			*field(parameters) = coefficients
+			*field(parameters) = value.Values()
 			return nil
 		},
 		text: func(parameters Parameters) string {
-			return coefficientsText(*field(&parameters))
+			value, err := NewVectorValue(*field(&parameters))
+			if err != nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			return 1, len(*field(&parameters))
+		},
+	}
+}
+
+func matrixField(
+	name, label string,
+	field func(*Parameters) **MatrixValue,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "textarea",
+		Placeholder: "1, 0\n0, 1",
+		Help:        "Rows are separated by a new line or semicolon.",
+		set: func(parameters *Parameters, raw string) error {
+			value, err := ParseMatrixValue(raw)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			return value.Dims()
+		},
+	}
+}
+
+func channelNamesField(
+	name, label string,
+	field func(*Parameters) **ChannelNames,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "text",
+		Placeholder: "feed, recycle",
+		Help:        "Names must be nonempty and unique.",
+		set: func(parameters *Parameters, raw string) error {
+			value, err := ParseChannelNames(raw)
+			if err != nil {
+				return err
+			}
+			*field(parameters) = &value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			value := *field(&parameters)
+			if value == nil {
+				return ""
+			}
+			return value.Text()
+		},
+		shape: func(parameters Parameters) (int, int) {
+			value := *field(&parameters)
+			if value == nil {
+				return 0, 0
+			}
+			return 1, value.Len()
 		},
 	}
 }
@@ -856,6 +933,13 @@ func defaultParameters(kind BlockKind) Parameters {
 func cloneParameters(parameters Parameters) Parameters {
 	parameters.Numerator = append([]float64(nil), parameters.Numerator...)
 	parameters.Denominator = append([]float64(nil), parameters.Denominator...)
+	parameters.A = cloneMatrixValue(parameters.A)
+	parameters.B = cloneMatrixValue(parameters.B)
+	parameters.C = cloneMatrixValue(parameters.C)
+	parameters.D = cloneMatrixValue(parameters.D)
+	parameters.InputNames = cloneChannelNames(parameters.InputNames)
+	parameters.OutputNames = cloneChannelNames(parameters.OutputNames)
+	parameters.StateNames = cloneChannelNames(parameters.StateNames)
 	return parameters
 }
 
@@ -870,10 +954,15 @@ func (b Block) EditorFields() []ParameterField {
 				Value: option.Value, Label: option.Label, Selected: option.Value == value,
 			}
 		}
+		rows, columns := 0, 0
+		if field.shape != nil {
+			rows, columns = field.shape(b.Parameters)
+		}
 		fields = append(fields, ParameterField{
 			Name: field.Name, Label: field.Label, Type: field.Type,
-			Value: value, Options: options,
-			Step: field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
+			Value: value, Options: options, Rows: rows, Columns: columns,
+			Multiline: field.Type == "textarea",
+			Step:      field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
 			Placeholder: field.Placeholder, Help: field.Help,
 		})
 	}
@@ -950,29 +1039,19 @@ func bounded(label string, value, minimum, maximum float64) error {
 }
 
 func parseCoefficients(raw string) ([]float64, error) {
-	parts := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == ' ' || r == '\t'
-	})
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("empty coefficients")
+	value, err := ParseVectorValue(raw)
+	if err != nil {
+		return nil, err
 	}
-	coefficients := make([]float64, len(parts))
-	for i, part := range parts {
-		value, err := strconv.ParseFloat(part, 64)
-		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
-			return nil, fmt.Errorf("invalid coefficient")
-		}
-		coefficients[i] = value
-	}
-	return coefficients, nil
+	return value.Values(), nil
 }
 
 func coefficientsText(coefficients []float64) string {
-	parts := make([]string, len(coefficients))
-	for i, coefficient := range coefficients {
-		parts[i] = strconv.FormatFloat(coefficient, 'g', -1, 64)
+	value, err := NewVectorValue(coefficients)
+	if err != nil {
+		return ""
 	}
-	return strings.Join(parts, ", ")
+	return value.Text()
 }
 
 func polynomialText(coefficients []float64) string {

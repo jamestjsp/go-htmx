@@ -220,6 +220,40 @@ func TestRegisterViewCoversTheEmptyState(t *testing.T) {
 
 }
 
+func TestWorkbenchRendersValidatedParameterShapes(t *testing.T) {
+	server, _ := openTestServer(t)
+	workspace := studio.Workspace{
+		Project: studio.Project{ID: 1, Name: "Test"},
+		Flows:   []studio.Flow{{ID: 1, ProjectID: 1, Name: "Model"}},
+		Snapshot: studio.Snapshot{
+			Flow: studio.Flow{ID: 1, ProjectID: 1, Name: "Model"},
+			Blocks: []studio.Block{{
+				ID: 1, FlowID: 1, Kind: studio.BlockTransfer, Name: "Plant",
+				Parameters: studio.Parameters{
+					Numerator: []float64{1, 2}, Denominator: []float64{1, 3, 2},
+				},
+			}},
+		},
+	}
+	view := newWorkbenchView(workspace, 1, "")
+	var page strings.Builder
+	if err := server.templates.ExecuteTemplate(&page, "workbench", view); err != nil {
+		t.Fatal(err)
+	}
+	body := page.String()
+	for _, want := range []string{
+		`name="numerator"`,
+		`name="denominator"`,
+		`class="field-shape">1 × 2`,
+		`class="field-shape">1 × 3`,
+		"Descending powers of s",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered transfer editor does not contain %q", want)
+		}
+	}
+}
+
 // TestWorkbenchPageRendersTheShell keeps the workbench page covered now that
 // `/` no longer leads to it.
 func TestWorkbenchPageRendersTheShell(t *testing.T) {

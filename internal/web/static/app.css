@@ -1859,7 +1859,8 @@ body.is-resizing-dock .studio-grid {
 }
 
 .property-form input,
-.property-form select {
+.property-form select,
+.property-form textarea {
   width: 100%;
   padding: 8px 9px;
   border: 1px solid var(--housing-line-strong);
@@ -1868,6 +1869,13 @@ body.is-resizing-dock .studio-grid {
   color: var(--ink-inverse);
   background: var(--housing-deep);
   font-size: var(--fs-300);
+}
+
+.property-form textarea {
+  min-height: 72px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .property-form input[type="number"] {
@@ -1880,7 +1888,8 @@ body.is-resizing-dock .studio-grid {
 }
 
 .property-form input:focus-visible,
-.property-form select:focus-visible {
+.property-form select:focus-visible,
+.property-form textarea:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-color: var(--probe);
@@ -1902,14 +1911,16 @@ body.is-resizing-dock .studio-grid {
 }
 
 .unit-input input,
-.unit-input select {
+.unit-input select,
+.unit-input textarea {
   border: 0;
   border-radius: 0;
   background: transparent;
 }
 
 .unit-input input:focus-visible,
-.unit-input select:focus-visible {
+.unit-input select:focus-visible,
+.unit-input textarea:focus-visible {
   outline: none;
   border-color: transparent;
 }
@@ -1927,6 +1938,14 @@ body.is-resizing-dock .studio-grid {
   color: var(--ink-inverse-muted);
   font-size: var(--fs-100);
   line-height: 1.45;
+}
+
+.property-form .field-shape {
+  display: block;
+  margin-top: 5px;
+  color: var(--probe);
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
 }
 
 .property-readout {
