@@ -36,6 +36,12 @@ type modelProbe struct {
 	OutputPort int
 }
 
+type ChannelRef struct {
+	BlockID int64 `json:"blockId"`
+	Port    int   `json:"port"`
+	Channel int   `json:"channel"`
+}
+
 type modelCompileRequest struct {
 	includeSinks bool
 	probes       []modelProbe
@@ -169,6 +175,85 @@ func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, erro
 		provenance: m.provenance,
 		execution:  m.execution,
 	}, nil
+}
+
+func (m *compiledModel) selectChannels(
+	inputRefs []ChannelRef,
+	outputRefs []ChannelRef,
+) (*controlsys.System, []compiledSignal, []compiledSignal, error) {
+	inputs, inputNames, err := selectCompiledChannels(
+		inputRefs,
+		func(ref ChannelRef) (compiledSignal, bool) {
+			for _, input := range m.inputs {
+				signal := input.signal
+				if signal.BlockID == ref.BlockID &&
+					signal.Port == ref.Port &&
+					signal.Channel == ref.Channel {
+					return signal, true
+				}
+			}
+			return compiledSignal{}, false
+		},
+		"input",
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	outputs, outputNames, err := selectCompiledChannels(
+		outputRefs,
+		func(ref ChannelRef) (compiledSignal, bool) {
+			for _, output := range m.outputs {
+				signal := output.signal
+				if signal.BlockID == ref.BlockID &&
+					signal.Port == ref.Port &&
+					signal.Channel == ref.Channel {
+					return signal, true
+				}
+			}
+			return compiledSignal{}, false
+		},
+		"output",
+	)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	system, err := m.system.SelectByName(inputNames, outputNames)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("select compiled channels: %w", err)
+	}
+	return system, inputs, outputs, nil
+}
+
+func selectCompiledChannels(
+	refs []ChannelRef,
+	resolve func(ChannelRef) (compiledSignal, bool),
+	role string,
+) ([]compiledSignal, []string, error) {
+	if len(refs) == 0 {
+		return nil, nil, invalid("select at least one %s channel", role)
+	}
+	signals := make([]compiledSignal, 0, len(refs))
+	names := make([]string, 0, len(refs))
+	seen := make(map[ChannelRef]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, exists := seen[ref]; exists {
+			return nil, nil, invalid(
+				"%s channel block %d port %d channel %d is selected more than once",
+				role, ref.BlockID, ref.Port, ref.Channel,
+			)
+		}
+		seen[ref] = struct{}{}
+		signal, ok := resolve(ref)
+		if !ok {
+			return nil, nil, invalid(
+				"%s channel block %d port %d channel %d is not exposed by the compiled model",
+				role, ref.BlockID, ref.Port, ref.Channel,
+			)
+		}
+		signals = append(signals, signal)
+		names = append(names, signal.Name)
+	}
+	return signals, names, nil
 }
 
 func uniqueModelProbes(probes []modelProbe) []modelProbe {

@@ -311,6 +311,14 @@ selected with `controlsys.SelectByName`. Scope and Spectrum Analyzer blocks
 remain simulation consumers, not the authority on which signals analysis may
 inspect.
 
+`Studio.AnalyzeDynamics` selects one compiled input/output channel pair and
+exposes controlsys stability, poles, zeros, DC gain, and damping. A standard
+step response is calculated only when the caller declares a step experiment;
+its rise, settling, overshoot, undershoot, peak, peak-time, and steady-state
+metrics are separate from the arbitrary-source metrics stored on normal
+simulation runs. Undefined operations return named issues beside any valid
+partial results rather than non-finite JSON values.
+
 The linear boundary is deliberate. Continuous and discrete state-space,
 transfer-function, delay, and named MIMO models stay within controlsys.
 Continuous/discrete mixtures and unresolved multirate execution are refused

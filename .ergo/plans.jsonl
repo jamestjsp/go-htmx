@@ -511,3 +511,9 @@
 {"type":"result","ts":"2026-07-28T05:20:01.462668Z","data":{"task_id":"OXJRQI","summary":"docs/simulation-engine-roadmap.md","path":"docs/simulation-engine-roadmap.md","sha256_at_attach":"0db3fe83881a9f2d4837ffbf1bb0f222287ded8de72c3f83b544366482974245","mtime_at_attach":"2026-07-28T05:02:18.899233283Z","git_commit_at_attach":"8a975d3bca86fc8f6e044a0e6141d5a1821c79cd","ts":"2026-07-28T05:20:01.462668Z"}}
 {"type":"unclaim","ts":"2026-07-28T05:20:01.462668Z","data":{"id":"OXJRQI","ts":"2026-07-28T05:20:01.462668Z"}}
 {"type":"state","ts":"2026-07-28T05:20:01.462668Z","data":{"id":"OXJRQI","state":"done","ts":"2026-07-28T05:20:01.462668Z"}}
+{"type":"claim","ts":"2026-07-28T05:21:39.571802Z","data":{"id":"D6FKHW","agent_id":"codex@Jamess-MacBook-Pro.local","ts":"2026-07-28T05:21:39.571802Z"}}
+{"type":"state","ts":"2026-07-28T05:21:39.571802Z","data":{"id":"D6FKHW","state":"doing","ts":"2026-07-28T05:21:39.571802Z"}}
+{"type":"message","ts":"2026-07-28T05:24:13.677163Z","data":{"task_id":"D6FKHW","kind":"done","text":"Added explicit named-channel dynamics analysis using controlsys Poles, Zeros, IsStable, DCGain, Damp, Step, and StepInfo. Analytic first/second-order and partial-result regressions pass under race.","ts":"2026-07-28T05:24:13.677163Z"}}
+{"type":"result","ts":"2026-07-28T05:24:13.677163Z","data":{"task_id":"D6FKHW","summary":"README.md","path":"README.md","sha256_at_attach":"fd7bb8e3394c31f557ec9182cee407ca6121e7fd2c539ace6cd2f7d261c786f8","mtime_at_attach":"2026-07-28T05:23:52.997868098Z","git_commit_at_attach":"657fbca82323bc98b853fae56256d2b28fadf558","ts":"2026-07-28T05:24:13.677163Z"}}
+{"type":"unclaim","ts":"2026-07-28T05:24:13.677163Z","data":{"id":"D6FKHW","ts":"2026-07-28T05:24:13.677163Z"}}
+{"type":"state","ts":"2026-07-28T05:24:13.677163Z","data":{"id":"D6FKHW","state":"done","ts":"2026-07-28T05:24:13.677163Z"}}
