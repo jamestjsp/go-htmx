@@ -839,30 +839,21 @@ string; `maxSubsystemDepth` bounds its length.
 
 ### Cycles across levels
 
-**Every cycle that could span levels is already refused at `Connect` time, on
-one sheet, by the check that exists.**
+Signal-flow cycles are not containment cycles. `Connect` validates ports and
+occupancy and persists feedback on either a parent or child sheet. The
+containment forest described above prevents recursive subsystem ownership; it
+does not prohibit feedback through a subsystem.
 
-`Connect` runs `pathExists` over the edited sheet's own connections, treating
-a subsystem block as a single vertex. That is enough, and here is why: take
-any cycle in the flattened graph and project each of its blocks onto the
-topmost subsystem block containing it, or onto itself if it is on the sheet
-being run. An edge internal to a child projects to a self-loop and drops out;
-an edge crossing a subsystem boundary projects to an edge incident to that
-subsystem block. What remains is a closed walk on one sheet — the deepest
-sheet that contains the whole cycle — and that sheet's own `Connect` check
-refused it when it was drawn.
+`expandFlow` therefore flattens the complete graph before feedback is judged.
+The flattened systems and their port-qualified connections go to
+`controlsys.ConnectByName` in one operation. Well-posed LTI feedback is legal,
+including a loop that crosses subsystem boundaries. Only an unsolvable
+direct-feedthrough algebraic loop becomes a Studio validation error.
 
-The check is **conservative**, and that is worth saying out loud: because a
-subsystem is one vertex, a feedback path through a subsystem is refused even
-when it would be acyclic after flattening (`S.out0 → G → S.in1`, where output
-0 does not in fact depend on input 1). That costs nothing today — cycles are
-refused wholesale, as `README.md` states — and it is the same conservatism the
-engine roadmap's T12 spike will have to revisit for feedback in general.
-
-`compileFlow`'s own cycle rejection stays as the backstop it already is: it
-catches a graph assembled from rows an older version left behind, which is why
-"a connection references a missing block" exists too. Its message is unchanged;
-`TestCompileRejectsCycle` asserts only that it contains "cycle".
+The flattening regressions must cover both a valid feedback loop spanning a
+boundary and a singular direct-feedthrough loop. A parent-level graph check
+would be incorrect because a subsystem's individual outputs need not depend
+on every input.
 
 ### Staleness
 
@@ -978,7 +969,7 @@ Ready to file. Ergo ids are not assigned here.
 | **H3** The three kinds and the `created` hook | H1, H2 | `BlockSubsystem`, `BlockInport`, `BlockOutport` with their `role` values and the guard test that every `roleSource` kind sets `waveform` or `insideSubsystem`; `Parameters.Inports`/`Outports` and their clone; `maxSubsystemDepth` and its refusal; `created` plus the `placedBlock` value and the widening of `AddBlock`'s existence check to `SELECT project_id`; `Block.ChildFlowID` from `snapshot`'s left join. **Named API change:** `studio.BlockLibrary()` gains a parameter and its one call site at `view.go:233` changes, because the palette cannot otherwise omit Inport and Outport on a top-level sheet |
 | **H4** `syncSubsystemPorts` | H3 | The one authority for the parent's port surface: the id-ordered read, the unique-name refusal, the add/rename/remove diff, the orphan refusal, the renumbering of surviving wires, and `touchModel` climbing to every ancestor. Tests for each row of the wire table |
 | **H5** Cascade and deep duplication | H3 | `copyFlowContents` recursive, used by `DuplicateFlow` and `DuplicateBlocks`; the three lifecycle refusals on child sheets; a cascade test at `maxSubsystemDepth` proving one `DELETE` removes the whole subtree |
-| **H6** `expandFlow` | H4, H5, and **`VJKI5N` (hard — landed as `663759f`)** | The flattening pass, its three queries, the splice, the two boundary refusals, `maxExpandedBlocks`, qualified names, and `Run` refusing a child sheet. Tests: a subsystem-free sheet expands to itself and every existing numeric assertion holds; a two-level sheet matches the same model drawn flat to 1e-12; distinct signal names over a three-level fixture; and `TestFlatteningFansOneSubsystemOutputIntoTwoPortsOfOneSum` — one internal gain driving two Outports wired into two ports of one Sum, asserting the signal arrives **twice**. That last one is the case a splice written against the pre-`663759f` naming would have halved |
+| **H6** `expandFlow` | H4, H5, and **`VJKI5N` (hard — landed as `663759f`)** | The flattening pass, its three queries, the splice, the two boundary refusals, `maxExpandedBlocks`, qualified names, and `Run` refusing a child sheet. Tests: a subsystem-free sheet expands to itself and every existing numeric assertion holds; a two-level sheet matches the same model drawn flat to 1e-12; valid feedback across a subsystem boundary matches its flat equivalent; a singular direct-feedthrough loop is refused after flattening; distinct signal names over a three-level fixture; and `TestFlatteningFansOneSubsystemOutputIntoTwoPortsOfOneSum` — one internal gain driving two Outports wired into two ports of one Sum, asserting the signal arrives **twice**. That last one is the case a splice written against the pre-`663759f` naming would have halved |
 | **H7** Navigation | H1, H3 | `Workspace.Trail` and the recursive trail query; the breadcrumb partial; `Active` by `Trail[0]`; the descent and ascent gestures in `js/contextmenu.js`, `js/input.js` and `js/shortcuts.js`; `workbenchView.CanRun` gating the run form, the staleness banner and the `Cmd`/`Ctrl` + `Enter` binding, with the "Simulated from …" line in their place; no new route |
 | **H8** Subsystem ports on the canvas | H4, and `KE3PPL` | N labelled input pips and M labelled output pips on a subsystem card, drawn from the same derivation the wiring rules read; the inspector's connection list naming ports by their Inport names |
 | **H9** Verification and documentation | H6, H7, H8 | A CDP pass in the style of `docs/workbench-ergonomics.md`'s record — build a subsystem, wire it, descend and ascend, Back across levels, delete a wired Inport and read the refusal, simulate and compare against the flat equivalent, restart and reopen. Replace the "not yet supported" paragraph in `README.md`; add the descent gestures to `docs/workbench-ergonomics.md` |
@@ -1044,11 +1035,7 @@ four defects.
   Three refusals and one query predicate say so; none of them may be softened
   without deciding what the tab strip is a list of.
 
-Unresolved questions: whether the parent-level cycle check's conservatism
-(refusing a feedback path through a subsystem that would flatten acyclically)
-ever bites in practice, which the engine roadmap's T12 feedback spike will
-have to answer anyway; whether a subsystem's trend traces should be
-selectable per level rather than all appearing on the root's chart; and
-whether "create subsystem from selection" should be scheduled immediately
-after H9, since without it every subsystem must be built block by block on an
-empty sheet.
+Unresolved questions: whether a subsystem's trend traces should be selectable
+per level rather than all appearing on the root's chart; and whether "create
+subsystem from selection" should be scheduled immediately after H9, since
+without it every subsystem must be built block by block on an empty sheet.

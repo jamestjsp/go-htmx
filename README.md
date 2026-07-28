@@ -216,7 +216,7 @@ HTMX performs every server mutation and swaps the returned `#workbench` fragment
 
 Because the swap replaces the whole fragment, all client-held state — viewport, selection, rail and dock sizing — is re-applied after each swap and stored in `localStorage` rather than in the flow record. Multi-selection is deliberately client-side, so the server keeps its single `selected` parameter for the inspector and a marquee costs no round trips.
 
-The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, cycle detection, persistence, graph compilation, simulation, and stale-result rules.
+The Go handlers state user intent and call one cohesive service operation. They do not coordinate SQL transactions or simulation steps. The `studio` package owns block defaults, validation, placement, interconnection validation, persistence, graph compilation, simulation, and stale-result rules.
 
 ## Supported blocks
 
@@ -235,7 +235,11 @@ The Go handlers state user intent and call one cohesive service operation. They 
 | Sinks | Scope | Plots the time-domain signal and response metrics | Exactly one |
 | Sinks | Spectrum Analyzer | Hann-windowed one-sided amplitude spectrum using Gonum FFT | Exactly one |
 
-Flows may branch and merge. Cycles are rejected because this version compiles an acyclic signal graph. Every source owns a separate external input channel, so Step, Constant, and Sine Wave blocks remain independent when a model branches or merges.
+Flows may branch, merge, and close feedback loops. Named interconnections are
+passed to `controlsys.ConnectByName`, which resolves dynamic feedback and
+rejects only an unsolvable algebraic loop. Every source owns a separate
+external input channel, so Step, Constant, and Sine Wave blocks remain
+independent when a model branches or merges.
 
 Connections identify both endpoint ports. For a Sum, sign character `i`
 belongs to input port `i`, so deleting and redrawing another wire cannot change
@@ -299,7 +303,7 @@ duplicate fidelity down to block parameters and remapped connection ids, and
 reorder rejecting ids from another project — SQLite round trips, legacy
 migration and the per-project tab-order backfill, the register query's counts
 and stale-run flag, grid snapping and the sheet bounds, collision-free block
-placement, connection constraints, cycle rejection, analytic control-block
+placement, connection constraints, feedback and algebraic-loop handling, analytic control-block
 responses, FFT peak detection, HTML fragment behavior, embedded assets,
 multi-field HTTP editing flows, and the batch move, delete, and duplicate
 endpoints including rejection of ids from another flow.

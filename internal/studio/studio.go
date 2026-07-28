@@ -427,14 +427,6 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 			return invalid("%s already has an input on port %d", target.Name, wire.TargetPort)
 		}
 
-		connections, err := connectionsInTx(ctx, tx, flowID)
-		if err != nil {
-			return err
-		}
-		if pathExists(connections, wire.TargetID, wire.SourceID) {
-			return invalid("that connection would create a cycle")
-		}
-
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO connections(flow_id, source_id, source_port, target_id, target_port)
 			VALUES(?, ?, ?, ?, ?)`,
@@ -588,54 +580,6 @@ func abs(value int) int {
 		return -value
 	}
 	return value
-}
-
-func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connection, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, flow_id, source_id, source_port, target_id, target_port
-		FROM connections WHERE flow_id = ?`,
-		flowID,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var connections []Connection
-	for rows.Next() {
-		var connection Connection
-		if err := rows.Scan(
-			&connection.ID, &connection.FlowID,
-			&connection.SourceID, &connection.SourcePort,
-			&connection.TargetID, &connection.TargetPort,
-		); err != nil {
-			return nil, err
-		}
-		connections = append(connections, connection)
-	}
-	return connections, rows.Err()
-}
-
-func pathExists(connections []Connection, start, goal int64) bool {
-	adjacency := make(map[int64][]int64)
-	for _, connection := range connections {
-		adjacency[connection.SourceID] = append(adjacency[connection.SourceID], connection.TargetID)
-	}
-	seen := map[int64]bool{start: true}
-	queue := []int64{start}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		if current == goal {
-			return true
-		}
-		for _, next := range adjacency[current] {
-			if !seen[next] {
-				seen[next] = true
-				queue = append(queue, next)
-			}
-		}
-	}
-	return false
 }
 
 func ValidationMessage(err error) string {

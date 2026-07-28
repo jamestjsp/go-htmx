@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -121,9 +122,7 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	}
 
 	blockByID := make(map[int64]Block, len(blocks))
-	indegree := make(map[int64]int, len(blocks))
 	incoming := make(map[int64][]Connection, len(blocks))
-	outgoing := make(map[int64][]int64, len(blocks))
 	var sources, sinks []Block
 	for _, block := range blocks {
 		if !block.Kind.Valid() {
@@ -133,7 +132,6 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 			return compiledFlow{}, invalid("%s: %s", block.Name, err)
 		}
 		blockByID[block.ID] = block
-		indegree[block.ID] = 0
 		switch {
 		case block.Kind.isSource():
 			sources = append(sources, block)
@@ -157,34 +155,13 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		if !source.Kind.HasOutput() || !target.Kind.HasInput() {
 			return compiledFlow{}, invalid("a connection uses an incompatible port")
 		}
-		outgoing[source.ID] = append(outgoing[source.ID], target.ID)
 		incoming[target.ID] = append(incoming[target.ID], connection)
-		indegree[target.ID]++
 	}
 
-	ready := make([]int64, 0, len(blocks))
-	for _, block := range blocks {
-		if indegree[block.ID] == 0 {
-			ready = append(ready, block.ID)
-		}
-	}
-	sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
-	order := make([]int64, 0, len(blocks))
-	for len(ready) > 0 {
-		current := ready[0]
-		ready = ready[1:]
-		order = append(order, current)
-		for _, target := range outgoing[current] {
-			indegree[target]--
-			if indegree[target] == 0 {
-				ready = append(ready, target)
-				sort.Slice(ready, func(i, j int) bool { return ready[i] < ready[j] })
-			}
-		}
-	}
-	if len(order) != len(blocks) {
-		return compiledFlow{}, invalid("flowsheet contains a cycle; remove a feedback connection")
-	}
+	orderedBlocks := append([]Block(nil), blocks...)
+	sort.Slice(orderedBlocks, func(i, j int) bool {
+		return orderedBlocks[i].ID < orderedBlocks[j].ID
+	})
 
 	wiredPorts := make(map[int64][]int, len(incoming))
 	for _, block := range blocks {
@@ -226,9 +203,8 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	sort.Slice(sinks, func(i, j int) bool { return sinks[i].ID < sinks[j].ID })
 
 	systems := make([]*controlsys.System, 0, len(blocks))
-	for _, id := range order {
-		block := blockByID[id]
-		system, err := realizeBlock(block, wiredPorts[id])
+	for _, block := range orderedBlocks {
+		system, err := realizeBlock(block, wiredPorts[block.ID])
 		if err != nil {
 			return compiledFlow{}, err
 		}
@@ -253,6 +229,11 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
+		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
+			return compiledFlow{}, invalid(
+				"flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain",
+			)
+		}
 		return compiledFlow{}, fmt.Errorf("compile flowsheet: %w", err)
 	}
 	return compiledFlow{system: system, sources: sources, sinks: sinks}, nil
