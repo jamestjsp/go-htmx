@@ -13,14 +13,7 @@ import (
 	"github.com/jamestjsp/controlsys"
 	"gonum.org/v1/gonum/dsp/fourier"
 	"gonum.org/v1/gonum/dsp/window"
-	"gonum.org/v1/gonum/mat"
 )
-
-type compiledFlow struct {
-	system  *controlsys.System
-	sources []Block
-	sinks   []Block
-}
 
 func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationRequest) (Snapshot, error) {
 	if request.Duration < 1 || request.Duration > 120 {
@@ -72,53 +65,16 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 }
 
 func simulate(blocks []Block, connections []Connection, request SimulationRequest) (*Simulation, error) {
-	compiled, err := compileFlow(blocks, connections)
+	model, err := compileModel(blocks, connections)
 	if err != nil {
 		return nil, err
 	}
-
-	steps := int(math.Round(request.Duration/request.SampleTime)) + 1
-	times := make([]float64, steps)
-	inputData := make([]float64, steps*len(compiled.sources))
-	for i := range steps {
-		times[i] = float64(i) * request.SampleTime
-		for sourceIndex, source := range compiled.sources {
-			inputData[i*len(compiled.sources)+sourceIndex] = sourceValue(source, times[i])
-		}
-	}
-	input := mat.NewDense(steps, len(compiled.sources), inputData)
-	response, err := controlsys.Lsim(compiled.system, input, times, nil)
-	if err != nil {
-		return nil, fmt.Errorf("simulate flowsheet: %w", err)
-	}
-
-	run := &Simulation{
-		Duration:   request.Duration,
-		SampleTime: request.SampleTime,
-		Times:      times,
-	}
-	for output, sink := range compiled.sinks {
-		values := make([]float64, steps)
-		for sample := range steps {
-			values[sample] = response.Y.At(output, sample)
-		}
-		if sink.Kind.isSpectrumSink() {
-			run.Spectra = append(run.Spectra, spectrumFor(sink, values, request.SampleTime))
-		} else {
-			run.Series = append(run.Series, Series{
-				BlockID: sink.ID,
-				Name:    sink.Name,
-				Values:  values,
-			})
-			run.Metrics = append(run.Metrics, metricFor(sink.Name, times, values))
-		}
-	}
-	return run, nil
+	return model.run(request)
 }
 
-func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error) {
+func compileModel(blocks []Block, connections []Connection) (*compiledModel, error) {
 	if len(blocks) == 0 {
-		return compiledFlow{}, invalid("add blocks before running the simulation")
+		return nil, invalid("add blocks before running the simulation")
 	}
 
 	blockByID := make(map[int64]Block, len(blocks))
@@ -126,11 +82,12 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	var sources, sinks []Block
 	for _, block := range blocks {
 		if !block.Kind.Valid() {
-			return compiledFlow{}, invalid("%s has an unknown block type", block.Name)
+			return nil, invalid("%s has an unknown block type", block.Name)
 		}
 		if err := validateParameters(block.Kind, block.Parameters); err != nil {
-			return compiledFlow{}, invalid("%s: %s", block.Name, err)
+			return nil, invalid("%s: %s", block.Name, err)
 		}
+		block.Parameters = cloneParameters(block.Parameters)
 		blockByID[block.ID] = block
 		switch {
 		case block.Kind.isSource():
@@ -140,47 +97,50 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		}
 	}
 	if len(sources) == 0 {
-		return compiledFlow{}, invalid("add at least one source block before simulating")
+		return nil, invalid("add at least one source block before simulating")
 	}
 	if len(sinks) == 0 {
-		return compiledFlow{}, invalid("add at least one Scope or Spectrum Analyzer before simulating")
+		return nil, invalid("add at least one Scope or Spectrum Analyzer before simulating")
 	}
 
 	for _, connection := range connections {
 		source, sourceOK := blockByID[connection.SourceID]
 		target, targetOK := blockByID[connection.TargetID]
 		if !sourceOK || !targetOK {
-			return compiledFlow{}, invalid("a connection references a missing block")
+			return nil, invalid("a connection references a missing block")
 		}
 		if !source.Kind.HasOutput() || !target.Kind.HasInput() {
-			return compiledFlow{}, invalid("a connection uses an incompatible port")
+			return nil, invalid("a connection uses an incompatible port")
 		}
 		incoming[target.ID] = append(incoming[target.ID], connection)
 	}
 
-	orderedBlocks := append([]Block(nil), blocks...)
+	orderedBlocks := make([]Block, 0, len(blockByID))
+	for _, block := range blockByID {
+		orderedBlocks = append(orderedBlocks, block)
+	}
 	sort.Slice(orderedBlocks, func(i, j int) bool {
 		return orderedBlocks[i].ID < orderedBlocks[j].ID
 	})
 
 	wiredPorts := make(map[int64][]int, len(incoming))
-	for _, block := range blocks {
+	for _, block := range orderedBlocks {
 		inputs := incoming[block.ID]
 		switch block.Kind.arity() {
 		case arityNone:
 			if len(inputs) != 0 {
-				return compiledFlow{}, invalid("%s cannot accept an input", block.Name)
+				return nil, invalid("%s cannot accept an input", block.Name)
 			}
 		case arityVariadic:
 			if len(inputs) == 0 {
-				return compiledFlow{}, invalid("%s needs at least one input", block.Name)
+				return nil, invalid("%s needs at least one input", block.Name)
 			}
 		default: // arityOne
 			if len(inputs) == 0 {
-				return compiledFlow{}, invalid("%s is not connected", block.Name)
+				return nil, invalid("%s is not connected", block.Name)
 			}
 			if len(inputs) > 1 {
-				return compiledFlow{}, invalid("%s accepts only one input", block.Name)
+				return nil, invalid("%s accepts only one input", block.Name)
 			}
 		}
 		// checkInputs is a kind's own rule tying its parameters to the
@@ -188,13 +148,13 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 		// the generic arity check above rather than folded into it.
 		if check := blockDefinitions[block.Kind].checkInputs; check != nil {
 			if err := check(block, len(inputs)); err != nil {
-				return compiledFlow{}, err
+				return nil, err
 			}
 		}
 
 		ports, err := wiredInputPorts(block, inputs)
 		if err != nil {
-			return compiledFlow{}, err
+			return nil, err
 		}
 		wiredPorts[block.ID] = ports
 	}
@@ -203,40 +163,119 @@ func compileFlow(blocks []Block, connections []Connection) (compiledFlow, error)
 	sort.Slice(sinks, func(i, j int) bool { return sinks[i].ID < sinks[j].ID })
 
 	systems := make([]*controlsys.System, 0, len(blocks))
+	sourceSignals := make(map[int64]compiledSignal, len(sources))
+	inputSignals := make(map[compiledPort]compiledSignal, len(connections))
+	outputSignals := make(map[compiledPort]compiledSignal, len(blocks))
+	signals := make([]compiledSignal, 0, len(blocks)+len(connections)+len(sources))
 	for _, block := range orderedBlocks {
 		system, err := realizeBlock(block, wiredPorts[block.ID])
 		if err != nil {
-			return compiledFlow{}, err
+			return nil, err
 		}
 		systems = append(systems, system)
+
+		if block.Kind.isSource() {
+			signal := compiledSignal{
+				Name: system.InputName[0], BlockID: block.ID,
+				Port: 0, Role: compiledExternalInput,
+			}
+			sourceSignals[block.ID] = signal
+			signals = append(signals, signal)
+		} else {
+			for i, port := range wiredPorts[block.ID] {
+				signal := compiledSignal{
+					Name: system.InputName[i], BlockID: block.ID,
+					Port: port, Role: compiledBlockInput,
+				}
+				inputSignals[compiledPort{blockID: block.ID, port: port}] = signal
+				signals = append(signals, signal)
+			}
+		}
+		for port, name := range system.OutputName {
+			signal := compiledSignal{
+				Name: name, BlockID: block.ID,
+				Port: port, Role: compiledBlockOutput,
+			}
+			outputSignals[compiledPort{blockID: block.ID, port: port}] = signal
+			signals = append(signals, signal)
+		}
 	}
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
+		from, ok := outputSignals[compiledPort{
+			blockID: connection.SourceID,
+			port:    connection.SourcePort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no output port %d",
+				blockByID[connection.SourceID].Name, connection.SourcePort)
+		}
+		to, ok := inputSignals[compiledPort{
+			blockID: connection.TargetID,
+			port:    connection.TargetPort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no input port %d",
+				blockByID[connection.TargetID].Name, connection.TargetPort)
+		}
 		namedConnections = append(namedConnections, controlsys.Connection{
-			From: outputSignalName(connection.SourceID, connection.SourcePort),
-			To:   inputSignalName(connection.TargetID, connection.TargetPort),
+			From: from.Name,
+			To:   to.Name,
 			Gain: 1,
 		})
 	}
 	inputs := make([]string, len(sources))
+	compiledInputs := make([]compiledInput, len(sources))
 	for i, source := range sources {
-		inputs[i] = sourceSignalName(source.ID)
+		signal := sourceSignals[source.ID]
+		inputs[i] = signal.Name
+		compiledInputs[i] = compiledInput{signal: signal, source: source}
 	}
 	outputs := make([]string, len(sinks))
+	compiledOutputs := make([]compiledOutput, len(sinks))
 	for i, sink := range sinks {
-		outputs[i] = outputSignalName(sink.ID, 0)
+		signal := outputSignals[compiledPort{blockID: sink.ID, port: 0}]
+		outputs[i] = signal.Name
+		compiledOutputs[i] = compiledOutput{signal: signal, sink: sink}
 	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
 		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
-			return compiledFlow{}, invalid(
+			return nil, invalid(
 				"flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain",
 			)
 		}
-		return compiledFlow{}, fmt.Errorf("compile flowsheet: %w", err)
+		return nil, fmt.Errorf("compile flowsheet: %w", err)
 	}
-	return compiledFlow{system: system, sources: sources, sinks: sinks}, nil
+
+	provenanceConnections := append([]Connection(nil), connections...)
+	sort.Slice(provenanceConnections, func(i, j int) bool {
+		left, right := provenanceConnections[i], provenanceConnections[j]
+		if left.ID != right.ID {
+			return left.ID < right.ID
+		}
+		if left.SourceID != right.SourceID {
+			return left.SourceID < right.SourceID
+		}
+		if left.SourcePort != right.SourcePort {
+			return left.SourcePort < right.SourcePort
+		}
+		if left.TargetID != right.TargetID {
+			return left.TargetID < right.TargetID
+		}
+		return left.TargetPort < right.TargetPort
+	})
+	return &compiledModel{
+		system:  system,
+		inputs:  compiledInputs,
+		outputs: compiledOutputs,
+		signals: signals,
+		provenance: compiledModelProvenance{
+			Blocks:      orderedBlocks,
+			Connections: provenanceConnections,
+		},
+	}, nil
 }
 
 // wiredInputPorts is the block's input terminals that carry a wire, in

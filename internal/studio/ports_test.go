@@ -90,7 +90,7 @@ INSERT INTO connections(id, flow_id, source_id, target_id) VALUES
 // database is opened without the foreign-key pragma, which is how row 16 —
 // a wire whose target block no longer exists — gets in. Databases written
 // before foreign keys were enforced can hold such rows, which is why
-// compileFlow has a message for them.
+// compileModel has a message for them.
 func openLegacyPortsDatabase(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy-ports.db")
@@ -137,7 +137,7 @@ func portedWires(t *testing.T, service *Studio) []portedWire {
 }
 
 // Ports are numbered per target in connection-id order because that is the
-// order compileFlow hands a Sum's signs to its inbound wires. Numbering them
+// order compileModel hands a Sum's signs to its inbound wires. Numbering them
 // any other way would quietly change which sign each stored wire carries.
 func TestOpenNumbersLegacyConnectionsOntoPorts(t *testing.T) {
 	ctx := context.Background()

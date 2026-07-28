@@ -408,7 +408,7 @@ func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot
 		}
 		// An input port carries one signal. A second wire onto it would be a
 		// junction nobody drew, so it is refused here rather than left for
-		// compileFlow to discover. This is the whole of the old "everything
+		// compileModel to discover. This is the whole of the old "everything
 		// but Sum accepts one input" rule: a Sum has a port per sign, so its
 		// wires land on different ports and never meet this check.
 		var occupied int

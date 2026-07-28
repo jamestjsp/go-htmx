@@ -8,7 +8,7 @@ and it names the tables, columns, functions, routes and refusal messages the
 work would add. No implementation code is written here.
 
 Read this before touching `internal/studio/store.go`'s migrations,
-`lifecycle.go`, `workspace.go`, or `simulate.go`'s `compileFlow`.
+`lifecycle.go`, `workspace.go`, or `simulate.go`'s `compileModel`.
 
 It depends on the port work that landed in `52e35f1`: connections carry
 `source_port` and `target_port`, and a kind's port count is derived from its
@@ -292,7 +292,7 @@ current sheet comes from the same recursive walk the trail query uses.
 | `BlockOutport` (`"outport"`) | `roleSink` | One input, no output | One output terminal of the sheet's owning block |
 
 **`role` is a field an implementer must set deliberately, because it governs
-more than the port shape.** It decides `compileFlow`'s presence checks
+more than the port shape.** It decides `compileModel`'s presence checks
 (`simulate.go:144-149`) and `sourceValue`'s waveform dispatch
 (`simulate.go:325-331`), which returns 0 in silence for a `roleSource` kind
 with no `waveform` hook. The values above are chosen for what they do on the
@@ -302,7 +302,7 @@ Outport `HasOutput() == false`, so `Connect` refuses a wire *out of* an
 Outport. Both are exactly right.
 
 Neither ever reaches the compiler — `Run` refuses a subsystem sheet and
-`expandFlow` erases both kinds before `compileFlow` sees a block list — so
+`expandFlow` erases both kinds before `compileModel` sees a block list — so
 Inport's absent `waveform` is unreachable rather than silently zero. That is a
 load-bearing coincidence, so it gets a guard rather than a comment: a test over
 `blockDefinitions` asserting **every `roleSource` kind either sets `waveform`
@@ -356,7 +356,7 @@ BlockSubsystem: {
     inputPorts:  func(p Parameters) int { return len(p.Inports) },
     outputPorts: func(p Parameters) int { return len(p.Outports) },
     // realize is nil and must stay nil. A subsystem has no realization of its
-    // own: flattening removes it before compileFlow sees a block list, so a
+    // own: flattening removes it before compileModel sees a block list, so a
     // unit-gain default would never be reached and stating one would suggest
     // it could be.
     created: createSubsystemSheet,
@@ -438,7 +438,7 @@ Subsystem's hook inserts `project_id` from `placed.ProjectID`,
 
 ### One rule moves, and it is hygiene rather than a prerequisite
 
-`compileFlow`'s arity walk refuses a variadic block with no inputs
+`compileModel`'s arity walk refuses a variadic block with no inputs
 (`simulate.go:197-200`):
 
 ```go
@@ -458,7 +458,7 @@ it, so the relocation is pure.
 document claimed it was.** A subsystem with no Inports is legitimate — a
 self-contained sheet with its own Step source — but that case never meets this
 check, because `expandFlow`'s splice step 3 drops every subsystem block before
-`compileFlow` sees a block list. Nothing in *Compilation* depends on the
+`compileModel` sees a block list. Nothing in *Compilation* depends on the
 relocation. H2 carries it as optional layering hygiene that may be dropped
 without affecting any other task, and it is flagged here so an implementer
 reconciling the two sections does not stall looking for the case.
@@ -671,9 +671,9 @@ block card carries it as a `data-` attribute.
 
 ### Flatten before compiling
 
-`compileFlow` does not learn about subsystems. A new pass in the studio turns
+`compileModel` does not learn about subsystems. A new pass in the studio turns
 a sheet and everything beneath it into one block list and one connection list,
-and `compileFlow` compiles that exactly as it compiles a sheet today:
+and `compileModel` compiles that exactly as it compiles a sheet today:
 
 ```go
 // expandFlow flattens a flowsheet and every subsystem beneath it into the one
@@ -722,7 +722,7 @@ port.
 Two boundary cases are refusals, because the alternative is a message naming a
 block the user cannot see on the sheet they are looking at:
 
-- **An input port with no wire.** `compileFlow` would otherwise report
+- **An input port with no wire.** `compileModel` would otherwise report
   "Valve gain is not connected" about a block inside the subsystem. Refused at
   the boundary instead: **"Reactor has no signal on input port 1
   (Setpoint)"**. Port indices are zero-based here, as they are in every
@@ -824,9 +824,9 @@ silently wrong rather than obviously broken.
 
 Flattening rewrites each expanded block's `Name` to its qualified instance
 name — `"Reactor / Inner loop / Temperature"` — leaving its `ID` alone. That
-single move carries the path into everything without touching `compileFlow`:
+single move carries the path into everything without touching `compileModel`:
 
-- Every refusal `compileFlow` already produces names the sheet the block is
+- Every refusal `compileModel` already produces names the sheet the block is
   on: "Reactor / Valve gain is not connected".
 - A Scope inside a subsystem produces a `Series` named
   "Reactor / Temperature", so the parent's trend legend is unambiguous and a
@@ -1015,7 +1015,7 @@ four defects.
   argument depends on there being no way to attach an existing sheet to a
   block. Any task that adds one owns the ancestor check.
 - **`expandFlow` is the whole of the hierarchy as far as the compiler is
-  concerned.** `compileFlow` must not learn what a subsystem is, and a sheet
+  concerned.** `compileModel` must not learn what a subsystem is, and a sheet
   with no subsystem blocks must reach `simulate` with exactly the lists the
   snapshot holds.
 - **Block ids are the instance identity, and that is only true while a sheet

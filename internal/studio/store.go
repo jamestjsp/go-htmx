@@ -253,7 +253,7 @@ func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
 // from running twice and renumbering a flowsheet a user has since rewired.
 //
 // Ports are numbered per target in connection-id order — exactly the order
-// compileFlow hands a Sum's signs to its inbound wires today — so no stored
+// compileModel hands a Sum's signs to its inbound wires today — so no stored
 // flowsheet changes what it computes. Nothing here names a block kind: every
 // target is numbered the same way, and a target that has only ever held one
 // wire lands on port 0 by arithmetic rather than by a rule about Sum. That
@@ -271,7 +271,7 @@ func ensureConnectionPorts(ctx context.Context, db *sql.DB) error {
 	// per-connection state, and it is turned off for the duration because
 	// DROP TABLE performs an implicit delete of every row while they are
 	// enforced, and because the copy would otherwise reject rows an older
-	// version could have orphaned — compileFlow's "a connection references a
+	// version could have orphaned — compileModel's "a connection references a
 	// missing block" exists precisely because such rows are possible. Those
 	// rows open today, so refusing to migrate them would take a database the
 	// user can still repair and make it unopenable.

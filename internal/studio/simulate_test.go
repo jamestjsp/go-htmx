@@ -144,7 +144,7 @@ func TestCompileRejectsMissingScope(t *testing.T) {
 		{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
 		{ID: 2, Kind: BlockGain, Name: "Gain", Parameters: Parameters{Gain: 2}},
 	}
-	_, err := compileFlow(blocks, []Connection{{SourceID: 1, TargetID: 2}})
+	_, err := compileModel(blocks, []Connection{{SourceID: 1, TargetID: 2}})
 	var validation *ValidationError
 	if !errors.As(err, &validation) || !strings.Contains(err.Error(), "Scope") {
 		t.Fatalf("error = %v, want missing Scope validation", err)
@@ -258,7 +258,7 @@ func TestCompileTranslatesUnsolvableAlgebraicLoop(t *testing.T) {
 		{ID: 4, SourceID: 3, TargetID: 4},
 	}
 
-	_, err := compileFlow(blocks, connections)
+	_, err := compileModel(blocks, connections)
 	var validation *ValidationError
 	if !errors.As(err, &validation) {
 		t.Fatalf("error = %v, want ValidationError", err)
@@ -275,7 +275,7 @@ func TestCompileRejectsInvalidLag(t *testing.T) {
 		{ID: 2, Kind: BlockLag, Name: "Bad lag", Parameters: Parameters{TimeConstant: 0}},
 		{ID: 3, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{SourceID: 1, TargetID: 2},
 		{SourceID: 2, TargetID: 3},
 	})
@@ -442,7 +442,7 @@ func TestCompileRejectsTwoWiresOnOneInputPort(t *testing.T) {
 		{ID: 3, Kind: BlockSum, Name: "Difference", Parameters: Parameters{Signs: "+-"}},
 		{ID: 4, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{ID: 1, SourceID: 1, TargetID: 3, TargetPort: 0},
 		{ID: 2, SourceID: 2, TargetID: 3, TargetPort: 0},
 		{ID: 3, SourceID: 3, TargetID: 4},
@@ -464,7 +464,7 @@ func TestCompileRejectsANegativeInputPort(t *testing.T) {
 		{ID: 2, Kind: BlockSum, Name: "Total", Parameters: Parameters{Signs: "+"}},
 		{ID: 3, Kind: BlockScope, Name: "Output"},
 	}
-	_, err := compileFlow(blocks, []Connection{
+	_, err := compileModel(blocks, []Connection{
 		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: -1},
 		{ID: 2, SourceID: 2, TargetID: 3},
 	})

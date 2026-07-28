@@ -103,7 +103,7 @@ func TestTransferFunctionUpdateParsesAndValidatesCoefficients(t *testing.T) {
 // Transfer-function properness is a cross-field rule — it compares numerator
 // and denominator length, so it cannot live on either field's own bound. It
 // belongs to BlockTransfer's validate hook, and validateParameters is the one
-// place both validateBlockUpdate (the editor path) and compileFlow (the
+// place both validateBlockUpdate (the editor path) and compileModel (the
 // compile path) call to reach it. This test proves the move to per-definition
 // hooks kept both callers refusing the same improper model, not just one.
 func TestImproperTransferFunctionRefusedByBothEditorAndCompilePaths(t *testing.T) {
@@ -141,9 +141,9 @@ func TestImproperTransferFunctionRefusedByBothEditorAndCompilePaths(t *testing.T
 		{ID: 1, SourceID: 1, TargetID: 2},
 		{ID: 2, SourceID: 2, TargetID: 3},
 	}
-	if _, err := compileFlow(blocks, connections); err == nil ||
+	if _, err := compileModel(blocks, connections); err == nil ||
 		err.Error() != "Plant: "+wantMessage {
-		t.Fatalf("compileFlow error = %v, want %q", err, "Plant: "+wantMessage)
+		t.Fatalf("compileModel error = %v, want %q", err, "Plant: "+wantMessage)
 	}
 }
 

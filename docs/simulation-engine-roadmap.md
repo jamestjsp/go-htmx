@@ -524,7 +524,7 @@ Each row needs everything above it.
 today, and a Switch takes exactly three inputs where the second is the
 control, not a data input. That is neither value. Whoever files row 5 should
 expect to extend `arity` into a small port-list description rather than add a
-fourth enum value, and should check that `Connect`, `compileFlow`, and the
+fourth enum value, and should check that `Connect`, `compileModel`, and the
 palette's port glyphs all still read from the one derivation.
 
 **Row 6 has a type question with no type system.** Every signal here is a
@@ -532,7 +532,7 @@ palette's port glyphs all still read from the one derivation.
 rather than pretend a signal type exists.
 
 **Linear feedback is supported; nonlinear and mixed-domain feedback remains
-an engine decision.** `compileFlow` passes the full named graph to
+an engine decision.** `compileModel` passes the full named graph to
 `controlsys.ConnectByName`, which accepts well-posed LTI feedback and rejects
 only an unsolvable direct-feedthrough algebraic loop. A PID with output
 saturation and anti-windup crosses an LTI/step boundary, however, so it is not
@@ -552,7 +552,7 @@ differs.
 | Task | Depends on | Deliverable |
 | --- | --- | --- |
 | T1 Add the `step` hook and `isStepBlock` to the catalog | — | Two fields and one predicate in `catalog.go`; the exactly-one-of and not-a-source rules checked over `blockDefinitions`; no kind sets `step` yet |
-| T2 Partition `compileFlow` into step-depth segments | T1 | Pure-LTI feedback components remain intact, then depth is computed on the condensed graph; for an acyclic graph, segments are depth classes rather than connected components. Boundary channels are enumerated by *leaving the segment*, so segment-to-segment edges are carried. The Sum-branch counterexample and exhaustive DAG cases remain regressions. With no step blocks it holds exactly one segment and every existing test passes untouched |
+| T2 Partition `compileModel` into step-depth segments | T1 | Pure-LTI feedback components remain intact, then depth is computed on the condensed graph; for an acyclic graph, segments are depth classes rather than connected components. Boundary channels are enumerated by *leaving the segment*, so segment-to-segment edges are carried. The Sum-branch counterexample and exhaustive DAG cases remain regressions. With no step blocks it holds exactly one segment and every existing test passes untouched |
 | T3 Per-step driver behind the single-segment fast path | T2 | Segments `DiscretizeZOH(baseStep)`-ed once at compile time, then stepped through `Simulate` carrying `XFinal` (nil for stateless segments); single-segment sheets keep the batch `Lsim` call. Test asserts the two paths agree bit-for-bit on a single-segment sheet (measured max diff 0.000e+00) |
 | T4 Report simulation fidelity in the run record and dock | T3 | Segment count *and* whether every source is piecewise constant. A Sine sheet must not be shown as exact — it already carries 3.642e-02 at `dt = 0.1`. Blocks T5 because shipping a nonlinear block without the disclosure puts users on a different accuracy regime silently |
 | T5 Saturation block | T4 | First step block. Numeric check against the analytic response of a saturating first-order loop; refusal test that nothing linearizes |

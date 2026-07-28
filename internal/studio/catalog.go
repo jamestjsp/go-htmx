@@ -21,7 +21,7 @@ type BlockDefinition struct {
 
 // HasInput and HasOutput are the workbench template's and palette's window
 // into a block's structural role: which port glyphs to draw. Both delegate
-// to the same Kind-level derivation Connect and compileFlow enforce, so the
+// to the same Kind-level derivation Connect and compileModel enforce, so the
 // canvas can never draw a port that the wiring rules would then refuse.
 func (d BlockDefinition) HasInput() bool  { return d.Kind.HasInput() }
 func (d BlockDefinition) HasOutput() bool { return d.Kind.HasOutput() }
@@ -91,7 +91,7 @@ type blockDefinition struct {
 	BlockDefinition
 	Defaults   Parameters
 	Parameters []parameterDefinition
-	// role is the block's part in compileFlow's structural rules: at least
+	// role is the block's part in compileModel's structural rules: at least
 	// one roleSource and one roleSink block must be present before
 	// simulating, and a roleSource block may not accept a connection. The
 	// zero value, roleDynamic, covers every block that is neither — Gain,
@@ -102,7 +102,7 @@ type blockDefinition struct {
 	// Sum today, and any future block like Product or Mux that combines an
 	// arbitrary number of connected inputs. Every other non-source kind
 	// accepts exactly one; see arity, which folds this together with role
-	// into the none/one/variadic answer Connect and compileFlow both
+	// into the none/one/variadic answer Connect and compileModel both
 	// consult instead of separately special-casing Sum by name.
 	variadic bool
 	// inputPorts answers how many input terminals a variadic kind exposes
@@ -123,7 +123,7 @@ type blockDefinition struct {
 	declareWiredPorts func(Parameters, int) (Parameters, bool)
 	// realize builds the block's controlsys realization from its own
 	// parameters and the input ports its wires land on: ascending, distinct,
-	// and never negative, which compileFlow establishes before calling so a
+	// and never negative, which compileModel establishes before calling so a
 	// hook can index by port without re-checking. The ports are what a
 	// variadic kind needs: Sum's signs are its ports, so the sign an input
 	// carries has to come from the terminal it arrived on rather than from its
@@ -146,7 +146,7 @@ type blockDefinition struct {
 	// length, the Padé integer range. nil for kinds with no such rule.
 	validate func(Parameters) error
 	// checkInputs enforces a kind's own rule tying its parameters to the
-	// number of connected inputs, once compileFlow's arity walk has already
+	// number of connected inputs, once compileModel's arity walk has already
 	// confirmed the count itself satisfies the kind's arity. nil for every
 	// kind except Sum, whose signs must be length 1 (broadcasting to every
 	// input) or exactly the connected input count — Sum's own concern, not
@@ -191,7 +191,7 @@ func (k BlockKind) isSink() bool   { return blockDefinitions[k].role == roleSink
 func (k BlockKind) isSpectrumSink() bool { return blockDefinitions[k].spectrum }
 
 // inputArity states how many incoming connections a block accepts. Connect's
-// incoming-count check (studio.go) and compileFlow's arity walk (simulate.go)
+// incoming-count check (studio.go) and compileModel's arity walk (simulate.go)
 // both consult this one derivation instead of separately re-deriving "every
 // non-Sum block takes one input."
 type inputArity int
@@ -206,7 +206,7 @@ const (
 )
 
 // arity folds a block's role and variadic flag into the three-way answer
-// Connect and compileFlow need: none for a source, variadic for the one
+// Connect and compileModel need: none for a source, variadic for the one
 // kind that sets variadic, and exactly one for everything else.
 func (d blockDefinition) arity() inputArity {
 	switch {
@@ -742,7 +742,7 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 }
 
 // validateParameters is the one entry point both the editor path
-// (validateBlockUpdate) and the compile path (simulate.go's compileFlow) call
+// (validateBlockUpdate) and the compile path (simulate.go's compileModel) call
 // to enforce a block's rules: each field's own bound first, in the order the
 // definition lists them, then the block's cross-field validate hook.
 func validateParameters(kind BlockKind, parameters Parameters) error {

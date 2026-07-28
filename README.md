@@ -248,6 +248,12 @@ removing a sign is refused while that port still carries a wire.
 
 Each math or continuous block becomes a locally named `controlsys.System`. `controlsys.ConnectByName` composes those realizations into one state-space model, and `controlsys.Lsim` evaluates it on the requested time grid. Spectrum Analyzer sinks then apply Gonum's Hann window and real FFT to their selected response.
 
+Compilation returns one owned model artifact containing the composed system,
+stable block/port channel identities, source excitations, selected outputs,
+time-domain metadata, dimensions, and a snapshot of the diagram provenance.
+Simulation and analysis consume that artifact instead of reconstructing
+controlsys channel order or exposing its mutable matrices.
+
 The linear boundary is deliberate. State-Space is deferred until the editor supports matrices and MIMO ports. Unit Delay and discrete filters require an explicit mixed-sample-time policy. Product, Saturation, Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this compiler does not silently linearize them.
 
 The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.
