@@ -89,6 +89,9 @@ func compileRequestedModel(
 	incoming := make(map[int64][]Connection, len(blocks))
 	var sources, sinks []Block
 	for _, block := range blocks {
+		if existing, ok := blockByID[block.ID]; ok {
+			return nil, invalid("%s and %s share block id %d", existing.Name, block.Name, block.ID)
+		}
 		if !block.Kind.Valid() {
 			return nil, invalid("%s has an unknown block type", block.Name)
 		}
