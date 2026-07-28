@@ -2,8 +2,6 @@ package studio
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -24,20 +22,20 @@ const (
 type TunableField string
 
 const (
-	TunableGain         TunableField = "gain"
-	TunableProportional TunableField = "proportional"
-	TunableIntegral     TunableField = "integral"
-	TunableDerivative   TunableField = "derivative"
-	TunableFilterTime   TunableField = "filter_time"
+	TunableGain             TunableField = "gain"
+	TunableProportional     TunableField = "proportional"
+	TunableIntegral         TunableField = "integral"
+	TunableDerivative       TunableField = "derivative"
+	TunableFilterTime       TunableField = "filter_time"
 	TunableSetpointWeight   TunableField = "setpoint_weight"
 	TunableDerivativeWeight TunableField = "derivative_weight"
-	TunableMatrixGain   TunableField = "matrix_gain"
-	TunableNumerator    TunableField = "numerator"
-	TunableTransferNum  TunableField = "transfer_numerator"
-	TunableStateA       TunableField = "state_a"
-	TunableStateB       TunableField = "state_b"
-	TunableStateC       TunableField = "state_c"
-	TunableStateD       TunableField = "state_d"
+	TunableMatrixGain       TunableField = "matrix_gain"
+	TunableNumerator        TunableField = "numerator"
+	TunableTransferNum      TunableField = "transfer_numerator"
+	TunableStateA           TunableField = "state_a"
+	TunableStateB           TunableField = "state_b"
+	TunableStateC           TunableField = "state_c"
+	TunableStateD           TunableField = "state_d"
 )
 
 type TunableParameterRef struct {
@@ -109,6 +107,7 @@ type TuningGoalEvidence struct {
 type ControllerTuningCandidate struct {
 	FlowID              int64                `json:"flowId"`
 	SourceModelRevision time.Time            `json:"sourceModelRevision"`
+	SourceControlRoles  ControlRoleSnapshot  `json:"sourceControlRoles"`
 	Algorithm           TuningAlgorithm      `json:"algorithm"`
 	SearchMethod        string               `json:"searchMethod"`
 	Pass                bool                 `json:"pass"`
@@ -119,7 +118,7 @@ type ControllerTuningCandidate struct {
 	Warnings            []string             `json:"warnings,omitempty"`
 	Controller          *controlsys.System   `json:"-"`
 	ClosedLoop          *controlsys.System   `json:"-"`
-	changes             []tunedParameterChange
+	edit                *candidateBlockEdit
 }
 
 type tunedParameterChange struct {
@@ -207,6 +206,7 @@ func (s *Studio) TuneController(
 	candidate := ControllerTuningCandidate{
 		FlowID:              flowID,
 		SourceModelRevision: snapshot.Flow.ModelUpdatedAt,
+		SourceControlRoles:  newControlRoleSnapshot(spec),
 		Algorithm:           request.Algorithm,
 		SearchMethod:        tuned.Method,
 		Pass:                tuned.Pass,
@@ -243,6 +243,7 @@ func (s *Studio) TuneController(
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
+	changes := make([]tunedParameterChange, 0, len(keys))
 	for _, key := range keys {
 		authority, ok := authorities[key]
 		if !ok {
@@ -255,9 +256,13 @@ func (s *Studio) TuneController(
 			Ref: authority.ref, Previous: authority.current, Value: value,
 			Lower: authority.lower, Upper: authority.upper,
 		})
-		candidate.changes = append(candidate.changes, tunedParameterChange{
+		changes = append(changes, tunedParameterChange{
 			ref: authority.ref, value: value,
 		})
+	}
+	candidate.edit, err = editBlockWithTunedChanges(controllerBlock, changes)
+	if err != nil {
+		return ControllerTuningCandidate{}, err
 	}
 	return candidate, nil
 }
@@ -665,68 +670,25 @@ func (s *Studio) ApplyTuningCandidate(
 	ctx context.Context,
 	candidate ControllerTuningCandidate,
 ) (Snapshot, error) {
+	result, err := s.ApplyTuningCandidateWithUndo(ctx, candidate)
+	return result.Snapshot, err
+}
+
+func (s *Studio) ApplyTuningCandidateWithUndo(
+	ctx context.Context,
+	candidate ControllerTuningCandidate,
+) (ControllerCandidateApplication, error) {
 	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
-		len(candidate.changes) == 0 {
-		return Snapshot{}, invalid("controller candidate is incomplete; tune it again")
-	}
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		var revision string
-		if err := tx.QueryRowContext(ctx,
-			"SELECT model_updated_at FROM flows WHERE id = ?", candidate.FlowID,
-		).Scan(&revision); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			return err
-		}
-		if revision != candidate.SourceModelRevision.UTC().Format(time.RFC3339Nano) {
-			return invalid("controller candidate is stale; refresh the design from the current model")
-		}
-		byBlock := make(map[int64][]tunedParameterChange)
-		for _, change := range candidate.changes {
-			byBlock[change.ref.BlockID] = append(byBlock[change.ref.BlockID], change)
-		}
-		for blockID, changes := range byBlock {
-			block, err := blockByID(ctx, tx, blockID)
-			if err != nil {
-				return err
-			}
-			if block.FlowID != candidate.FlowID {
-				return invalid("controller candidate references a block outside its flowsheet")
-			}
-			parameters := cloneParameters(block.Parameters)
-			for _, change := range changes {
-				if err := setTunedParameter(&parameters, change.ref, change.value); err != nil {
-					return err
-				}
-			}
-			if err := validateParameters(block.Kind, parameters); err != nil {
-				return invalid("%s: %s", block.Name, err)
-			}
-			block.Parameters = parameters
-			if err := checkWiredPortCompatibility(ctx, tx, block); err != nil {
-				return err
-			}
-			encoded, err := encodeParameters(parameters)
-			if err != nil {
-				return err
-			}
-			if _, err := tx.ExecContext(ctx,
-				"UPDATE blocks SET parameters_json = ? WHERE id = ?",
-				encoded, blockID,
-			); err != nil {
-				return fmt.Errorf("apply tuned controller: %w", err)
-			}
-		}
-		return s.touchModel(
-			ctx, tx, candidate.FlowID,
-			fmt.Sprintf("Applied %s controller candidate", candidate.Algorithm),
+		candidate.edit == nil {
+		return ControllerCandidateApplication{}, invalid(
+			"controller candidate is incomplete; tune it again",
 		)
-	})
-	if err != nil {
-		return Snapshot{}, err
 	}
-	return s.snapshot(ctx, candidate.FlowID)
+	return s.applyCandidateBlockEditWithUndo(ctx, candidateApplyRequest{
+		flowID: candidate.FlowID, modelRevision: candidate.SourceModelRevision,
+		controlRoles: candidate.SourceControlRoles, edit: candidate.edit,
+		event: fmt.Sprintf("Applied %s controller candidate", candidate.Algorithm),
+	})
 }
 
 func setTunedParameter(

@@ -97,22 +97,23 @@ func plural(count int, one, many string) string {
 }
 
 type workbenchView struct {
-	Workspace        studio.Workspace
-	Snapshot         studio.Snapshot
-	Blocks           []blockView
-	Connections      []connectionView
-	Selected         *blockView
-	SelectedLinks    []inspectorLink
-	Palette          []paletteItem
-	Sheet            sheetGeometry
-	Tabs             []flowTabView
-	Chart            chartView
-	Analysis         analysisView
-	Error            string
-	Updated          string
-	BlockCount       int
-	ConnectionCount  int
-	SimulationLimits string
+	Workspace           studio.Workspace
+	Snapshot            studio.Snapshot
+	Blocks              []blockView
+	Connections         []connectionView
+	Selected            *blockView
+	SelectedLinks       []inspectorLink
+	Palette             []paletteItem
+	Sheet               sheetGeometry
+	Tabs                []flowTabView
+	Chart               chartView
+	Analysis            analysisView
+	ControllerCandidate *controllerCandidateView
+	Error               string
+	Updated             string
+	BlockCount          int
+	ConnectionCount     int
+	SimulationLimits    string
 }
 
 // flowTabView is one sheet in the tab strip, in the project's `position`

@@ -129,6 +129,7 @@ func (s *Server) deleteFlow(w http.ResponseWriter, r *http.Request) {
 		refuse(w, err)
 		return
 	}
+	s.controllerCandidates.deleteFlow(flowID)
 	s.renderWorkspace(w, r, workspace, 0, "")
 }
 
@@ -184,7 +185,7 @@ func (s *Server) renderWorkspace(
 ) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(
-		w, "workbench", newWorkbenchView(workspace, selected, message),
+		w, "workbench", s.newWorkbenchView(workspace, selected, message),
 	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}

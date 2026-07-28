@@ -2,8 +2,6 @@ package studio
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"math"
 	"math/cmplx"
@@ -86,7 +84,9 @@ type StateDesignDiagnostics struct {
 type StateDesignCandidate struct {
 	FlowID              int64                  `json:"flowId"`
 	SourceModelRevision time.Time              `json:"sourceModelRevision"`
+	SourceControlRoles  ControlRoleSnapshot    `json:"sourceControlRoles"`
 	Method              string                 `json:"method"`
+	Goals               []ControllerDesignGoal `json:"goals"`
 	Diagnostics         StateDesignDiagnostics `json:"diagnostics"`
 	StateNames          []string               `json:"stateNames"`
 	MeasurementNames    []string               `json:"measurementNames"`
@@ -100,13 +100,7 @@ type StateDesignCandidate struct {
 	Warnings            []string               `json:"warnings,omitempty"`
 	Controller          *controlsys.System     `json:"-"`
 	Estimator           *controlsys.System     `json:"-"`
-	edit                *stateCandidateEdit
-}
-
-type stateCandidateEdit struct {
-	blockID      int64
-	expectedKind BlockKind
-	parameters   Parameters
+	edit                *candidateBlockEdit
 }
 
 type stateDesignPlant struct {
@@ -129,6 +123,7 @@ func (s *Studio) DesignStateFeedback(
 	plant := design.plant
 	n, m, _ := plant.Dims()
 	candidate := design.candidate(string(request.Method))
+	candidate.Goals = stateFeedbackDesignGoals(request)
 	var result *controlsys.RiccatiResult
 	var gain *mat.Dense
 	controllerPlant := plant
@@ -305,6 +300,7 @@ func (s *Studio) DesignEstimator(
 	plant := design.plant
 	n, m, p := plant.Dims()
 	candidate := design.candidate(string(request.Method))
+	candidate.Goals = estimatorDesignGoals(request)
 	var result *controlsys.RiccatiResult
 	var gain *mat.Dense
 	estimatorPlant := plant
@@ -436,6 +432,7 @@ func (s *Studio) DesignObserverRegulator(
 	plant := design.plant
 	n, m, p := plant.Dims()
 	candidate := design.candidate(string(request.Method))
+	candidate.Goals = observerRegulatorDesignGoals(request)
 	var k, l *mat.Dense
 	switch request.Method {
 	case ObserverRegulatorLQG:
@@ -587,11 +584,100 @@ func (design stateDesignPlant) candidate(method string) StateDesignCandidate {
 	return StateDesignCandidate{
 		FlowID:              design.snapshot.Flow.ID,
 		SourceModelRevision: design.snapshot.Flow.ModelUpdatedAt,
+		SourceControlRoles:  newControlRoleSnapshot(design.spec),
 		Method:              method, Diagnostics: design.diag,
 		StateNames:       append([]string(nil), design.plant.StateName...),
 		MeasurementNames: append([]string(nil), design.plant.OutputName...),
 		ControlNames:     append([]string(nil), design.plant.InputName...),
 	}
+}
+
+func stateFeedbackDesignGoals(
+	request StateFeedbackRequest,
+) []ControllerDesignGoal {
+	switch request.Method {
+	case StateFeedbackLQR, StateFeedbackLQRD:
+		return []ControllerDesignGoal{{
+			Name:   "optimal state feedback",
+			Target: matrixCostGoal(request.Q, request.R),
+		}}
+	case StateFeedbackLQI:
+		return []ControllerDesignGoal{{
+			Name:   "integral state feedback",
+			Target: matrixCostGoal(request.Q, request.R),
+		}}
+	case StateFeedbackAcker, StateFeedbackPlace:
+		return []ControllerDesignGoal{{
+			Name:   "closed-loop pole placement",
+			Target: complexGoalText(request.Poles),
+		}}
+	default:
+		return []ControllerDesignGoal{{
+			Name: "state feedback", Target: string(request.Method),
+		}}
+	}
+}
+
+func estimatorDesignGoals(
+	request EstimatorDesignRequest,
+) []ControllerDesignGoal {
+	if request.Method == EstimatorPlace {
+		return []ControllerDesignGoal{{
+			Name:   "estimator pole placement",
+			Target: complexGoalText(request.Poles),
+		}}
+	}
+	return []ControllerDesignGoal{{
+		Name: "state estimation",
+		Target: fmt.Sprintf(
+			"%s with Qn=%s and Rn=%s",
+			request.Method, matrixGoalText(request.Qn), matrixGoalText(request.Rn),
+		),
+	}}
+}
+
+func observerRegulatorDesignGoals(
+	request ObserverRegulatorRequest,
+) []ControllerDesignGoal {
+	if request.Method == ObserverRegulatorReg {
+		return []ControllerDesignGoal{{
+			Name: "observer regulator",
+			Target: fmt.Sprintf(
+				"explicit K=%s and L=%s",
+				matrixGoalText(request.K), matrixGoalText(request.L),
+			),
+		}}
+	}
+	return []ControllerDesignGoal{{
+		Name: "LQG output feedback",
+		Target: fmt.Sprintf(
+			"Q=%s; R=%s; Qn=%s; Rn=%s",
+			matrixGoalText(request.Q), matrixGoalText(request.R),
+			matrixGoalText(request.Qn), matrixGoalText(request.Rn),
+		),
+	}}
+}
+
+func matrixCostGoal(q, r *MatrixValue) string {
+	return fmt.Sprintf("Q=%s; R=%s", matrixGoalText(q), matrixGoalText(r))
+}
+
+func matrixGoalText(value *MatrixValue) string {
+	if value == nil {
+		return "unspecified"
+	}
+	return strings.ReplaceAll(value.Text(), "\n", "; ")
+}
+
+func complexGoalText(values []ComplexValue) string {
+	if len(values) == 0 {
+		return "unspecified"
+	}
+	parts := make([]string, len(values))
+	for i, value := range values {
+		parts[i] = fmt.Sprintf("%.6g%+.6gi", value.Real, value.Imag)
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (design stateDesignPlant) controllerBlock() (Block, bool) {
@@ -605,7 +691,7 @@ func (design stateDesignPlant) controllerBlock() (Block, bool) {
 
 func (design stateDesignPlant) matrixGainControllerEdit(
 	controller *controlsys.System,
-) (*stateCandidateEdit, error) {
+) (*candidateBlockEdit, error) {
 	block, ok := design.controllerBlock()
 	if !ok || block.Kind != BlockMatrixGain {
 		return nil, nil
@@ -619,14 +705,14 @@ func (design stateDesignPlant) matrixGainControllerEdit(
 	inputs, _ := NewChannelNames(controller.InputName)
 	outputs, _ := NewChannelNames(controller.OutputName)
 	parameters.InputNames, parameters.OutputNames = &inputs, &outputs
-	return &stateCandidateEdit{
+	return &candidateBlockEdit{
 		blockID: block.ID, expectedKind: block.Kind, parameters: parameters,
 	}, nil
 }
 
 func (design stateDesignPlant) stateSpaceControllerEdit(
 	controller *controlsys.System,
-) (*stateCandidateEdit, error) {
+) (*candidateBlockEdit, error) {
 	block, ok := design.controllerBlock()
 	if !ok || (block.Kind != BlockStateSpace && block.Kind != BlockDiscreteStateSpace) {
 		return nil, nil
@@ -658,7 +744,7 @@ func (design stateDesignPlant) stateSpaceControllerEdit(
 	if controller.IsDiscrete() {
 		parameters.TimeDomain = modelDomainDiscrete
 	}
-	return &stateCandidateEdit{
+	return &candidateBlockEdit{
 		blockID: block.ID, expectedKind: block.Kind, parameters: parameters,
 	}, nil
 }
@@ -667,58 +753,25 @@ func (s *Studio) ApplyStateDesignCandidate(
 	ctx context.Context,
 	candidate StateDesignCandidate,
 ) (Snapshot, error) {
+	result, err := s.ApplyStateDesignCandidateWithUndo(ctx, candidate)
+	return result.Snapshot, err
+}
+
+func (s *Studio) ApplyStateDesignCandidateWithUndo(
+	ctx context.Context,
+	candidate StateDesignCandidate,
+) (ControllerCandidateApplication, error) {
 	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
 		candidate.edit == nil {
-		return Snapshot{}, invalid("state-design candidate cannot be applied to the authored controller block")
-	}
-	edit := candidate.edit
-	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		var revision string
-		if err := tx.QueryRowContext(ctx,
-			"SELECT model_updated_at FROM flows WHERE id = ?", candidate.FlowID,
-		).Scan(&revision); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return ErrNotFound
-			}
-			return err
-		}
-		if revision != candidate.SourceModelRevision.UTC().Format(time.RFC3339Nano) {
-			return invalid("state-design candidate is stale; refresh the design from the current model")
-		}
-		block, err := blockByID(ctx, tx, edit.blockID)
-		if err != nil {
-			return err
-		}
-		if block.FlowID != candidate.FlowID || block.Kind != edit.expectedKind {
-			return invalid("state-design target block changed; refresh the design")
-		}
-		parameters := cloneParameters(edit.parameters)
-		if err := validateParameters(block.Kind, parameters); err != nil {
-			return invalid("%s: %s", block.Name, err)
-		}
-		block.Parameters = parameters
-		if err := checkWiredPortCompatibility(ctx, tx, block); err != nil {
-			return err
-		}
-		encoded, err := encodeParameters(parameters)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE blocks SET parameters_json = ? WHERE id = ?",
-			encoded, block.ID,
-		); err != nil {
-			return err
-		}
-		return s.touchModel(
-			ctx, tx, candidate.FlowID,
-			fmt.Sprintf("Applied %s state-design candidate", candidate.Method),
+		return ControllerCandidateApplication{}, invalid(
+			"state-design candidate cannot be applied to the authored controller block",
 		)
-	})
-	if err != nil {
-		return Snapshot{}, err
 	}
-	return s.snapshot(ctx, candidate.FlowID)
+	return s.applyCandidateBlockEditWithUndo(ctx, candidateApplyRequest{
+		flowID: candidate.FlowID, modelRevision: candidate.SourceModelRevision,
+		controlRoles: candidate.SourceControlRoles, edit: candidate.edit,
+		event: fmt.Sprintf("Applied %s state-design candidate", candidate.Method),
+	})
 }
 
 func stateCostMatrices(

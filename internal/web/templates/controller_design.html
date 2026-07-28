@@ -1,0 +1,162 @@
+{{define "controller-design"}}
+<section class="analysis-workspace controller-design" aria-labelledby="controller-design-heading">
+  <header class="analysis-header">
+    <div>
+      <span class="eyebrow">Named-role design loop</span>
+      <h2 id="controller-design-heading">Controller design</h2>
+      <p>Generate, compare, apply, and revision-safely undo controlsys candidates.</p>
+    </div>
+  </header>
+
+  <div class="controller-design-forms">
+    <form
+      class="analysis-form"
+      id="pid-controller-design-form"
+      method="post"
+      action="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/pid"
+      hx-post="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/pid"
+      hx-target="#controller-candidate"
+      hx-swap="innerHTML"
+      hx-disabled-elt="button">
+      <strong>PID / PID2</strong>
+      <label>
+        <span>Type</span>
+        <select name="pid_type">
+          <option value="PI">PI</option>
+          <option value="PIDF">PIDF</option>
+          <option value="PID">PID</option>
+          <option value="P">P</option>
+          <option value="I">I</option>
+          <option value="PD">PD</option>
+        </select>
+      </label>
+      <label><span>Crossover rad/s</span><input name="crossover_frequency" type="number" min=".000001" step=".01" value="1"></label>
+      <label><span>Phase margin °</span><input name="phase_margin" type="number" min="1" max="179" step="1" value="60"></label>
+      <label><span>Setpoint weight</span><input name="setpoint_weight" type="number" min="0" max="1" step=".05" placeholder="PID2 only"></label>
+      <label><span>Derivative weight</span><input name="derivative_weight" type="number" min="0" max="1" step=".05" placeholder="PID2 only"></label>
+      <label><span>Review horizon</span><input name="review_horizon" type="number" min=".1" max="120" step=".1" value="10"></label>
+      <button class="run-button analysis-run-button" type="submit">
+        <span class="run-label">Generate PID candidate</span>
+        <span class="htmx-indicator">Designing…</span>
+      </button>
+    </form>
+
+    <form
+      class="analysis-form"
+      id="state-controller-design-form"
+      method="post"
+      action="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/state-space"
+      hx-post="/flows/{{.Snapshot.Flow.ID}}/controller-candidates/state-space"
+      hx-target="#controller-candidate"
+      hx-swap="innerHTML"
+      hx-disabled-elt="button">
+      <strong>LQG state-space</strong>
+      <label><span>State cost Q</span><textarea name="q" rows="2">1 0
+0 1</textarea></label>
+      <label><span>Control cost R</span><textarea name="r" rows="2">1</textarea></label>
+      <label><span>Process covariance Qn</span><textarea name="qn" rows="2">1</textarea></label>
+      <label><span>Measurement covariance Rn</span><textarea name="rn" rows="2">1</textarea></label>
+      <label><span>Review horizon</span><input name="review_horizon" type="number" min=".1" max="120" step=".1" value="10"></label>
+      <button class="run-button analysis-run-button" type="submit">
+        <span class="run-label">Generate LQG candidate</span>
+        <span class="htmx-indicator">Designing…</span>
+      </button>
+    </form>
+  </div>
+
+  <div id="controller-candidate" aria-live="polite">
+    {{if .ControllerCandidate}}
+      {{template "controller-candidate" .ControllerCandidate}}
+    {{else}}
+    <div class="analysis-empty">
+      <strong>No controller candidate</strong>
+      <p>Assign named plant/controller roles, then generate a read-only candidate for comparison.</p>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "controller-candidate"}}
+{{if .Error}}
+<article class="analysis-result is-stale controller-candidate-error">
+  <header class="analysis-result-head">
+    <div><span class="analysis-kind">refresh required</span><h3>Candidate unavailable</h3></div>
+  </header>
+  <ul class="analysis-notices"><li>{{.Error}}</li></ul>
+  {{if .UndoAvailable}}
+  <form method="post" action="{{.UndoPath}}" hx-post="{{.UndoPath}}" hx-target="#workbench" hx-swap="outerHTML">
+    <button class="run-button" type="submit">Undo candidate</button>
+  </form>
+  {{end}}
+  {{if and .ID (not .Applied)}}<button class="run-button" type="submit" form="{{.RefreshFormID}}">Generate fresh candidate</button>{{end}}
+</article>
+{{else if .ID}}
+<article class="analysis-result controller-candidate-result">
+  <header class="analysis-result-head">
+    <div>
+      <span class="analysis-kind">{{.Kind}}</span>
+      <h3>{{.Algorithm}} candidate</h3>
+      <p>Named roles {{.RoleFingerprint}}</p>
+    </div>
+    <div class="analysis-revision">
+      {{if .Applied}}<b>APPLIED</b>{{else}}<b>READ ONLY</b>{{end}}
+      <span>rev {{.Revision}}</span>
+    </div>
+  </header>
+
+  {{if .Goals}}
+  <dl class="analysis-metrics">
+    {{range .Goals}}<div><dt>{{.Name}}</dt><dd>{{.Target}}</dd></div>{{end}}
+  </dl>
+  {{end}}
+
+  {{if .Details}}
+  <dl class="analysis-metrics">
+    {{range .Details}}<div><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>{{end}}
+  </dl>
+  {{end}}
+
+  {{if .Comparisons}}
+  <div class="controller-comparison-table">
+    <div><b>Metric</b><b>Current</b><b>Candidate</b></div>
+    {{range .Comparisons}}<div><span>{{.Label}}</span><span>{{.Current}}</span><span>{{.Candidate}}</span></div>{{end}}
+  </div>
+  {{end}}
+
+  {{if .Plots}}
+  <div class="analysis-plots">
+    {{range .Plots}}
+    <figure class="analysis-plot">
+      <figcaption><strong>{{.Title}}</strong><span>{{.YLabel}} / {{.XLabel}}</span></figcaption>
+      <svg viewBox="0 0 400 140" role="img" aria-label="{{.Title}}">
+        <line x1="18" x2="390" y1="124" y2="124" class="analysis-axis"></line>
+        <line x1="18" x2="18" y1="10" y2="124" class="analysis-axis"></line>
+        {{range .Paths}}<path d="{{.D}}" fill="none" stroke="{{.Color}}" class="analysis-path"></path>{{end}}
+      </svg>
+      <div class="analysis-series-controls">
+        {{range .Paths}}<span class="series-toggle"><i style="background:{{.Color}}"></i>{{.Name}}</span>{{end}}
+      </div>
+    </figure>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{if .Warnings}}<ul class="analysis-notices">{{range .Warnings}}<li>{{.}}</li>{{end}}</ul>{{end}}
+
+  <div class="controller-candidate-actions">
+    {{if .ApplyAvailable}}
+    <form method="post" action="{{.ApplyPath}}" hx-post="{{.ApplyPath}}" hx-target="#workbench" hx-swap="outerHTML">
+      <button class="run-button" type="submit">Apply candidate atomically</button>
+    </form>
+    {{end}}
+    {{if .UndoAvailable}}
+    <form method="post" action="{{.UndoPath}}" hx-post="{{.UndoPath}}" hx-target="#workbench" hx-swap="outerHTML">
+      <button class="run-button" type="submit">Undo candidate</button>
+    </form>
+    {{end}}
+    <button class="run-button" type="submit" form="{{.RefreshFormID}}">Generate fresh candidate</button>
+  </div>
+</article>
+{{end}}
+{{end}}

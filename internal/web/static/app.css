@@ -1915,7 +1915,8 @@ body.is-resizing-dock .studio-grid {
 }
 
 .analysis-form input,
-.analysis-form select {
+.analysis-form select,
+.analysis-form textarea {
   width: 100%;
   height: 32px;
   min-width: 0;
@@ -1926,6 +1927,12 @@ body.is-resizing-dock .studio-grid {
   background: #fff;
   font-family: var(--font-mono);
   font-size: var(--fs-100);
+}
+
+.analysis-form textarea {
+  height: 48px;
+  padding: 6px 8px;
+  resize: vertical;
 }
 
 .analysis-form select {
@@ -1955,6 +1962,53 @@ body.is-resizing-dock .studio-grid {
 
 .analysis-run-button {
   white-space: nowrap;
+}
+
+.controller-design-forms {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.controller-design .analysis-form {
+  grid-template-columns: repeat(3, minmax(90px, 1fr));
+}
+
+.controller-design .analysis-form > strong,
+.controller-design .analysis-form > button {
+  align-self: center;
+}
+
+.controller-comparison-table {
+  display: grid;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--sheet-line-soft);
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+}
+
+.controller-comparison-table > div {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.4fr) repeat(2, minmax(90px, 1fr));
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.controller-candidate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+}
+
+@media (max-width: 900px) {
+  .controller-design-forms {
+    grid-template-columns: 1fr;
+  }
+
+  .controller-design .analysis-form {
+    grid-template-columns: repeat(2, minmax(100px, 1fr));
+  }
 }
 
 .analysis-empty {

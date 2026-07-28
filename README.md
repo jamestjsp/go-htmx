@@ -513,6 +513,12 @@ measurement contracts, cost/covariance validation, signed-control-law
 normalization, non-mutating candidates, and atomic stale-safe whole-block
 apply. See `docs/state-design.md`.
 
+Controller-review tests cover normalized named-role fingerprints, role-only
+staleness, structured design goals, shared-grid time/frequency/robustness
+comparisons, PID2 reference-loop evidence, opaque HTMX candidate authority,
+atomic apply, and revision-checked undo. See
+`docs/controller-candidate-workflow.md`.
+
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks
 across viewport, snapping, selection, keyboard, context menus, and wiring — at

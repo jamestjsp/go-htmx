@@ -49,10 +49,13 @@ type PIDStepEvidence struct {
 type PIDDesignCandidate struct {
 	FlowID              int64                    `json:"flowId"`
 	SourceModelRevision time.Time                `json:"sourceModelRevision"`
+	SourceControlRoles  ControlRoleSnapshot      `json:"sourceControlRoles"`
 	ControllerBlockID   int64                    `json:"controllerBlockId"`
 	Type                controlsys.PidtuneType   `json:"type"`
 	TargetCrossover     float64                  `json:"targetCrossover,omitempty"`
 	TargetPhaseMargin   float64                  `json:"targetPhaseMargin"`
+	TwoDegreeOfFreedom  bool                     `json:"twoDegreeOfFreedom"`
+	Goals               []ControllerDesignGoal   `json:"goals"`
 	Gains               PIDDesignGains           `json:"gains"`
 	CurrentMargin       *ClassicalMarginAnalysis `json:"currentMargin,omitempty"`
 	CandidateMargin     *ClassicalMarginAnalysis `json:"candidateMargin,omitempty"`
@@ -62,7 +65,7 @@ type PIDDesignCandidate struct {
 	Controller          *controlsys.System       `json:"-"`
 	ReferenceController *controlsys.System       `json:"-"`
 	ClosedLoop          *controlsys.System       `json:"-"`
-	changes             []tunedParameterChange
+	edit                *candidateBlockEdit
 }
 
 func (s *Studio) DesignPIDController(
@@ -213,8 +216,11 @@ func (s *Studio) DesignPIDController(
 	}
 	candidate := PIDDesignCandidate{
 		FlowID: flowID, SourceModelRevision: snapshot.Flow.ModelUpdatedAt,
-		ControllerBlockID: block.ID, Type: request.Type,
+		SourceControlRoles: newControlRoleSnapshot(spec),
+		ControllerBlockID:  block.ID, Type: request.Type,
 		TargetCrossover: request.CrossoverFrequency, TargetPhaseMargin: targetPM,
+		TwoDegreeOfFreedom: block.Kind == BlockPID2,
+		Goals:              pidControllerDesignGoals(request.CrossoverFrequency, targetPM),
 		Gains: PIDDesignGains{
 			Proportional: designed.Kp, Integral: designed.Ki, Derivative: designed.Kd,
 			FilterTime: designed.Tf, SetpointWeight: b, DerivativeWeight: c,
@@ -244,8 +250,28 @@ func (s *Studio) DesignPIDController(
 	)
 	candidate.Step = step
 	candidate.Warnings = append(candidate.Warnings, warnings...)
-	candidate.changes = pidCandidateChanges(block, designed, b, c)
+	candidate.edit, err = editBlockWithTunedChanges(
+		block, pidCandidateChanges(block, designed, b, c),
+	)
+	if err != nil {
+		return PIDDesignCandidate{}, err
+	}
 	return candidate, nil
+}
+
+func pidControllerDesignGoals(
+	crossoverFrequency, phaseMargin float64,
+) []ControllerDesignGoal {
+	goals := []ControllerDesignGoal{{
+		Name: "phase margin", Target: fmt.Sprintf("%.6g degrees", phaseMargin),
+	}}
+	if crossoverFrequency > 0 {
+		goals = append(goals, ControllerDesignGoal{
+			Name:   "crossover frequency",
+			Target: fmt.Sprintf("%.6g rad/s", crossoverFrequency),
+		})
+	}
+	return goals
 }
 
 func validatePIDDesignRequest(request PIDDesignRequest) error {
@@ -474,13 +500,22 @@ func (s *Studio) ApplyPIDDesignCandidate(
 	ctx context.Context,
 	candidate PIDDesignCandidate,
 ) (Snapshot, error) {
-	if candidate.ControllerBlockID <= 0 || len(candidate.changes) == 0 {
-		return Snapshot{}, invalid("PID controller candidate is incomplete; design it again")
+	result, err := s.ApplyPIDDesignCandidateWithUndo(ctx, candidate)
+	return result.Snapshot, err
+}
+
+func (s *Studio) ApplyPIDDesignCandidateWithUndo(
+	ctx context.Context,
+	candidate PIDDesignCandidate,
+) (ControllerCandidateApplication, error) {
+	if candidate.ControllerBlockID <= 0 || candidate.edit == nil {
+		return ControllerCandidateApplication{}, invalid(
+			"PID controller candidate is incomplete; design it again",
+		)
 	}
-	return s.ApplyTuningCandidate(ctx, ControllerTuningCandidate{
-		FlowID: candidate.FlowID, SourceModelRevision: candidate.SourceModelRevision,
-		Algorithm: TuningAlgorithm("pidtune"), changes: append(
-			[]tunedParameterChange(nil), candidate.changes...,
-		),
+	return s.applyCandidateBlockEditWithUndo(ctx, candidateApplyRequest{
+		flowID: candidate.FlowID, modelRevision: candidate.SourceModelRevision,
+		controlRoles: candidate.SourceControlRoles, edit: candidate.edit,
+		event: "Applied pidtune controller candidate",
 	})
 }
