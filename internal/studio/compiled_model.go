@@ -163,7 +163,7 @@ func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, erro
 		}
 	}
 
-	system, err := m.system.SelectByName(m.system.InputName, names)
+	system, err := selectSystemChannels(m.system, m.system.InputName, names)
 	if err != nil {
 		return nil, fmt.Errorf("select compiled outputs: %w", err)
 	}
@@ -217,11 +217,113 @@ func (m *compiledModel) selectChannels(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	system, err := m.system.SelectByName(inputNames, outputNames)
+	system, err := selectSystemChannels(m.system, inputNames, outputNames)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("select compiled channels: %w", err)
 	}
 	return system, inputs, outputs, nil
+}
+
+func selectSystemChannels(
+	system *controlsys.System,
+	inputNames []string,
+	outputNames []string,
+) (*controlsys.System, error) {
+	inputs, err := namedSignalIndices(system.InputName, inputNames)
+	if err != nil {
+		return nil, fmt.Errorf("select inputs: %w", err)
+	}
+	outputs, err := namedSignalIndices(system.OutputName, outputNames)
+	if err != nil {
+		return nil, fmt.Errorf("select outputs: %w", err)
+	}
+	selected, err := system.SelectByIndex(inputs, outputs)
+	if err != nil {
+		return nil, err
+	}
+	if system.E != nil {
+		selected.E = mat.DenseCopyOf(system.E)
+	}
+	if system.Delay != nil {
+		if err := selected.SetDelay(selectDense(system.Delay, outputs, inputs)); err != nil {
+			return nil, fmt.Errorf("select pairwise delays: %w", err)
+		}
+	}
+	if system.InputDelay != nil {
+		if err := selected.SetInputDelay(selectFloatValues(system.InputDelay, inputs)); err != nil {
+			return nil, fmt.Errorf("select input delays: %w", err)
+		}
+	}
+	if system.OutputDelay != nil {
+		if err := selected.SetOutputDelay(selectFloatValues(system.OutputDelay, outputs)); err != nil {
+			return nil, fmt.Errorf("select output delays: %w", err)
+		}
+	}
+	if system.LFT != nil {
+		if err := selected.SetInternalDelay(
+			system.LFT.Tau,
+			system.LFT.B2,
+			system.LFT.C2,
+			selectDenseRows(system.LFT.D12, outputs),
+			selectDenseColumns(system.LFT.D21, inputs),
+			system.LFT.D22,
+		); err != nil {
+			return nil, fmt.Errorf("select internal delay realization: %w", err)
+		}
+	}
+	return selected, nil
+}
+
+func namedSignalIndices(available, selected []string) ([]int, error) {
+	indices := make(map[string]int, len(available))
+	for index, name := range available {
+		indices[name] = index
+	}
+	result := make([]int, len(selected))
+	for i, name := range selected {
+		index, ok := indices[name]
+		if !ok {
+			return nil, fmt.Errorf("signal %q is not available", name)
+		}
+		result[i] = index
+	}
+	return result, nil
+}
+
+func selectDense(matrix *mat.Dense, rows, columns []int) *mat.Dense {
+	result := mat.NewDense(len(rows), len(columns), nil)
+	for i, row := range rows {
+		for j, column := range columns {
+			result.Set(i, j, matrix.At(row, column))
+		}
+	}
+	return result
+}
+
+func selectDenseRows(matrix *mat.Dense, rows []int) *mat.Dense {
+	_, columns := matrix.Dims()
+	selectedColumns := make([]int, columns)
+	for i := range selectedColumns {
+		selectedColumns[i] = i
+	}
+	return selectDense(matrix, rows, selectedColumns)
+}
+
+func selectDenseColumns(matrix *mat.Dense, columns []int) *mat.Dense {
+	rows, _ := matrix.Dims()
+	selectedRows := make([]int, rows)
+	for i := range selectedRows {
+		selectedRows[i] = i
+	}
+	return selectDense(matrix, selectedRows, columns)
+}
+
+func selectFloatValues(values []float64, indices []int) []float64 {
+	selected := make([]float64, len(indices))
+	for i, index := range indices {
+		selected[i] = values[index]
+	}
+	return selected
 }
 
 func selectCompiledChannels(

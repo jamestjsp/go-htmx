@@ -327,6 +327,14 @@ increasing grid or request an automatic one. Discrete grids end at `π/Dt`.
 This model frequency response is distinct from the Spectrum Analyzer, which
 is an FFT of one sampled simulation signal.
 
+`Studio.AnalyzeLoop` requires one explicit named input/output channel pair. It
+does not infer a loop from diagram topology. The report uses controlsys for
+classical and all-crossing margins, bandwidth, peak-sensitivity modulus
+margin, root locus, and sampled passivity evidence. Every operation carries
+applicability metadata: exact internal delays retain frequency-crossing
+margins but do not claim finite-order bandwidth or root-locus results, and a
+sampled passivity pass is never presented as an analytic certificate.
+
 The linear boundary is deliberate. Continuous and discrete state-space,
 transfer-function, delay, and named MIMO models stay within controlsys.
 Continuous/discrete mixtures and unresolved multirate execution are refused

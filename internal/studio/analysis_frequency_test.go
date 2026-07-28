@@ -3,6 +3,7 @@ package studio
 import (
 	"encoding/json"
 	"math"
+	"math/cmplx"
 	"strings"
 	"testing"
 )
@@ -183,5 +184,76 @@ func TestFrequencyAnalysisValidatesExplicitGrid(t *testing.T) {
 	if err := validateFrequencyRequest(request); err == nil ||
 		!strings.Contains(err.Error(), "strictly increasing") {
 		t.Fatalf("error = %v, want increasing-grid context", err)
+	}
+}
+
+func TestFrequencyAnalysisPreservesInternalDelayInNamedSelection(t *testing.T) {
+	omega := []float64{1, 2}
+	result, err := analyzeFrequency(
+		[]Block{
+			{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
+			{ID: 2, Kind: BlockSum, Name: "Error", Parameters: Parameters{Signs: "+-"}},
+			{ID: 3, Kind: BlockLag, Name: "Plant", Parameters: Parameters{TimeConstant: 1}},
+			{ID: 4, Kind: BlockDelay, Name: "Feedback delay", Parameters: Parameters{
+				Delay: 0.2, DelayMode: delayModeExact,
+			}},
+		},
+		[]Connection{
+			{SourceID: 1, TargetID: 2, TargetPort: 0},
+			{SourceID: 4, TargetID: 2, TargetPort: 1},
+			{SourceID: 2, TargetID: 3},
+			{SourceID: 3, TargetID: 4},
+		},
+		FrequencyAnalysisRequest{
+			Inputs:  []ChannelRef{{BlockID: 1}},
+			Outputs: []ChannelRef{{BlockID: 4}},
+			Omega:   omega,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, frequency := range omega {
+		plant := 1 / complex(1, frequency)
+		delay := cmplx.Exp(complex(0, -0.2*frequency))
+		want := delay * plant / (1 + delay*plant)
+		got := complex(
+			*result.Nyquist.Positive[i].Real,
+			*result.Nyquist.Positive[i].Imag,
+		)
+		if cmplx.Abs(got-want) > 1e-10 {
+			t.Fatalf("response[%d] = %v, want exact delayed loop %v", i, got, want)
+		}
+	}
+}
+
+func TestFrequencyAnalysisPreservesExternalPureDelayInNamedSelection(t *testing.T) {
+	omega := []float64{1, 2}
+	result, err := analyzeFrequency(
+		[]Block{
+			{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
+			{ID: 2, Kind: BlockDelay, Name: "Transport", Parameters: Parameters{
+				Delay: 0.3, DelayMode: delayModeExact,
+			}},
+		},
+		[]Connection{{SourceID: 1, TargetID: 2}},
+		FrequencyAnalysisRequest{
+			Inputs:  []ChannelRef{{BlockID: 1}},
+			Outputs: []ChannelRef{{BlockID: 2}},
+			Omega:   omega,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, frequency := range omega {
+		want := cmplx.Exp(complex(0, -0.3*frequency))
+		got := complex(
+			*result.Nyquist.Positive[i].Real,
+			*result.Nyquist.Positive[i].Imag,
+		)
+		if cmplx.Abs(got-want) > 1e-12 {
+			t.Fatalf("response[%d] = %v, want pure delay %v", i, got, want)
+		}
 	}
 }
