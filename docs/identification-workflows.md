@@ -51,6 +51,11 @@ MIMO estimation refuses rank-deficient input data before calling controlsys.
 This is required because unresolved spectral inversions in the dependency are
 otherwise represented by zero-valued response bins.
 
+The persistent MIMO oracle uses two independent white-noise inputs, a known
+full-rank static 2×2 plant, measurement noise, and held-out data. Every
+identified channel is compared with its analytic complex gain; a separate
+fixture proves that collinear excitation is refused.
+
 Coherence and held-out fit are evidence, not uncertainty bounds. Low-coherence
 bins are excluded from the held-out comparison and counted in the diagnostics.
 

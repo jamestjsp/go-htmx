@@ -152,6 +152,100 @@ func TestIdentificationWorkflowRefusesRankDeficientMIMOExcitation(t *testing.T) 
 	}
 }
 
+func TestIdentificationWorkflowRecoversFullRankNoisyMIMOResponse(t *testing.T) {
+	const (
+		samples = 262144
+		dt      = 0.04
+	)
+	random := rand.New(rand.NewSource(90210))
+	inputs := [][]float64{
+		make([]float64, samples),
+		make([]float64, samples),
+	}
+	outputs := [][]float64{
+		make([]float64, samples),
+		make([]float64, samples),
+	}
+	for sample := range samples {
+		inputs[0][sample] = random.NormFloat64()
+		inputs[1][sample] = random.NormFloat64()
+		outputs[0][sample] = 0.8*inputs[0][sample] +
+			0.35*inputs[1][sample] +
+			0.005*random.NormFloat64()
+		outputs[1][sample] = -0.2*inputs[0][sample] +
+			0.65*inputs[1][sample] +
+			0.005*random.NormFloat64()
+	}
+	dataset := identificationTestDataset(
+		t,
+		inputs,
+		outputs,
+		dt,
+		[]string{"force", "torque"},
+		[]string{"position", "angle"},
+		IdentificationSplit{
+			Training:   SampleRange{Start: 0, End: samples / 2},
+			Validation: SampleRange{Start: samples / 2, End: samples},
+		},
+	)
+	dataset.InputUnits = []string{"N", "N m"}
+	dataset.OutputUnits = []string{"m", "rad"}
+	candidate, err := NewIdentificationWorkflow().EstimateFrequencyResponse(
+		FrequencyIdentificationRequest{
+			Name:    "full-rank noisy MIMO plant",
+			Dataset: dataset,
+			Options: FrequencyEstimationOptions{
+				Method: FrequencyEstimationH1,
+				Window: IdentificationWindowHann,
+				NFFT:   256, Overlap: 128, MinCoherence: 0,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frd, err := candidate.FRD()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Diagnostics.InputRank != 2 ||
+		candidate.Diagnostics.ConditionNumber > 1.2 {
+		t.Fatalf("MIMO excitation diagnostics = %+v", candidate.Diagnostics)
+	}
+	coefficients := [2][2]float64{{0.8, 0.35}, {-0.2, 0.65}}
+	for output := range 2 {
+		for input := range 2 {
+			relativeErrors := make([]float64, 0, len(frd.Omega))
+			for frequency, omega := range frd.Omega {
+				if omega == 0 || omega > 0.75*math.Pi/dt {
+					continue
+				}
+				want := complex(coefficients[output][input], 0)
+				relativeErrors = append(
+					relativeErrors,
+					cmplx.Abs(frd.Response[frequency][output][input]-want)/
+						cmplx.Abs(want),
+				)
+			}
+			if len(relativeErrors) < 70 {
+				t.Fatalf(
+					"channel %d,%d has only %d comparable bins",
+					output, input, len(relativeErrors),
+				)
+			}
+			if got := median(relativeErrors); got > 0.1 {
+				t.Fatalf(
+					"channel %d,%d median relative error = %.4f",
+					output, input, got,
+				)
+			}
+		}
+	}
+	if candidate.Fit.ComparedBins == 0 || candidate.Fit.FitPercent <= 65 {
+		t.Fatalf("MIMO validation fit = %+v", candidate.Fit)
+	}
+}
+
 func TestIdentificationWorkflowERAUsesHeldOutMarkovParameters(t *testing.T) {
 	a := mat.NewDense(2, 2, []float64{0.7, 0.1, 0, 0.35})
 	b := mat.NewDense(2, 1, []float64{1, 0.4})
