@@ -11,13 +11,13 @@ Unit Delay, discrete filters, Product, Saturation, Switch, Relay, or logic.
 ## What controlsys v1.2.0 actually provides
 
 Verified against the pinned module source, not the README. The package was
-read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.2.0/` and
-exercised from a throwaway module pinned to the same version and the same
-gonum fork.
+read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.2.0/`.
+The engine measurements below are persistent regressions in
+`internal/studio`, including `controlsys_delay_contract_test.go`.
 
 It is a large library — roughly 1,600 lines of exported API covering
 synthesis, reduction, identification, frequency response, and delays. Almost
-none of that is relevant here. Four facts decide the whole design.
+none of that is relevant here. Five facts decide the whole design.
 
 **1. A `System` has exactly one `Dt`, and compositions refuse to mix.**
 `ConnectByName` (`names.go:341`) delegates to `BlkDiag` (`connect.go:1078`),
@@ -95,6 +95,50 @@ approximation valid only in a neighbourhood, and the sheet is then no longer
 the model the user drew. That is what the no-silent-linearization rule
 forbids, and it forbids it regardless of how correctly the Jacobian is
 computed. Nothing in the compiler may call `Linearize`.
+
+**5. Exact delay is metadata, and the simulation path must preserve it
+deliberately.** The four representations have different contracts:
+
+| Representation | Continuous value | Discrete value | Composition behavior |
+| --- | --- | --- | --- |
+| `InputDelay` | seconds per external input | integer samples | Stays external when the input remains externally visible |
+| `OutputDelay` | seconds per external output | integer samples | Stays external only while that output remains externally visible |
+| `Delay` (I/O matrix) | seconds per output/input path | integer samples | A connected nonseparable path is pulled into an LFT |
+| `LFT.Tau` | seconds | integer samples | Preserves delay inside series, named connection, and feedback algebra |
+
+`Lsim` calls plain `DiscretizeZOH` for a continuous system. Internal LFT
+delay is preserved when its seconds-to-grid ratio is integral, but a
+stateless system whose delay is still external takes an early return that
+drops the external delay fields. The checked-in regression records the
+surprising current result that `Lsim` of a continuous unity gain with
+`InputDelay = 0.2` returns 1 at `t = 0`. The explicit path
+`DiscretizeWithOpts` followed by `Simulate` produces `[0, 0, 1, ...]` at
+`dt = 0.1`, as the shifted-step oracle requires.
+
+For a discrete `System`, delay values are sample counts, not seconds, and
+must be integers. A fractional count returns `ErrFractionalDelay`. Converting
+a continuous delay that is not an integer multiple of `dt` likewise refuses
+the exact path; a declared Thiran order absorbs eligible SISO/decomposable
+delay into an all-pass discrete approximation. `Pade(order)` is the separate
+continuous rational approximation. Neither approximation retains exact-delay
+metadata, and both are checked against `exp(-jωτ)` at low frequency.
+
+Named composition preserves feedback delay when the Transport Delay output
+feeds both the loop and a separate Scope realization: the connected delay
+becomes an internal LFT while the Scope's output is selected externally.
+Pure-LTI strongly connected components, including these delay LFTs, must stay
+inside one controlsys segment.
+
+The Transport Delay UI consequently has one explicit model choice:
+
+- **Exact** (default): pure delay metadata, simulated through a delay-aware
+  conversion/step path; no approximation poles.
+- **Padé**: continuous rational approximation with visible order 1–10.
+- **Thiran**: discrete all-pass approximation with visible order 1–10 and a
+  declared or inherited sample time.
+
+No mode may silently fall back to another, and the run record must retain the
+chosen representation.
 
 What *is* usable, verified working:
 
