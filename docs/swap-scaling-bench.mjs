@@ -41,7 +41,20 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO = path.resolve(HERE, '..')
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+const USAGE = `Usage: node docs/swap-scaling-bench.mjs [options]
+
+  --sizes 50,150,400   block counts to build and measure (multiples of 10)
+  --port 8137          port for the Process Lab instance under test
+  --cdp-port 9233      port for the headless Chrome DevTools endpoint
+  --chrome <path>      Chrome binary (default: ${DEFAULT_CHROME})
+  --server-reps 30     HTTP samples per endpoint per size
+  --swap-reps 15       parameter-edit swaps per size per zoom
+  --load-reps 7        page loads per size per zoom
+  --out results.json   also write the raw samples as JSON
+  --keep               leave the scratch directory in place
+  --help               print this and exit`
 
 // The fixture is a repeating ten-block train, so every size is the same
 // shape at a different length and the three rows of the table compare.
@@ -76,14 +89,26 @@ async function main() {
     log(`building ${binary}`)
     await run('go', ['build', '-o', binary, './cmd/processlab'], { cwd: REPO })
 
+    // Two guards, because the readiness probe below is satisfied by any
+    // listener on the port. Without them a server that fails to bind
+    // exits, its error scrolls past under the [server] prefix, and the
+    // harness cheerfully builds 400-block fixtures inside whatever
+    // process is squatting on the port — writing into its database.
+    if (await portAnswers()) {
+      throw new Error(`something is already listening on ${base}; choose another --port`)
+    }
     const server = spawn(binary, ['-addr', `127.0.0.1:${options.port}`, '-db', path.join(scratch, 'bench.db')], {
       cwd: scratch,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     cleanup.push(() => server.kill('SIGKILL'))
     server.stderr.on('data', (chunk) => process.stderr.write(`[server] ${chunk}`))
-    await waitFor(() => fetch(`${base}/`).then((r) => r.ok), 'server')
-    log(`server up on ${base}`)
+    const died = once(server, 'exit').then(([code, signal]) => {
+      throw new Error(`the server exited (code ${code}, signal ${signal}) before the run finished`)
+    })
+    died.catch(() => { /* surfaced by whichever race is awaiting it */ })
+    await Promise.race([waitFor(portAnswers, 'server'), died])
+    log(`server up on ${base}, pid ${server.pid}`)
 
     const fixtures = []
     for (const size of options.sizes) {
@@ -108,6 +133,11 @@ async function main() {
         log(`browser timings for ${entry.blocks} blocks at ${Math.round(zoom * 100)}%`)
         entry.browser[zoom] = await benchBrowser(session, entry, zoom)
       }
+    }
+    // Last, because it edits the fixtures it runs against.
+    for (const entry of results.sizes) {
+      log(`redundancy gate for ${entry.blocks} blocks`)
+      entry.redundancy = await benchRedundancy(session, entry)
     }
 
     report(results)
@@ -348,7 +378,7 @@ async function benchBrowser(session, fixture, zoom) {
 
   const moves = []
   for (let i = 0; i < options.swapReps; i += 1) {
-    moves.push(await evaluate(session, `window.__bench.movePersist(${fixture.probe}, ${60 + (i % 2) * 20}, 80)`, true))
+    moves.push(await evaluate(session, `window.__bench.movePersist(${fixture.probe}, ${i % 2 ? -20 : 20})`, true))
   }
 
   const redraws = []
@@ -367,6 +397,39 @@ async function benchBrowser(session, fixture, zoom) {
   }
 
   return { loads, observed, edits, moves, redraws, drag, profiles }
+}
+
+// benchRedundancy is the gate behind the doc's claim that redrawEdges
+// rewrites the server's own output. It walks every interaction in the
+// application that swaps #workbench and, for each, compares the d
+// attributes in the response body against the d attributes on the page
+// once the re-apply pass has finished.
+//
+// It mutates the fixture — it adds, wires, unwires and deletes — so it
+// runs after every timing measurement is complete.
+async function benchRedundancy(session, fixture) {
+  // tabSwitch needs a sibling sheet with wires on it, or the comparison
+  // would be zero paths against zero paths and prove nothing.
+  await fetch(`${base}/flows/${fixture.flowID}/duplicate`, { method: 'POST' })
+
+  const url = `${base}/projects/${fixture.projectID}/flows/${fixture.flowID}?selected=${fixture.probe}`
+  await navigate(session, url)
+  await installProbe(session)
+
+  const order = [
+    'parameterEdit', 'selectBlock', 'addBlock', 'connect', 'disconnect',
+    'disconnectBlock', 'deleteBlock', 'runSimulation', 'tabSwitch',
+    'negativeControl'
+  ]
+  const results = []
+  for (const kick of order) {
+    try {
+      results.push(await evaluate(session, `window.__bench.redundancyCheck(${JSON.stringify(kick)})`, true))
+    } catch (error) {
+      results.push({ kick, error: String(error.message || error) })
+    }
+  }
+  return results
 }
 
 async function profile(session, action, repeats) {
@@ -415,7 +478,9 @@ async function benchDrag(session) {
           const y = Math.round(r.top + r.height * fy)
           const hit = document.elementFromPoint(x, y)
           if (hit && hit.closest('.block-card') === node && !hit.closest('.port, input')) {
-            return { x, y, id: node.dataset.blockId }
+            // Carry the slot it started in, so it can be put back there
+            // rather than at a hardcoded corner of the sheet.
+            return { x, y, id: node.dataset.blockId, home: { x: node.offsetLeft, y: node.offsetTop } }
           }
         }
       }
@@ -434,13 +499,20 @@ async function benchDrag(session) {
   }
   await mouse('mouseReleased', target.x + 80, target.y, 0)
   const drag = await evaluate(session, 'window.__bench.readDrag()')
-  // Put the block back so repeated runs do not walk it across the sheet.
+  // Put the block back in the slot it came from, in the page as well as
+  // the database, so repeated drags neither walk it across the sheet nor
+  // leave the DOM disagreeing with what the next swap will render.
+  await evaluate(session, `(() => {
+    const card = document.querySelector('.block-card[data-block-id="${target.id}"]')
+    if (card) { card.style.left = '${target.home.x}px'; card.style.top = '${target.home.y}px' }
+    return true
+  })()`)
   await fetch(`${base}/blocks/${target.id}/position`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ x: '60', y: '80' })
+    body: new URLSearchParams({ x: String(target.home.x), y: String(target.home.y) })
   })
-  return { ...drag, blockID: target.id }
+  return { ...drag, blockID: target.id, home: target.home }
 }
 
 // installProbe adds listeners only. Every application listener was
@@ -509,7 +581,17 @@ async function installProbe(session) {
 
     // The block move. It answers 204 and swaps nothing, so there is no
     // settle to wait for: htmx:afterRequest is the end of the interaction.
-    bench.movePersist = (id, x, y) => new Promise((resolve, reject) => {
+    //
+    // The card is moved first and the request then sends where it landed,
+    // which is the order savePositions() uses after a drag. Sending a
+    // position the card is not at would drift the DOM away from the
+    // database, and the next swap would jump every measured block.
+    // dx alternates, so the block oscillates about its own slot instead
+    // of walking across the sheet.
+    bench.movePersist = (id, dx) => new Promise((resolve, reject) => {
+      const card = document.querySelector('.block-card[data-block-id="' + id + '"]')
+      if (!card) throw new Error('block ' + id + ' is not on the page')
+      card.style.left = (card.offsetLeft + dx) + 'px'
       const t0 = performance.now()
       const done = () => {
         document.removeEventListener('htmx:afterRequest', done)
@@ -521,33 +603,199 @@ async function installProbe(session) {
         reject(new Error('move did not answer within 30s'))
       }, 30000)
       document.addEventListener('htmx:afterRequest', done)
-      htmx.ajax('PATCH', '/blocks/' + id + '/position', { swap: 'none', values: { x, y } })
+      htmx.ajax('PATCH', '/blocks/' + id + '/position', {
+        swap: 'none', values: { x: card.offsetLeft, y: card.offsetTop }
+      })
     })
 
-    // A drag frame: capture before input.js's pointermove handler, bubble
-    // after it, so the difference is the whole canvas input layer.
-    // redrawEdges is bound to window resize by input.js, so a synthetic
-    // resize runs the real function synchronously and its cost is the
-    // gap around dispatchEvent. shell.js listens to resize too, and its
-    // applyShellState is in this figure; that part does not grow with
-    // the block count, so the difference between two sizes is redraw.
+    // What one redrawEdges costs. It is bound to window resize by
+    // input.js, so a synthetic resize runs the real function
+    // synchronously and its cost is the gap around dispatchEvent.
+    // shell.js listens to resize too, and its applyShellState is inside
+    // this figure; that part does not grow with the block count, so the
+    // difference between two sizes is redraw.
     //
-    // It also answers whether the redraw changes anything: the server
-    // already emitted a d for every edge, from the same geometry, so
-    // after a swap this should be rewriting each path to itself.
+    // This measures cost only. It deliberately no longer reports whether
+    // any d changed: by the time it runs, redrawEdges has already been
+    // over this DOM, so comparing before and after here compares client
+    // output with client output and cannot return anything but zero.
+    // redundancyCheck below is the probe that can actually fail.
     bench.redrawCost = () => {
-      const paths = Array.from(document.querySelectorAll('[data-edge-source]'))
-      const numbers = (value) => (value.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number)
-      const before = paths.map((path) => numbers(path.getAttribute('d') || ''))
+      const paths = document.querySelectorAll('[data-edge-source]').length
       const t0 = performance.now()
       window.dispatchEvent(new Event('resize'))
-      const elapsed = performance.now() - t0
-      const changed = paths.filter((path, index) => {
-        const after = numbers(path.getAttribute('d') || '')
-        const was = before[index]
-        return was.length !== after.length || was.some((value, i) => Math.abs(value - after[i]) > 1e-6)
-      }).length
-      return { ms: elapsed, paths: paths.length, changed }
+      return { ms: performance.now() - t0, paths }
+    }
+
+    // Does redrawEdges change what the server sent?
+    //
+    // The only honest answer compares the server's bytes against the
+    // DOM after the re-apply pass has run — not the DOM against itself.
+    // htmx:beforeSwap carries the untouched response text in
+    // detail.serverResponse, so the server's d attributes are read from
+    // there, before any client code has seen the markup, and compared
+    // with what is on the page once the swap has settled.
+    //
+    // Both comparisons are reported. The raw one is the control: the
+    // server formats coordinates with %.1f and the client emits bare
+    // numbers, so if raw does not differ the probe never saw the
+    // server's own markup and the numeric result means nothing.
+    bench.redundancyCheck = (kickName) => new Promise((resolve, reject) => {
+      let served = null
+      const capture = (event) => {
+        if (served !== null) return
+        const html = event.detail && event.detail.serverResponse
+        if (typeof html !== 'string') return
+        const parsed = new DOMParser().parseFromString(html, 'text/html')
+        served = Array.from(parsed.querySelectorAll('[data-edge-source]'))
+          .map((path) => path.getAttribute('d') || '')
+      }
+      document.addEventListener('htmx:beforeSwap', capture, true)
+
+      const finish = () => {
+        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSettle', onSettle, false)
+        clearTimeout(guard)
+        const numbers = (value) => (value.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number)
+        const client = Array.from(document.querySelectorAll('[data-edge-source]'))
+          .map((path) => path.getAttribute('d') || '')
+        if (served === null) {
+          resolve({ kick: kickName, error: 'no serverResponse seen; the interaction did not swap' })
+          return
+        }
+        if (served.length !== client.length) {
+          resolve({
+            kick: kickName, servedPaths: served.length, clientPaths: client.length,
+            error: 'path count differs between the response and the settled DOM'
+          })
+          return
+        }
+        let rawDiffers = 0
+        let numericDiffers = 0
+        let maxDelta = 0
+        let firstNumeric = null
+        served.forEach((value, index) => {
+          if (value !== client[index]) rawDiffers += 1
+          const a = numbers(value)
+          const b = numbers(client[index])
+          if (a.length !== b.length) {
+            numericDiffers += 1
+            if (!firstNumeric) firstNumeric = { served: value, client: client[index] }
+            return
+          }
+          // maxDelta is the evidence, not the count: the server rounds
+          // coordinates to one decimal with %.1f, so a difference of
+          // order 0.05 would be formatting and anything larger would be
+          // a genuinely different curve.
+          const delta = a.reduce((worst, n, i) => Math.max(worst, Math.abs(n - b[i])), 0)
+          if (delta > maxDelta) maxDelta = delta
+          if (delta > 1e-6) {
+            numericDiffers += 1
+            if (!firstNumeric) firstNumeric = { served: value, client: client[index], delta }
+          }
+        })
+        resolve({
+          kick: kickName,
+          paths: served.length,
+          rawDiffers,
+          numericDiffers,
+          maxDelta,
+          sample: served.length ? { served: served[0], client: client[0] } : null,
+          firstNumeric
+        })
+      }
+      const onSettle = () => requestAnimationFrame(finish)
+      document.addEventListener('htmx:afterSettle', onSettle, false)
+      const guard = setTimeout(() => {
+        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSettle', onSettle, false)
+        reject(new Error(kickName + ' did not settle within 30s'))
+      }, 30000)
+
+      try {
+        bench.kicks[kickName]()
+      } catch (error) {
+        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSettle', onSettle, false)
+        clearTimeout(guard)
+        reject(error)
+      }
+    })
+
+    // The swap-producing interactions the gate runs through, each doing
+    // what the interface itself does. The three that carry hx-confirm go
+    // through htmx.ajax on the same URL rather than clicking, because a
+    // window.confirm would block a headless run; the request is identical.
+    //
+    // They are ordered so each one's precondition is left behind by the
+    // one before it, and they mutate the fixture, so the gate runs after
+    // every timing measurement is finished.
+    const root = () => document.querySelector('#workbench')
+    const swapTo = (verb, url, values) => htmx.ajax(verb, url, {
+      target: '#workbench', swap: 'outerHTML', values
+    })
+    const newestBlock = () => Math.max(...Array.from(
+      document.querySelectorAll('.block-card'), (node) => Number(node.dataset.blockId)))
+
+    bench.kicks = {
+      parameterEdit: () => bench.kicks._submit('form.property-form'),
+      selectBlock: () => {
+        const cards = document.querySelectorAll('.block-card')
+        const node = cards[Math.floor(cards.length / 2)]
+        swapTo('GET', '/flows/' + root().dataset.flowId + '/workbench?selected=' + node.dataset.blockId)
+      },
+      addBlock: () => bench.kicks._submit('.palette-list form'),
+      connect: () => {
+        const target = document.querySelector('.block-card.block-sum')
+        if (!target) throw new Error('no Sum block to accept a further wire')
+        swapTo('POST', '/flows/' + root().dataset.flowId + '/connections',
+          { source_id: newestBlock(), target_id: target.dataset.blockId })
+      },
+      disconnect: () => {
+        const button = document.querySelector('.signal-list button[hx-delete]')
+        if (!button) throw new Error('the selected block shows no wires to remove')
+        swapTo('DELETE', button.getAttribute('hx-delete'))
+      },
+      disconnectBlock: () => swapTo('DELETE', '/blocks/' + newestBlock() + '/connections'),
+      deleteBlock: () => swapTo('DELETE', '/blocks/' + newestBlock()),
+      runSimulation: () => bench.kicks._submit('#run-form'),
+      tabSwitch: () => {
+        const tab = document.querySelector('.flow-tab:not([aria-current])')
+        if (!tab) throw new Error('only one flowsheet in this project')
+        tab.click()
+      },
+      // The falsification row. A gate that has never failed is not
+      // evidence, so this one displaces a card between the swap and the
+      // re-apply, which is exactly the situation where redrawEdges is
+      // load-bearing: the server's curve is then stale and the redraw
+      // has to fix it. It must report a non-zero numeric count. If it
+      // ever reports zero, the probe is broken and every other row in
+      // the table is worthless.
+      //
+      // The displacement happens on a capture-phase afterSettle rather
+      // than afterSwap: at afterSwap the node querySelector returns is
+      // the one htmx is about to discard (see reapply.js), so the nudge
+      // would be thrown away with it.
+      negativeControl: () => {
+        const nudge = () => {
+          document.removeEventListener('htmx:afterSettle', nudge, true)
+          const card = document.querySelector('.block-card')
+          if (card) card.style.left = (card.offsetLeft + 100) + 'px'
+        }
+        document.addEventListener('htmx:afterSettle', nudge, true)
+        // selectBlock rather than the inspector form: it swaps from any
+        // state, including the sheet tabSwitch has just left us on,
+        // where nothing is selected and there is no inspector form.
+        bench.kicks.selectBlock()
+      },
+      _submit: (selector) => {
+        const form = document.querySelector(selector)
+        if (!form) throw new Error('no ' + selector + ' on the page')
+        const field = form.querySelector('input[type="number"]')
+        if (field && selector === 'form.property-form') field.stepUp()
+        if (!form.checkValidity()) throw new Error(selector + ' is invalid; nothing would be submitted')
+        form.requestSubmit()
+      }
     }
 
     bench.armDrag = () => {
@@ -576,7 +824,7 @@ async function installProbe(session) {
 // ---- chrome + CDP ---------------------------------------------------
 
 async function startChrome(scratch) {
-  const child = spawn(CHROME, [
+  const child = spawn(options.chrome, [
     '--headless=new',
     `--remote-debugging-port=${options.cdpPort}`,
     `--user-data-dir=${path.join(scratch, 'chrome')}`,
@@ -742,14 +990,40 @@ function report(results) {
   }
 
   out.push('', '### redrawEdges alone, run through its own window-resize binding', '')
-  out.push('| blocks | zoom | edge paths | one redraw | paths whose d actually changed |')
-  out.push('| --- | --- | --- | --- | --- |')
+  out.push('| blocks | zoom | edge paths | one redraw |')
+  out.push('| --- | --- | --- | --- |')
   for (const size of results.sizes) {
     for (const zoom of [1, 0.25]) {
       const cell = size.browser[zoom].redraws
       out.push(`| ${size.blocks} | ${Math.round(zoom * 100)}% | ${cell[0].paths} | ` +
-        `${band(summarise(cell.map((r) => r.ms)))} | ${Math.max(...cell.map((r) => r.changed))} |`)
+        `${band(summarise(cell.map((r) => r.ms)))} |`)
     }
+  }
+
+  out.push('', '### Redundancy gate — does the re-apply change what the server sent?', '')
+  out.push('Response body against the settled DOM, per swap-producing interaction.')
+  out.push('`raw` must be 100% or the probe never saw the server\'s own markup')
+  out.push('(the server formats coordinates `%.1f`, the client emits bare numbers).')
+  out.push('`numeric` is the result: a non-zero there is a curve the re-apply had to fix.')
+  out.push('`negativeControl` displaces a card mid-swap and MUST be non-zero;')
+  out.push('a zero there means the probe is broken and every other row is worthless.', '')
+  out.push('| blocks | interaction | paths | raw differs | numeric differs | max delta |')
+  out.push('| --- | --- | --- | --- | --- | --- |')
+  for (const size of results.sizes) {
+    for (const check of size.redundancy ?? []) {
+      if (check.error) {
+        out.push(`| ${size.blocks} | ${check.kick} | — | — | — | ${check.error} |`)
+        continue
+      }
+      const raw = check.paths ? `${check.rawDiffers}/${check.paths}` : '0/0'
+      out.push(`| ${size.blocks} | ${check.kick} | ${check.paths} | ${raw} | ` +
+        `**${check.numericDiffers}** | ${check.maxDelta.toExponential(1)} |`)
+    }
+  }
+  const sample = results.sizes.flatMap((s) => s.redundancy ?? []).find((c) => c.sample && c.paths)
+  if (sample) {
+    out.push('', 'One path, as the server sent it and as the client left it:', '', '```',
+      `server: ${sample.sample.served}`, `client: ${sample.sample.client}`, '```')
   }
 
   out.push('', '### Where the time goes (sampling profile, 100µs, taken separately from the timings above)', '')
@@ -779,6 +1053,7 @@ function parseArgs(argv) {
     serverReps: 30,
     swapReps: 15,
     loadReps: 7,
+    chrome: DEFAULT_CHROME,
     out: null,
     keep: false
   }
@@ -789,12 +1064,14 @@ function parseArgs(argv) {
       case '--sizes': parsed.sizes = value.split(',').map(Number); i += 1; break
       case '--port': parsed.port = Number(value); i += 1; break
       case '--cdp-port': parsed.cdpPort = Number(value); i += 1; break
+      case '--chrome': parsed.chrome = value; i += 1; break
       case '--server-reps': parsed.serverReps = Number(value); i += 1; break
       case '--swap-reps': parsed.swapReps = Number(value); i += 1; break
       case '--load-reps': parsed.loadReps = Number(value); i += 1; break
       case '--out': parsed.out = path.resolve(value); i += 1; break
       case '--keep': parsed.keep = true; break
-      default: throw new Error(`unknown option ${flag}`)
+      case '--help': case '-h': console.log(USAGE); process.exit(0); break
+      default: console.error(`unknown option ${flag}\n\n${USAGE}`); process.exit(2)
     }
   }
   return parsed
@@ -804,6 +1081,10 @@ async function run(command, args, opts) {
   const child = spawn(command, args, { stdio: 'inherit', ...opts })
   const [code] = await once(child, 'exit')
   if (code !== 0) throw new Error(`${command} ${args.join(' ')} exited ${code}`)
+}
+
+function portAnswers() {
+  return fetch(`${base}/`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok, () => false)
 }
 
 async function waitFor(check, what, timeout = 30000) {
