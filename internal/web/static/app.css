@@ -1807,6 +1807,61 @@ body.is-resizing-dock .studio-grid {
   font-size: var(--fs-100);
 }
 
+.fidelity-card dl {
+  display: grid;
+  gap: 3px;
+  margin: 9px 0 2px;
+  padding-top: 8px;
+  border-top: 1px solid var(--sheet-line-soft);
+  font-size: var(--fs-100);
+}
+
+.fidelity-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.fidelity-card dt {
+  color: var(--ink-muted);
+}
+
+.fidelity-card dd {
+  margin: 0;
+  color: var(--ink);
+  font-weight: 600;
+  text-align: right;
+}
+
+.solver-badge .fidelity-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--sheet-line-soft);
+  color: var(--ink);
+  line-height: 1.35;
+}
+
+.fidelity-item strong {
+  color: var(--ink-muted);
+  font-size: inherit;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.solver-badge .fidelity-note {
+  margin-top: 8px;
+  color: var(--probe-deep);
+  line-height: 1.35;
+}
+
+.solver-badge .engine-label {
+  margin-top: 8px;
+  color: var(--ink-muted);
+}
+
 /* --------------------------------- Inspector ------------------- */
 .inspector-panel {
   display: grid;

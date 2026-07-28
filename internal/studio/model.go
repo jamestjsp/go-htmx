@@ -221,11 +221,43 @@ type Simulation struct {
 }
 
 type Fidelity struct {
-	Driver            string   `json:"driver"`
-	SourceHold        string   `json:"sourceHold"`
-	SegmentCount      int      `json:"segmentCount"`
-	DelayModels       []string `json:"delayModels,omitempty"`
-	ExactDelayAligned bool     `json:"exactDelayAligned,omitempty"`
+	BaseStep          float64           `json:"baseStep"`
+	ModelDomain       string            `json:"modelDomain"`
+	Driver            string            `json:"driver"`
+	SourceHold        string            `json:"sourceHold"`
+	SegmentCount      int               `json:"segmentCount"`
+	BlockRates        []BlockRate       `json:"blockRates,omitempty"`
+	RateTransitions   []RateTransition  `json:"rateTransitions,omitempty"`
+	Delays            []DelayProvenance `json:"delays,omitempty"`
+	DelayModels       []string          `json:"delayModels,omitempty"`
+	ExactDelayAligned bool              `json:"exactDelayAligned,omitempty"`
+}
+
+type BlockRate struct {
+	BlockID     int64   `json:"blockId"`
+	BlockName   string  `json:"blockName"`
+	Mode        string  `json:"mode"`
+	SampleTime  float64 `json:"sampleTime"`
+	UpdateEvery int     `json:"updateEvery"`
+}
+
+type RateTransition struct {
+	SourceBlockID int64   `json:"sourceBlockId"`
+	TargetBlockID int64   `json:"targetBlockId"`
+	SourceRate    float64 `json:"sourceRate"`
+	TargetRate    float64 `json:"targetRate"`
+	Hold          string  `json:"hold"`
+}
+
+type DelayProvenance struct {
+	BlockID            int64   `json:"blockId"`
+	BlockName          string  `json:"blockName"`
+	Representation     string  `json:"representation"`
+	Delay              float64 `json:"delay"`
+	ApproximationOrder int     `json:"approximationOrder,omitempty"`
+	SampleTime         float64 `json:"sampleTime,omitempty"`
+	SampleTimeMode     string  `json:"sampleTimeMode,omitempty"`
+	Aligned            bool    `json:"aligned,omitempty"`
 }
 
 type Snapshot struct {

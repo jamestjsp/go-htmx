@@ -198,6 +198,18 @@ type chartView struct {
 	CreatedAt  string
 	Metrics    []studio.Metric
 	Spectra    []spectrumView
+	Fidelity   fidelityView
+}
+
+type fidelityView struct {
+	Driver     string
+	Domain     string
+	BaseStep   string
+	SourceHold string
+	Segments   int
+	Rates      []string
+	Delays     []string
+	Note       string
 }
 
 type chartPath struct {
@@ -450,6 +462,7 @@ func newChartView(run *studio.Simulation) chartView {
 		SampleTime: fmt.Sprintf("%.3f", run.SampleTime),
 		CreatedAt:  run.CreatedAt.Local().Format("15:04:05"),
 		Metrics:    run.Metrics,
+		Fidelity:   newFidelityView(run.Fidelity, run.SampleTime),
 	}
 	if len(run.Series) > 0 {
 		minY, maxY := 0.0, 0.0
@@ -504,6 +517,88 @@ func newChartView(run *studio.Simulation) chartView {
 		view.Spectra = append(view.Spectra, newSpectrumView(spectrum))
 	}
 	return view
+}
+
+func newFidelityView(fidelity studio.Fidelity, fallbackBaseStep float64) fidelityView {
+	if fidelity.BaseStep == 0 {
+		fidelity.BaseStep = fallbackBaseStep
+	}
+	if fidelity.ModelDomain == "" {
+		fidelity.ModelDomain = "continuous"
+	}
+	if fidelity.SegmentCount == 0 {
+		fidelity.SegmentCount = 1
+	}
+	if fidelity.Driver == "" {
+		fidelity.Driver = "batch-lsim"
+	}
+	if fidelity.SourceHold == "" {
+		fidelity.SourceHold = "piecewise-constant"
+	}
+	view := fidelityView{
+		Driver:     fidelity.Driver,
+		Domain:     fidelity.ModelDomain,
+		BaseStep:   fmt.Sprintf("%.3g s", fidelity.BaseStep),
+		SourceHold: strings.ReplaceAll(fidelity.SourceHold, "-", " "),
+		Segments:   fidelity.SegmentCount,
+	}
+	switch fidelity.Driver {
+	case "batch-lsim":
+		view.Driver = "Batch LTI · Lsim"
+	case "delay-aware-simulate":
+		view.Driver = "Delay-aware · Simulate"
+	case "per-sample-simulate":
+		view.Driver = "Stateful discrete · Simulate"
+	}
+	for _, rate := range fidelity.BlockRates {
+		timing := fmt.Sprintf("%.3g s · %s", rate.SampleTime, rate.Mode)
+		if rate.UpdateEvery > 1 {
+			timing = fmt.Sprintf("%.3g s · every %d base steps", rate.SampleTime, rate.UpdateEvery)
+		}
+		view.Rates = append(view.Rates, fmt.Sprintf("%s · %s", rate.BlockName, timing))
+	}
+	for _, delay := range fidelity.Delays {
+		switch delay.Representation {
+		case "exact":
+			view.Delays = append(view.Delays, fmt.Sprintf(
+				"%s · exact %.3g s · aligned at %.3g s",
+				delay.BlockName, delay.Delay, delay.SampleTime,
+			))
+		case "pade":
+			view.Delays = append(view.Delays, fmt.Sprintf(
+				"%s · Padé %d · %.3g s",
+				delay.BlockName, delay.ApproximationOrder, delay.Delay,
+			))
+		case "thiran":
+			view.Delays = append(view.Delays, fmt.Sprintf(
+				"%s · Thiran %d · %.3g s at %.3g s",
+				delay.BlockName, delay.ApproximationOrder,
+				delay.Delay, delay.SampleTime,
+			))
+		}
+	}
+	switch {
+	case fidelity.SourceHold == "sampled-zero-order-hold":
+		view.Note = "Sampled source values are held between run points."
+	case fidelity.SegmentCount > 1:
+		view.Note = "Segment boundaries use a zero-order hold."
+	case hasApproximateDelay(fidelity.Delays):
+		view.Note = "Delay behavior includes an explicit finite-order approximation."
+	case fidelity.Driver == "per-sample-simulate":
+		view.Note = "controlsys carries discrete state between samples."
+	default:
+		view.Note = "One composed LTI segment with piecewise-constant excitation."
+	}
+	return view
+}
+
+func hasApproximateDelay(delays []studio.DelayProvenance) bool {
+	for _, delay := range delays {
+		if delay.Representation != "exact" {
+			return true
+		}
+	}
+	return false
 }
 
 func newSpectrumView(spectrum studio.Spectrum) spectrumView {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -86,6 +87,7 @@ func TestSimulationRoundTripsThroughSQLite(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSamples := len(snapshot.LastRun.Times)
+	wantFidelity := snapshot.LastRun.Fidelity
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -101,6 +103,9 @@ func TestSimulationRoundTripsThroughSQLite(t *testing.T) {
 	}
 	if snapshot.LastRun == nil || len(snapshot.LastRun.Times) != wantSamples {
 		t.Fatalf("persisted run = %#v", snapshot.LastRun)
+	}
+	if !reflect.DeepEqual(snapshot.LastRun.Fidelity, wantFidelity) {
+		t.Fatalf("persisted fidelity = %#v, want %#v", snapshot.LastRun.Fidelity, wantFidelity)
 	}
 }
 

@@ -274,6 +274,13 @@ Discretized Transfer makes conversion a visible model choice—ZOH, FOH,
 matched pole-zero, or impulse invariant—rather than silently choosing a
 method during compilation.
 
+Every stored run includes a fidelity record: base step, model domain, driver,
+segment count, source hold, discrete block rates, rate transitions, and delay
+provenance. The simulation dock renders the same record, naming exact,
+Padé-order, and Thiran-order delay behavior. Unsupported fractional delay
+alignment or unresolved mixed rates fail before simulation rather than
+falling back to a hidden approximation.
+
 Connections identify both endpoint ports. For a Sum, sign character `i`
 belongs to input port `i`, so deleting and redrawing another wire cannot change
 which inputs are added or subtracted. Editing the sign pattern adds ports;
@@ -285,6 +292,11 @@ state-space model. Continuous delay-free systems use `controlsys.Lsim`;
 discrete systems and delay-aware conversions use `System.Simulate` while
 carrying `XFinal` between segments. Spectrum Analyzer sinks then apply
 Gonum's Hann window and real FFT to their selected response.
+
+Plain continuous `Lsim` is used only when the model is delay-free. A connected
+exact delay must first be internalized by named composition and aligned to the
+run grid; the engine then takes the explicit delay-aware
+`DiscretizeWithOpts` + `Simulate` path so controlsys owns the delay buffers.
 
 Compilation returns one owned model artifact containing the composed system,
 stable block/port channel identities, source excitations, selected outputs,

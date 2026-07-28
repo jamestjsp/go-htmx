@@ -847,7 +847,11 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
-	for _, expected := range []string{"trend-chart", "Temperature", "controlsys", "Settling"} {
+	for _, expected := range []string{
+		"trend-chart", "Temperature", "controlsys", "Settling",
+		"SIMULATION FIDELITY", "Batch LTI · Lsim",
+		"Base step", "0.1 s", "piecewise constant",
+	} {
 		if !strings.Contains(response.Body.String(), expected) {
 			t.Errorf("body does not contain %q", expected)
 		}

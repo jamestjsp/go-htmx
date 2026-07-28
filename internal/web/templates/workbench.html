@@ -266,10 +266,19 @@
               </dl>
             </article>
             {{end}}
-            <div class="solver-badge">
-              <span>NUMERICAL ENGINE</span>
-              <b>controlsys + Gonum FFT</b>
-              <small>{{.Chart.SampleTime}} s sample</small>
+            <div class="solver-badge fidelity-card">
+              <span>SIMULATION FIDELITY</span>
+              <b>{{.Chart.Fidelity.Driver}}</b>
+              <dl>
+                <div><dt>Domain</dt><dd>{{.Chart.Fidelity.Domain}}</dd></div>
+                <div><dt>Base step</dt><dd>{{.Chart.Fidelity.BaseStep}}</dd></div>
+                <div><dt>Segments</dt><dd>{{.Chart.Fidelity.Segments}}</dd></div>
+                <div><dt>Source hold</dt><dd>{{.Chart.Fidelity.SourceHold}}</dd></div>
+              </dl>
+              {{range .Chart.Fidelity.Delays}}<small class="fidelity-item"><strong>Delay</strong>{{.}}</small>{{end}}
+              {{range .Chart.Fidelity.Rates}}<small class="fidelity-item"><strong>Rate</strong>{{.}}</small>{{end}}
+              <small class="fidelity-note">{{.Chart.Fidelity.Note}}</small>
+              <small class="engine-label">controlsys + Gonum FFT</small>
             </div>
           </div>
         </div>

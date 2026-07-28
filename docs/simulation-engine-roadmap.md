@@ -451,7 +451,18 @@ bit-identical to batch `Simulate` for delay-free discrete systems. Continuous
 delay-free sheets still take the original batch `Lsim` branch; aligned exact
 delay takes the explicit delay-aware conversion and batch `Simulate` branch
 so controlsys owns its delay buffers. Run fidelity records the chosen driver,
-source hold, segment count, delay representations, and exact alignment.
+base step, model domain, source hold, segment count, block rates, rate
+transitions, delay representations, approximation orders, and exact
+alignment. The dock renders that stored record rather than re-inferring
+fidelity from the current diagram.
+
+This preserves the exact-LTI and hybrid contracts simultaneously. Named
+continuous feedback remains one controlsys system and one exact LTI segment.
+Adding a sampled or future nonlinear boundary creates an explicit segment and
+an explicit hold disclosure; it never changes the arithmetic of an unrelated
+pure-LTI loop. Plain continuous `Lsim` is safe only for a delay-free composed
+model. Exact delay uses the aligned, delay-aware conversion and `Simulate`
+path after named composition has internalized connected delay metadata.
 
 **What the user pays, and must be told.** The signal entering the Saturation
 is held over each step; the second segment sees a piecewise-constant input

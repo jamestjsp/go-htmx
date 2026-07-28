@@ -337,10 +337,14 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 	if err != nil {
 		return nil, err
 	}
+	fidelity, err := m.fidelity(request.SampleTime)
+	if err != nil {
+		return nil, fmt.Errorf("record simulation fidelity: %w", err)
+	}
 	run := &Simulation{
 		Duration:   request.Duration,
 		SampleTime: request.SampleTime,
-		Fidelity:   m.fidelity(),
+		Fidelity:   fidelity,
 		Times:      response.T,
 	}
 	for outputIndex, output := range m.outputs {
@@ -365,11 +369,16 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 	return run, nil
 }
 
-func (m *compiledModel) fidelity() Fidelity {
+func (m *compiledModel) fidelity(baseStep float64) (Fidelity, error) {
 	fidelity := Fidelity{
+		BaseStep:     baseStep,
+		ModelDomain:  string(timeDomainContinuous),
 		Driver:       "batch-lsim",
 		SourceHold:   "piecewise-constant",
 		SegmentCount: len(m.execution.segments),
+	}
+	if m.system.IsDiscrete() {
+		fidelity.ModelDomain = string(timeDomainDiscrete)
 	}
 	if m.hasExactDelay() {
 		fidelity.Driver = "delay-aware-simulate"
@@ -385,15 +394,56 @@ func (m *compiledModel) fidelity() Fidelity {
 	}
 	seenDelayModels := make(map[string]struct{})
 	for _, block := range m.provenance.Blocks {
+		domain := blockDefinitions[block.Kind].domain(block.Parameters)
+		if domain.kind == timeDomainDiscrete {
+			sampleTime, err := domain.sampleTime.resolve(baseStep)
+			if err != nil {
+				return Fidelity{}, fmt.Errorf("%s sample time: %w", block.Name, err)
+			}
+			schedule, err := scheduleSampleTime(sampleTime, baseStep)
+			if err != nil {
+				return Fidelity{}, fmt.Errorf("%s sample schedule: %w", block.Name, err)
+			}
+			fidelity.BlockRates = append(fidelity.BlockRates, BlockRate{
+				BlockID:     block.ID,
+				BlockName:   block.Name,
+				Mode:        string(domain.sampleTime.mode),
+				SampleTime:  sampleTime,
+				UpdateEvery: schedule.updateEvery,
+			})
+		}
 		if block.Kind != BlockDelay {
 			continue
 		}
 		mode := normalizedDelayMode(block.Parameters)
+		delay := DelayProvenance{
+			BlockID:        block.ID,
+			BlockName:      block.Name,
+			Representation: mode,
+			Delay:          block.Parameters.Delay,
+		}
+		switch mode {
+		case delayModeExact:
+			delay.SampleTime = baseStep
+			delay.Aligned = true
+		case delayModePade:
+			delay.ApproximationOrder = block.Parameters.Approximation
+		case delayModeThiran:
+			delay.ApproximationOrder = block.Parameters.Approximation
+			delay.SampleTimeMode = string(normalizedSampleTimeMode(block.Parameters))
+			sampleTime, resolveErr := blockDefinitions[block.Kind].
+				domain(block.Parameters).sampleTime.resolve(baseStep)
+			if resolveErr != nil {
+				return Fidelity{}, fmt.Errorf("%s Thiran sample time: %w", block.Name, resolveErr)
+			}
+			delay.SampleTime = sampleTime
+		}
+		fidelity.Delays = append(fidelity.Delays, delay)
 		if _, exists := seenDelayModels[mode]; exists {
 			continue
 		}
 		seenDelayModels[mode] = struct{}{}
 		fidelity.DelayModels = append(fidelity.DelayModels, mode)
 	}
-	return fidelity
+	return fidelity, nil
 }

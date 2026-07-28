@@ -197,6 +197,8 @@ func TestSimulationRecordsExecutionFidelity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if continuousRun.Fidelity.Driver != "batch-lsim" ||
+		continuousRun.Fidelity.BaseStep != 0.1 ||
+		continuousRun.Fidelity.ModelDomain != string(timeDomainContinuous) ||
 		continuousRun.Fidelity.SourceHold != "piecewise-constant" ||
 		continuousRun.Fidelity.SegmentCount != 1 {
 		t.Fatalf("continuous fidelity = %#v", continuousRun.Fidelity)
@@ -218,7 +220,81 @@ func TestSimulationRecordsExecutionFidelity(t *testing.T) {
 	if delayRun.Fidelity.Driver != "delay-aware-simulate" ||
 		delayRun.Fidelity.SourceHold != "sampled-zero-order-hold" ||
 		!delayRun.Fidelity.ExactDelayAligned ||
-		!reflect.DeepEqual(delayRun.Fidelity.DelayModels, []string{delayModeExact}) {
+		!reflect.DeepEqual(delayRun.Fidelity.DelayModels, []string{delayModeExact}) ||
+		!reflect.DeepEqual(delayRun.Fidelity.Delays, []DelayProvenance{{
+			BlockID: 2, BlockName: "Delay", Representation: delayModeExact,
+			Delay: 0.2, SampleTime: 0.1, Aligned: true,
+		}}) {
 		t.Fatalf("delay fidelity = %#v", delayRun.Fidelity)
+	}
+}
+
+func TestSimulationRecordsDiscreteRatesAndDelayApproximations(t *testing.T) {
+	tests := []struct {
+		name       string
+		block      Block
+		wantDomain string
+		wantRate   []BlockRate
+		wantDelay  []DelayProvenance
+	}{
+		{
+			name: "inherited unit delay",
+			block: Block{ID: 2, Kind: BlockUnitDelay, Name: "Memory", Parameters: Parameters{
+				SampleTimeMode: string(sampleTimeInherited),
+			}},
+			wantDomain: string(timeDomainDiscrete),
+			wantRate: []BlockRate{{
+				BlockID: 2, BlockName: "Memory", Mode: string(sampleTimeInherited),
+				SampleTime: 0.1, UpdateEvery: 1,
+			}},
+		},
+		{
+			name: "pade",
+			block: Block{ID: 2, Kind: BlockDelay, Name: "Pipe", Parameters: Parameters{
+				Delay: 0.4, DelayMode: delayModePade, Approximation: 4,
+			}},
+			wantDomain: string(timeDomainContinuous),
+			wantDelay: []DelayProvenance{{
+				BlockID: 2, BlockName: "Pipe", Representation: delayModePade,
+				Delay: 0.4, ApproximationOrder: 4,
+			}},
+		},
+		{
+			name: "thiran",
+			block: Block{ID: 2, Kind: BlockDelay, Name: "Pipe", Parameters: Parameters{
+				Delay: 0.35, DelayMode: delayModeThiran, Approximation: 3,
+				SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+			}},
+			wantDomain: string(timeDomainDiscrete),
+			wantRate: []BlockRate{{
+				BlockID: 2, BlockName: "Pipe", Mode: string(sampleTimeExplicit),
+				SampleTime: 0.1, UpdateEvery: 1,
+			}},
+			wantDelay: []DelayProvenance{{
+				BlockID: 2, BlockName: "Pipe", Representation: delayModeThiran,
+				Delay: 0.35, ApproximationOrder: 3,
+				SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			run, err := simulate([]Block{
+				{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
+				test.block,
+				{ID: 3, Kind: BlockScope, Name: "Output"},
+			}, []Connection{
+				{SourceID: 1, TargetID: 2},
+				{SourceID: 2, TargetID: 3},
+			}, SimulationRequest{Duration: 1, SampleTime: 0.1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Fidelity.ModelDomain != test.wantDomain ||
+				!reflect.DeepEqual(run.Fidelity.BlockRates, test.wantRate) ||
+				!reflect.DeepEqual(run.Fidelity.Delays, test.wantDelay) {
+				t.Fatalf("fidelity = %#v", run.Fidelity)
+			}
+		})
 	}
 }
