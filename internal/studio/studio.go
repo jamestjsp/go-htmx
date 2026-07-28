@@ -274,6 +274,11 @@ func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, erro
 			return err
 		}
 		flowID = block.FlowID
+		if err := clearControlRoleSpecForBlocks(
+			ctx, tx, flowID, []int64{blockID},
+		); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM blocks WHERE id = ?", blockID); err != nil {
 			return fmt.Errorf("delete block: %w", err)
 		}
@@ -306,6 +311,11 @@ func (s *Studio) DeleteBlocks(ctx context.Context, flowID int64, blockIDs []int6
 				return ErrNotFound
 			}
 			names = append(names, block.Name)
+		}
+		if err := clearControlRoleSpecForBlocks(
+			ctx, tx, flowID, blockIDs,
+		); err != nil {
+			return err
 		}
 		for _, blockID := range blockIDs {
 			if _, err := tx.ExecContext(ctx,

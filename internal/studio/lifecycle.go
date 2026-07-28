@@ -246,6 +246,9 @@ func (s *Studio) DuplicateFlow(ctx context.Context, flowID int64) (Workspace, er
 		if err := copyConnections(ctx, tx, flowID, copyID, moved); err != nil {
 			return err
 		}
+		if err := copyControlRoleSpec(ctx, tx, flowID, copyID, moved); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"UPDATE projects SET updated_at = ? WHERE id = ?", now, projectID,
 		); err != nil {

@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
 	result_json TEXT NOT NULL,
 	PRIMARY KEY(flow_id, intent)
 );
+CREATE TABLE IF NOT EXISTS control_model_specs (
+	flow_id INTEGER PRIMARY KEY REFERENCES flows(id) ON DELETE CASCADE,
+	version INTEGER NOT NULL,
+	spec_json TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS blocks_flow_id_idx ON blocks(flow_id);
 ` + connectionsFlowIndex + `;
 CREATE INDEX IF NOT EXISTS events_flow_id_id_idx ON events(flow_id, id DESC);

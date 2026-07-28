@@ -362,6 +362,26 @@ each deterministic `output ← input` Bode magnitude and phase trace plus MIMO
 singular values. Legend controls hide or show the same stable trace key across
 HTMX swaps.
 
+`Studio.AssignControlRoles` persists an explicit, versioned control-model
+contract rather than inferring a plant or controller from canvas topology.
+The contract owns ordered plant and controller block membership, named
+exogenous/control/performance/measurement boundaries, and named MIMO analysis
+points at plant inputs or outputs. Channel names are the durable identity:
+consistent port reordering still resolves, while a rename reports the exact
+stale assignment.
+
+`Studio.BuildControlModels` resolves that contract once and returns the
+controlsys objects required by synthesis workflows: the control-to-measurement
+plant, controller, generalized plant ordered as
+`[exogenous; control] → [performance; measurement]`, estimator plant, one
+`GeneralizedClosedLoop`, and open/closed models for every analysis point.
+Subsystems compile independently through the same named block realizations as
+simulation. Their synthetic boundary sources exist only during compilation,
+so loop breaks and analysis points never alter the drawn model or a normal
+simulation. Exact-delay metadata is retained through selection and feedback;
+dependency failures are returned as named errors instead of escaping as a
+panic.
+
 Simulation series, metrics, and spectra carry block, port, channel index, and
 channel name together. Vector results therefore keep deterministic labels and
 ordering through JSON persistence, rendering, and export instead of relying on
@@ -400,6 +420,7 @@ The database stores:
 - recent activity events;
 - complete simulation runs as identity-keyed JSON time series;
 - the latest dynamics, frequency, and loop analysis record per flowsheet.
+- one versioned plant/controller role specification per flowsheet.
 
 Model edits invalidate the displayed result, while layout-only moves and
 flowsheet renames do not. Historical runs remain in SQLite. Schema startup
@@ -443,6 +464,13 @@ placement, connection constraints, feedback and algebraic-loop handling, analyti
 responses, FFT peak detection, HTML fragment behavior, embedded assets,
 multi-field HTTP editing flows, and the batch move, delete, and duplicate
 endpoints including rejection of ids from another flow.
+
+The control-model contract tests independently check SISO frequency response
+and closed-loop algebra, named 2×2 ordering, consistent channel reordering,
+mixed-domain refusal, exact-delay retention, corrupt and mismatched storage
+versions, legacy migration with no inferred roles, restart round trips,
+full-sheet role remapping, and atomic role removal when a referenced block is
+deleted.
 
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks
