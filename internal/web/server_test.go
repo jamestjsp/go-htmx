@@ -599,6 +599,47 @@ func TestConnectionErrorRendersInline(t *testing.T) {
 	}
 }
 
+// The connect form's port fields are optional: a client written before ports
+// omits them and keeps wiring each block's first terminal, and one that sends
+// them is taken at its word. A field that is present but unreadable is a
+// malformed request, not a silent fall back to port 0.
+func TestConnectReadsOptionalPortFields(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := findKindBlock(t, snapshot.Blocks, "sum")
+	scope := findKindBlock(t, snapshot.Blocks, "scope")
+
+	omitted := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id": {strconv.FormatInt(sum.ID, 10)},
+		"target_id": {strconv.FormatInt(scope.ID, 10)},
+	})
+	if !strings.Contains(omitted.Body.String(), "already connected") {
+		t.Fatalf("omitted ports did not reach port 0: %s", omitted.Body.String())
+	}
+
+	named := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id":   {strconv.FormatInt(sum.ID, 10)},
+		"target_id":   {strconv.FormatInt(scope.ID, 10)},
+		"target_port": {"2"},
+	})
+	if !strings.Contains(named.Body.String(), "has no input port 2") {
+		t.Fatalf("named port was not passed through: %s", named.Body.String())
+	}
+
+	malformed := request(t, server, http.MethodPost, "/flows/1/connections", url.Values{
+		"source_id":   {strconv.FormatInt(sum.ID, 10)},
+		"target_id":   {strconv.FormatInt(scope.ID, 10)},
+		"target_port": {"left"},
+	})
+	if !strings.Contains(malformed.Body.String(), "choose an output and an input to connect") {
+		t.Fatalf("malformed port was not refused: %s", malformed.Body.String())
+	}
+}
+
 func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 	server, _ := openTestServer(t)
 	response := request(t, server, http.MethodPost, "/flows/1/simulations", url.Values{

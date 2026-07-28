@@ -327,14 +327,19 @@ func copyBlocks(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID int6
 
 // copyConnections rewrites each wire of one flowsheet onto the copied blocks.
 // Both endpoints are remapped, so no connection can point back at the source's
-// blocks. Distinct ids map to distinct ids, so a set of wires that satisfied
-// UNIQUE(flow_id, source_id, target_id) in the source satisfies it in the copy.
+// blocks, and both port indices are carried over unchanged so the copy wires
+// the same terminals as the original — a Sum's second input stays its second
+// input. Distinct ids map to distinct ids, so a set of wires that satisfied
+// UNIQUE(flow_id, source_id, source_port, target_id, target_port) in the
+// source satisfies it in the copy.
 func copyConnections(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID int64, moved map[int64]int64) error {
 	type edge struct {
-		source, target int64
+		source, target         int64
+		sourcePort, targetPort int
 	}
-	rows, err := tx.QueryContext(ctx,
-		"SELECT source_id, target_id FROM connections WHERE flow_id = ? ORDER BY id",
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source_id, source_port, target_id, target_port
+		FROM connections WHERE flow_id = ? ORDER BY id`,
 		sourceFlowID,
 	)
 	if err != nil {
@@ -343,7 +348,7 @@ func copyConnections(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID
 	var edges []edge
 	for rows.Next() {
 		var wire edge
-		if err := rows.Scan(&wire.source, &wire.target); err != nil {
+		if err := rows.Scan(&wire.source, &wire.sourcePort, &wire.target, &wire.targetPort); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan connection to copy: %w", err)
 		}
@@ -362,9 +367,10 @@ func copyConnections(ctx context.Context, tx *sql.Tx, sourceFlowID, targetFlowID
 		if !ok {
 			return fmt.Errorf("connection target %d is not a block of flowsheet %d", wire.target, sourceFlowID)
 		}
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO connections(flow_id, source_id, target_id) VALUES(?, ?, ?)",
-			targetFlowID, source, target,
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO connections(flow_id, source_id, source_port, target_id, target_port)
+			VALUES(?, ?, ?, ?, ?)`,
+			targetFlowID, source, wire.sourcePort, target, wire.targetPort,
 		); err != nil {
 			return fmt.Errorf("copy connection: %w", err)
 		}

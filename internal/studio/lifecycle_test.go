@@ -489,7 +489,7 @@ func TestDuplicateFlowPreservesBlockParameters(t *testing.T) {
 	// holds one field and decoding fills the rest from today's defaults.
 	partialID := insertBlock(BlockPID, "Controller", `{"derivative":0.25}`)
 	insertBlock(BlockTransfer, "Valve", `{"numerator":[2,1],"denominator":[1,3,1]}`)
-	if _, err := service.Connect(ctx, flowID, sourceID, partialID); err != nil {
+	if _, err := service.Connect(ctx, flowID, Wire{SourceID: sourceID, TargetID: partialID}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -599,7 +599,7 @@ func TestDeleteFlowOpensTheNeighbouringTab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Connect(ctx, middle.Snapshot.Flow.ID, feedID, scopeID); err != nil {
+	if _, err := service.Connect(ctx, middle.Snapshot.Flow.ID, Wire{SourceID: feedID, TargetID: scopeID}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Run(ctx, middle.Snapshot.Flow.ID, SimulationRequest{

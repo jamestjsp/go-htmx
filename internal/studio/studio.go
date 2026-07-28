@@ -158,6 +158,9 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		if err != nil {
 			return err
 		}
+		if err := checkWiredInputPorts(ctx, tx, block); err != nil {
+			return err
+		}
 		flowID = block.FlowID
 		encoded, err := encodeParameters(block.Parameters)
 		if err != nil {
@@ -178,6 +181,30 @@ func (s *Studio) UpdateBlock(ctx context.Context, blockID int64, update BlockUpd
 		return Snapshot{}, err
 	}
 	return s.snapshot(ctx, flowID)
+}
+
+// checkWiredInputPorts refuses a parameter edit that would take away an input
+// port a wire is already sitting on. Shrinking a Sum's signs is the case that
+// makes this real: dropping the wire to fit would throw away a signal the
+// user drew, silently, while they were editing something else. Refusing
+// instead leaves them to disconnect it deliberately, or to keep the port.
+func checkWiredInputPorts(ctx context.Context, tx *sql.Tx, block Block) error {
+	var highest sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		"SELECT MAX(target_port) FROM connections WHERE target_id = ?", block.ID,
+	).Scan(&highest); err != nil {
+		return fmt.Errorf("read wired input ports: %w", err)
+	}
+	if !highest.Valid {
+		return nil
+	}
+	port := int(highest.Int64)
+	if port < block.InputPortCount() {
+		return nil
+	}
+	// The highest wired port is the one named, not the first that would be
+	// orphaned: it is the port that sets how far the edit can shrink.
+	return invalid("%s has a wire on input port %d; disconnect it first", block.Name, port)
 }
 
 func (s *Studio) DeleteBlock(ctx context.Context, blockID int64) (Snapshot, error) {
@@ -333,16 +360,16 @@ func availableBlockName(ctx context.Context, tx *sql.Tx, flowID int64, base stri
 	return "", invalid("too many copies of %q", base)
 }
 
-func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) (Snapshot, error) {
-	if sourceID == targetID {
+func (s *Studio) Connect(ctx context.Context, flowID int64, wire Wire) (Snapshot, error) {
+	if wire.SourceID == wire.TargetID {
 		return Snapshot{}, invalid("a block cannot connect to itself")
 	}
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
-		source, err := blockByID(ctx, tx, sourceID)
+		source, err := blockByID(ctx, tx, wire.SourceID)
 		if err != nil {
 			return err
 		}
-		target, err := blockByID(ctx, tx, targetID)
+		target, err := blockByID(ctx, tx, wire.TargetID)
 		if err != nil {
 			return err
 		}
@@ -355,12 +382,23 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		if !target.Kind.HasInput() {
 			return invalid("%s does not have an input port", target.Name)
 		}
+		// The two checks above answer "has terminals in that direction at
+		// all"; these answer "has that one". A wire onto a port the block
+		// does not expose would be invisible on the canvas and unreachable
+		// from the inspector, so it is refused rather than stored.
+		if !source.hasOutputPort(wire.SourcePort) {
+			return invalid("%s has no output port %d", source.Name, wire.SourcePort)
+		}
+		if !target.hasInputPort(wire.TargetPort) {
+			return invalid("%s has no input port %d", target.Name, wire.TargetPort)
+		}
 
 		var duplicate int
 		err = tx.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM connections
-			WHERE flow_id = ? AND source_id = ? AND target_id = ?`,
-			flowID, sourceID, targetID,
+			WHERE flow_id = ? AND source_id = ? AND source_port = ?
+				AND target_id = ? AND target_port = ?`,
+			flowID, wire.SourceID, wire.SourcePort, wire.TargetID, wire.TargetPort,
 		).Scan(&duplicate)
 		if err != nil {
 			return err
@@ -368,33 +406,39 @@ func (s *Studio) Connect(ctx context.Context, flowID, sourceID, targetID int64) 
 		if duplicate > 0 {
 			return invalid("those blocks are already connected")
 		}
-		// A variadic target (Sum) accepts any number of wires; every other
-		// kind accepts at most one, so a second wire here is rejected
-		// immediately rather than waiting for compileFlow to catch it.
-		if target.Kind.arity() != arityVariadic {
-			var incoming int
-			if err := tx.QueryRowContext(ctx,
-				"SELECT COUNT(*) FROM connections WHERE flow_id = ? AND target_id = ?",
-				flowID, targetID,
-			).Scan(&incoming); err != nil {
-				return err
-			}
-			if incoming > 0 {
+		// An input port carries one signal. A second wire onto it would be a
+		// junction nobody drew, so it is refused here rather than left for
+		// compileFlow to discover. This is the whole of the old "everything
+		// but Sum accepts one input" rule: a Sum has a port per sign, so its
+		// wires land on different ports and never meet this check.
+		var occupied int
+		if err := tx.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM connections WHERE flow_id = ? AND target_id = ? AND target_port = ?",
+			flowID, wire.TargetID, wire.TargetPort,
+		).Scan(&occupied); err != nil {
+			return err
+		}
+		if occupied > 0 {
+			// A block with a single input port has no port worth naming, and
+			// that is the wording every such block has always shown.
+			if target.InputPortCount() == 1 {
 				return invalid("%s already has an input", target.Name)
 			}
+			return invalid("%s already has an input on port %d", target.Name, wire.TargetPort)
 		}
 
 		connections, err := connectionsInTx(ctx, tx, flowID)
 		if err != nil {
 			return err
 		}
-		if pathExists(connections, targetID, sourceID) {
+		if pathExists(connections, wire.TargetID, wire.SourceID) {
 			return invalid("that connection would create a cycle")
 		}
 
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO connections(flow_id, source_id, target_id) VALUES(?, ?, ?)`,
-			flowID, sourceID, targetID,
+			INSERT INTO connections(flow_id, source_id, source_port, target_id, target_port)
+			VALUES(?, ?, ?, ?, ?)`,
+			flowID, wire.SourceID, wire.SourcePort, wire.TargetID, wire.TargetPort,
 		); err != nil {
 			return fmt.Errorf("connect blocks: %w", err)
 		}
@@ -547,8 +591,9 @@ func abs(value int) int {
 }
 
 func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connection, error) {
-	rows, err := tx.QueryContext(ctx,
-		"SELECT id, flow_id, source_id, target_id FROM connections WHERE flow_id = ?",
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, flow_id, source_id, source_port, target_id, target_port
+		FROM connections WHERE flow_id = ?`,
 		flowID,
 	)
 	if err != nil {
@@ -558,7 +603,11 @@ func connectionsInTx(ctx context.Context, tx *sql.Tx, flowID int64) ([]Connectio
 	var connections []Connection
 	for rows.Next() {
 		var connection Connection
-		if err := rows.Scan(&connection.ID, &connection.FlowID, &connection.SourceID, &connection.TargetID); err != nil {
+		if err := rows.Scan(
+			&connection.ID, &connection.FlowID,
+			&connection.SourceID, &connection.SourcePort,
+			&connection.TargetID, &connection.TargetPort,
+		); err != nil {
 			return nil, err
 		}
 		connections = append(connections, connection)

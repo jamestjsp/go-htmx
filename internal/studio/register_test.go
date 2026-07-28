@@ -388,10 +388,10 @@ func wireRunnableFlow(t *testing.T, service *Studio, flowID int64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Connect(ctx, flowID, sourceID, lagID); err != nil {
+	if _, err := service.Connect(ctx, flowID, Wire{SourceID: sourceID, TargetID: lagID}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Connect(ctx, flowID, lagID, scopeID); err != nil {
+	if _, err := service.Connect(ctx, flowID, Wire{SourceID: lagID, TargetID: scopeID}); err != nil {
 		t.Fatal(err)
 	}
 }

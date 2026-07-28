@@ -105,6 +105,22 @@ type blockDefinition struct {
 	// into the none/one/variadic answer Connect and compileFlow both
 	// consult instead of separately special-casing Sum by name.
 	variadic bool
+	// inputPorts answers how many input terminals a variadic kind exposes
+	// for a given set of parameters — Sum, one per sign character. Setting
+	// variadic without setting this is a programming error, guarded by
+	// TestEveryVariadicKindDerivesItsInputPortsFromParameters. Fixed-arity
+	// kinds leave it nil: arity already states their count, so only a kind
+	// whose count a user can change needs to say how it is derived.
+	inputPorts func(Parameters) int
+	// declareWiredPorts widens a variadic kind's parameters so its port list
+	// covers wires already sitting on ports the parameters never named — the
+	// state a database written before connections carried ports can be in.
+	// It reports false when the widening cannot be done without changing what
+	// the block computes, which leaves the stored parameters alone. Sum is
+	// the only kind that can widen: a lone sign is shorthand for that same
+	// sign on every wire, so repeating it names each port and sums exactly
+	// the same signals.
+	declareWiredPorts func(Parameters, int) (Parameters, bool)
 	// realize builds the block's controlsys realization from its own
 	// parameters and the number of incoming connections. nil means the
 	// block has no dynamics of its own: every source and sink realizes as a
@@ -200,6 +216,44 @@ func (d blockDefinition) arity() inputArity {
 
 func (k BlockKind) arity() inputArity { return blockDefinitions[k].arity() }
 
+// inputPortCount is the one authority for how many input terminals a block
+// carries: none for a source, one for a fixed-arity kind, and whatever the
+// kind's own inputPorts hook derives from the parameters for a variadic one.
+// Connect refuses a wire to any index outside it, UpdateBlock refuses an edit
+// that would shrink it past a wired port, and the workbench draws exactly
+// this many glyphs — so a port a user can see is always a port the wiring
+// rules accept, and one they cannot see can never be wired behind their back.
+func (d blockDefinition) inputPortCount(parameters Parameters) int {
+	switch d.arity() {
+	case arityNone:
+		return 0
+	case arityVariadic:
+		return d.inputPorts(parameters)
+	default:
+		return 1
+	}
+}
+
+// outputPortCount is its counterpart. Every kind but a sink drives exactly one
+// output today; a sink drives none, which is the same fact HasOutput states
+// for the canvas.
+func (d blockDefinition) outputPortCount() int {
+	if d.role == roleSink {
+		return 0
+	}
+	return 1
+}
+
+// InputPortCount and OutputPortCount are a placed block's own terminals, as
+// its parameters currently stand. They are the workbench's and the wiring
+// rules' shared window onto the derivation above, so the canvas cannot draw a
+// port Connect would refuse.
+func (b Block) InputPortCount() int  { return blockDefinitions[b.Kind].inputPortCount(b.Parameters) }
+func (b Block) OutputPortCount() int { return blockDefinitions[b.Kind].outputPortCount() }
+
+func (b Block) hasInputPort(port int) bool  { return port >= 0 && port < b.InputPortCount() }
+func (b Block) hasOutputPort(port int) bool { return port >= 0 && port < b.OutputPortCount() }
+
 // minApproximation and maxApproximation bound the transport delay's Padé
 // order: the one place that states the range, read by both the editor's
 // Min/Max attributes and the validate hook that enforces it.
@@ -207,6 +261,12 @@ const (
 	minApproximation = 1
 	maxApproximation = 10
 )
+
+// maxInputSigns bounds how many inputs a Sum can name, and so how many input
+// ports it can expose. The one place that states it: the sign field's own
+// validate hook enforces it and declareWiredPorts refuses to widen past it,
+// rather than the two agreeing by coincidence.
+const maxInputSigns = 16
 
 var blockOrder = []BlockKind{
 	BlockSource,
@@ -308,7 +368,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Defaults: Parameters{Signs: "+"},
 		Parameters: []parameterDefinition{{
 			Name: "signs", Label: "Input signs", Type: "text",
-			Placeholder: "+-", Help: "Connection order; one sign broadcasts",
+			// The hint states the port rule because the field is now the port
+			// list: a wire can only land on a sign, so the old "one sign
+			// broadcasts" shorthand would promise inputs Connect refuses.
+			Placeholder: "+-", Help: "One sign per input port, in order",
 			set: func(parameters *Parameters, raw string) error {
 				parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
 				return nil
@@ -316,11 +379,30 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			text: func(parameters Parameters) string { return parameters.Signs },
 		}},
 		variadic: true,
-		// realize builds one gain per connected input, broadcasting the
-		// single sign to every input when only one is given (a shorthand the
-		// signs field's own Help text documents). Matching the sign count
-		// against the actual connected input count is checkInputs's job, not
-		// this hook's.
+		// Sum's input ports are its signs: one terminal per sign character,
+		// so the sign an input carries is the port it lands on and editing
+		// the field is how a user adds or removes an input.
+		inputPorts: func(parameters Parameters) int { return len(parameters.Signs) },
+		declareWiredPorts: func(parameters Parameters, wired int) (Parameters, bool) {
+			// Only the one-sign broadcast can widen. With two or more signs
+			// every port already has its own and inventing more would guess
+			// at a sign the model never stated; beyond maxInputSigns there is
+			// no sign string that could name them all, and refusing to widen
+			// leaves such a flowsheet computing what it always did.
+			if len(parameters.Signs) != 1 || wired > maxInputSigns {
+				return parameters, false
+			}
+			parameters.Signs = strings.Repeat(parameters.Signs, wired)
+			return parameters, true
+		},
+		// realize builds one gain per connected input, falling back to the
+		// first sign for any input past the last one. Now that the signs are
+		// the port list a wire cannot land past them, so that fallback is
+		// reached only by a flowsheet an older version wired beyond
+		// maxInputSigns — which declareWiredPorts deliberately leaves
+		// broadcasting rather than change what it computes. Matching the sign
+		// count against the actual connected input count is checkInputs's
+		// job, not this hook's.
 		realize: func(block Block, inputs int) (*controlsys.System, error) {
 			gains := make([]float64, inputs)
 			for i := range gains {
@@ -333,8 +415,8 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			return controlsys.NewGain(mat.NewDense(1, len(gains), gains), 0)
 		},
 		validate: func(parameters Parameters) error {
-			if len(parameters.Signs) == 0 || len(parameters.Signs) > 16 {
-				return invalid("input signs must contain 1 to 16 plus or minus signs")
+			if len(parameters.Signs) == 0 || len(parameters.Signs) > maxInputSigns {
+				return invalid("input signs must contain 1 to %d plus or minus signs", maxInputSigns)
 			}
 			for _, sign := range parameters.Signs {
 				if sign != '+' && sign != '-' {
@@ -344,9 +426,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			return nil
 		},
 		// checkInputs is Sum's own rule tying its signs to the connected
-		// input count: one sign broadcasts to every input (the signs field's
-		// Help text documents this shorthand), otherwise there must be
-		// exactly one sign per connection.
+		// input count: one sign covers however many wires arrived, otherwise
+		// there must be exactly one sign per connection. The first case now
+		// only reaches a Sum wired past maxInputSigns, since every other Sum
+		// has a sign for each port a wire can reach.
 		checkInputs: func(block Block, inputs int) error {
 			if len(block.Parameters.Signs) != 1 && len(block.Parameters.Signs) != inputs {
 				return invalid("%s has %d input signs for %d connections",

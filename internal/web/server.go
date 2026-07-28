@@ -402,16 +402,38 @@ func (s *Server) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	sourceID, errSource := strconv.ParseInt(r.FormValue("source_id"), 10, 64)
 	targetID, errTarget := strconv.ParseInt(r.FormValue("target_id"), 10, 64)
-	if errSource != nil || errTarget != nil {
+	sourcePort, sourcePortOK := portValue(r, "source_port")
+	targetPort, targetPortOK := portValue(r, "target_port")
+	if errSource != nil || errTarget != nil || !sourcePortOK || !targetPortOK {
 		s.renderFailure(w, r, flowID, 0, &studio.ValidationError{Message: "choose an output and an input to connect"})
 		return
 	}
-	snapshot, err := s.studio.Connect(r.Context(), flowID, sourceID, targetID)
+	snapshot, err := s.studio.Connect(r.Context(), flowID, studio.Wire{
+		SourceID: sourceID, SourcePort: sourcePort,
+		TargetID: targetID, TargetPort: targetPort,
+	})
 	if err != nil {
 		s.renderFailure(w, r, flowID, targetID, err)
 		return
 	}
 	s.renderWorkbench(w, r, snapshot, targetID, "")
+}
+
+// portValue reads an optional terminal index. An absent field means the
+// block's first port, so a client written before ports keeps connecting
+// exactly what it always did. A present but unreadable one is a malformed
+// request rather than a default, and says so. Whether the index names a port
+// the block actually has is the domain's answer, not this one's.
+func portValue(r *http.Request, name string) (int, bool) {
+	raw := r.FormValue(name)
+	if raw == "" {
+		return 0, true
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false
+	}
+	return port, true
 }
 
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
