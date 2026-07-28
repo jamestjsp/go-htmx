@@ -142,11 +142,28 @@ relative spacing is preserved exactly.
 Drag from an output port to an input port is the primary gesture. The
 pointer is captured on the canvas so the draft edge keeps tracking after
 leaving the port, and the target is found geometrically with
-`elementFromPoint`.
+`elementFromPoint`. The draft snaps to the hovered terminal before release.
 
 A press with **no travel** leaves the older click-then-click mode armed, so
-both gestures coexist and the keyboard-accessible path survives. Escape
-cancels either.
+both gestures coexist. Because ports are real buttons, Enter or Space on a
+focused output arms it and the same key on a focused input completes it.
+Escape cancels either. Only the primary pointer button wires; pointer
+cancellation, an HTMX swap, and Back/Forward history restoration all discard
+an armed source before it can refer to stale markup.
+
+Every rendered terminal carries its block id and zero-based port index.
+`POST /flows/{id}/connections` receives `source_id`, `source_port`,
+`target_id`, and `target_port`; omitting a port remains the compatibility path
+for an older client and means port 0. A Sum renders one gray input pip per sign
+and prints the sign beside it. Its inspector rows put the destination input
+and sign first, then the source output, so two wires from one source into
+different Sum ports remain distinguishable.
+
+Server-rendered SVG paths and the client redraw both use the endpoint's
+resolved integer vertical offset: the declared port centre when it exists, or
+the block midpoint for a preserved legacy wire beyond the declared sign list.
+Those offsets are carried on the path markup, not recomputed from currently
+visible port buttons.
 
 Self-connections are refused on the client with a status message rather
 than a server round trip and an error banner. The server remains the
@@ -158,7 +175,11 @@ each card is its own stacking context and a card later in DOM order paints
 over an earlier card's ports, making them unclickable where blocks overlap.
 Cards rise on `:hover`/`:focus-within`, and higher again while wiring.
 Ports also carry an invisible `calc(22px / var(--zoom))` hit pad so the
-target stays roughly constant on screen and wiring works at 40%.
+target stays roughly constant on screen. On a multi-port block the vertical
+pad is capped at the distance to its neighbour, and dense valid Sum ports
+shrink with that distance, so even sixteen terminals remain distinct hit
+targets instead of overlapping. Single-port blocks retain their original
+14px pip and 34px top offset throughout the 25%–400% zoom range.
 
 ## Keyboard
 
@@ -406,6 +427,8 @@ session against a real Chrome over CDP.
 | Keyboard: input-focus guard, nudge, select-all, duplicate, sheet | 16/16 |
 | Context menus: edge flipping, keyboard nav, placement, disconnect | 15/15 |
 | Wiring: drag at 100% and 27%, cancel, self-refusal, sticky mode | 11/11 |
+| Port model: Sum labels, pointer rewire to ports 0/1, draft snap, persisted/reloaded geometry, focused-port keyboard path, cancel/right-click/history safety, dense targets, seeded simulation | passed |
+| Port migration: every target ranked by connection order, source ports on 0, non-Sum targets remaining on 0, second open idempotent, sign growth allowed and wired-port shrink refused | passed |
 | — | — |
 | Full path on a fresh database: create a project from the register, `+` twice, rename, duplicate, drag reorder, keyboard reorder, delete, switch projects both ways, rename and delete a project, restart, order and names intact | 77/77 |
 | The same path on a database written before `position`, `project_id` and `model_updated_at` existed: migrated on open, tabs in the old by-name order, legacy per-column block parameters intact, every operation working, and a second open leaving the hand-made order alone | 46/46 |
@@ -417,6 +440,14 @@ flows inserted out of name order, one of them wired, with parameters still in
 the `gain` and `time_constant` columns. It is the only check that speaks for a
 user's existing file, and a fresh database cannot stand in for it — `CREATE
 TABLE` gives a new file `position` outright, so the backfill never runs.
+
+The connection-port fixture is separate and uses the old
+`UNIQUE(flow_id, source_id, target_id)` table. Startup rebuilds that table,
+assigns every source endpoint to port 0, and ranks each target's inbound wires
+in connection-id order. Non-Sum blocks had at most one inbound wire and remain
+on target port 0; Sum wires retain the old compiler's sign positions. A
+broadcast sign is widened only when doing so is numerically identical. The
+test closes and reopens the file to prove the assignment is not repeated.
 
 Behaviours confirmed by hand in the same pass: collapsing both rails to
 icon strips, dragging the dock between header-only and 70vh, and the
