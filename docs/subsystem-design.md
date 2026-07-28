@@ -22,8 +22,11 @@ Verified against the code, not assumed. Each of these decides something below.
 
 **Block ids are unique across the whole database.** `blocks.id` is
 `INTEGER PRIMARY KEY` on one table, so a block in a child sheet cannot collide
-with a block in its parent. This is what makes the compiler's existing signal
-names sufficient for a flattened graph (see *Compilation*).
+with a block in its parent. That is half of why the compiler's signal names
+need no prefix in a flattened graph; the other half is that since `663759f`
+every name is built from one block's id and one of that block's own ports. See
+*Namespacing*, which is stated against `simulate.go` at HEAD and would have
+been false a commit earlier.
 
 **Nothing moves a block between flowsheets, and nothing moves a flowsheet
 between projects.** `MoveBlocks` and `MoveBlock` write `x` and `y` only, and
@@ -36,22 +39,28 @@ would be a second and divergent statement of what a container holds. Foreign
 keys are on for every connection via the DSN, and SQLite fires cascades
 recursively, so a chain `flows → blocks → flows → blocks` needs no new code.
 
-**`flowSelect` is the one query authority for every flowsheet list.** The tab
-strip (`projectFlows`) and the register (`flowsByProject`) both read it, which
-is what stops the amber dot in one from contradicting the other. Anything that
-must not appear in either list has to be excluded there, once.
+**`flowSelect` is the one query authority for every flowsheet *list*, and only
+for lists.** The tab strip (`projectFlows`) and the register (`flowsByProject`)
+both read it, which is what stops the amber dot in one from contradicting the
+other. But four other operations reach `flows` through raw `SELECT`s of their
+own — `ReorderFlows`, both of `DeleteFlow`'s landing-sheet queries, and
+`generatedFlowName` — so excluding child sheets from `flowSelect` excludes them
+from the two lists and from nothing else.
 
-**Five queries assume every flow is a top-level flow.** `CurrentWorkspace`,
-`ProjectWorkspace`, `Current`, `DeleteFlow`'s survivor count, and
-`ensureFlowPositions` all order or count `flows` rows with no notion that one
-might live inside a block. Each is named in *Data model* below; missing any one
-of them is how a subsystem sheet ends up in the tab strip or lets a project be
-emptied of every sheet a user can open.
+**Nine queries in four files assume every flow is a top-level flow.** They are
+enumerated in *Data model* below and the enumeration is exhaustive: it is every
+statement in the repository that reads `flows` without going through
+`flowSelect`, plus `flowSelect` itself. Missing one is not cosmetic — three of
+them break a working gesture outright, and one bricks the migration of every
+legacy database.
 
-**A refusal is an explicit domain message.** `checkWiredInputPorts` is the
-precedent this design leans on hardest: shrinking a Sum's signs past a wired
-port is refused, naming the port, rather than dropping the wire. Every port
-rule below is the same rule wearing a different hat.
+**A refusal is an explicit domain message, and a doomed control is absent
+rather than present.** `checkWiredInputPorts` is the precedent this design
+leans on hardest: shrinking a Sum's signs past a wired port is refused, naming
+the port, rather than dropping the wire. `registerRowView.CanDelete` is the
+other: the domain's refusal to delete the last project is carried into the view
+so the control never appears doomed. Every port rule and every chrome decision
+below is one of those two rules wearing a different hat.
 
 ## Data model
 
@@ -119,25 +128,56 @@ between projects. Deleting a project reaches a child sheet twice over — once
 through `project_id`, once through its parent block — and both paths delete
 the same row, so the redundancy costs nothing.
 
-### The five queries that must learn about child sheets
+### The nine queries that must learn about child sheets
 
-Every list the UI draws still has one query authority; each of these gains one
-predicate and no second copy of the rule.
+This is every statement in the repository that reads `flows`. Renaming
+`flowSelect` covers two of them and **nothing else** — the rest are raw
+`SELECT`s that do not go through it, which is the trap this table exists to
+close. Each row gains one predicate and no second copy of the rule.
 
-| Site | Change | What breaks without it |
-| --- | --- | --- |
-| `flowSelect` (`workspace.go`) | Rename to `topLevelFlowSelect` and fold `WHERE flows.parent_block_id IS NULL` into it; the two callers append with `AND` | A subsystem sheet appears as a tab and as a register chip |
-| `CurrentWorkspace`, `ProjectWorkspace` | `AND flows.parent_block_id IS NULL` | The application opens on a subsystem sheet, since a child's `position` is 0 and its id can be lower than a later top-level sheet's |
-| `Current` (`studio.go`) | Same | `renderFailure`'s fallback renders a subsystem sheet after an error |
-| `DeleteFlow`'s survivor count | `AND parent_block_id IS NULL` | A project can be emptied of every sheet the tab strip can draw, leaving the strip blank and `ProjectWorkspace` with nothing to open — the exact failure the "last flowsheet" refusal exists to prevent |
-| `ensureFlowPositions` and `hasInvalidFlowPositions` | Both restricted to `parent_block_id IS NULL` | A child sheet at position 0 makes every project's positions look non-dense, so the repair runs on every `Open` and renumbers subsystem sheets into the tab strip |
+| # | Site | Change | What breaks without it |
+| --- | --- | --- | --- |
+| 1 | `flowSelect` (`workspace.go:118`) | Rename to `topLevelFlowSelect` and fold `WHERE flows.parent_block_id IS NULL` into it. `projectFlows` then converts its own `WHERE` to `AND`; **`flowsByProject` appends only `ORDER BY` and needs no change at all** | A subsystem sheet appears as a tab and as a register chip |
+| 2 | `CurrentWorkspace`, `ProjectWorkspace` (`workspace.go:13, 32`) | `AND flows.parent_block_id IS NULL` | The application opens on a subsystem sheet: a child's `position` is 0, and its id can be lower than a later top-level sheet's |
+| 3 | `Current` (`studio.go:19`) | Same | `renderFailure`'s fallback renders a subsystem sheet after an error |
+| 4 | `DeleteFlow`'s survivor count (`lifecycle.go:403`) | `AND parent_block_id IS NULL` | A project can be emptied of every sheet the tab strip can draw, leaving the strip blank and `ProjectWorkspace` with nothing to open — the exact failure the "last flowsheet" refusal exists to prevent |
+| 5 | **`DeleteFlow`'s two landing-sheet queries** (`lifecycle.go:413-426`) | `AND parent_block_id IS NULL` in both | **Verified failure**: with A(pos 0, id 1), B(pos 1, id 2) and B's own child C(id 3), deleting B selects `landingID = 3`. C sorts ahead of A because `ORDER BY position DESC, id DESC` prefers the higher id at position 0, and a child's id is normally higher than its parent's. C is then destroyed by the cascade, so `s.Workspace(ctx, projectID, 3)` at `lifecycle.go:452` returns `ErrNotFound` — **the user gets a failure page after a successful delete.** Even when the child survives, the app opens on a subsystem sheet |
+| 6 | **`ReorderFlows`'s `belongs` query** (`lifecycle.go:480`) | `AND parent_block_id IS NULL` | **Verified failure**: this is a raw `SELECT id FROM flows WHERE project_id = ?`, not `flowSelect`, so renaming `flowSelect` leaves it untouched. Two top-level sheets plus one child give `len(belongs) = 3` while the strip sends 2 ids, and the guard at `lifecycle.go:501` refuses **every** reorder with "the new order must list each of this project's 3 flowsheets exactly once". Drag-to-reorder stops working entirely |
+| 7 | `generatedFlowName` (`lifecycle.go:549`) | `AND parent_block_id IS NULL` | Nothing today — a child's name is the empty string and the candidates are "Flowsheet N", so they cannot collide. It is filtered so this enumeration is complete and so the claim does not depend on the empty-name decision holding forever |
+| 8 | `hasInvalidFlowPositions` (`store.go:570`) | `WHERE flows.parent_block_id IS NULL` before the `GROUP BY` | A child sheet at position 0 makes every project's positions look non-dense, so the repair below runs on every `Open` |
+| 9 | `ensureFlowPositions`'s repair (`store.go:549-560`) | **Both the inner `ROW_NUMBER()` source and the outer `UPDATE`.** See below | Subsystem sheets are renumbered into the tab strip — or, with the obvious partial fix, every legacy database fails to open |
+
+**Row 9 is the one that can be read two ways, and one reading bricks every
+legacy database.** The repair is an `UPDATE` whose value is a correlated
+subquery over a `ROW_NUMBER()` window. Filtering only the inner `FROM flows` —
+the literal minimal edit — leaves child rows with no matching `ordered` row, so
+the subquery yields NULL against a `NOT NULL` column. Verified in a scratch
+database: `NOT NULL constraint failed: flows.position`. The outer statement
+needs its own predicate too:
+
+```sql
+UPDATE flows SET position = (
+    SELECT ordered.position
+    FROM (
+        SELECT id, ROW_NUMBER() OVER (
+            PARTITION BY project_id
+            ORDER BY position, name COLLATE NOCASE, id
+        ) - 1 AS position
+        FROM flows WHERE parent_block_id IS NULL   -- inner
+    ) AS ordered
+    WHERE ordered.id = flows.id
+)
+WHERE parent_block_id IS NULL;                     -- outer, and not optional
+```
+
+Verified with that form: a hand-made order (Beta at 1, Alpha at 0) is left
+alone, child rows stay at 0, and the density check returns 0 rather than 1.
 
 Child flows are created with `position = 0` and it is never read.
 
-`ReorderFlows` needs no new message: it builds `belongs` from the project's
-flowsheets, which is now the top-level ones, so a child id lands on the
-existing "the new order must list each of this project's N flowsheets exactly
-once" refusal.
+`ReorderFlows` needs no new *message* once row 6 lands — a child id is simply
+not in `belongs`, so it falls to the existing "must list each of this project's
+N flowsheets exactly once" refusal, now counting the right N.
 
 ### The child sheet's name
 
@@ -245,18 +285,40 @@ current sheet comes from the same recursive walk the trail query uses.
 
 ### Three new kinds
 
-| Kind | Role on its own sheet | What it is |
-| --- | --- | --- |
-| `BlockSubsystem` (`"subsystem"`) | One input port per child Inport, one output port per child Outport | The block that owns a sheet |
-| `BlockInport` (`"inport"`) | No input, one output | One input terminal of the sheet's owning block |
-| `BlockOutport` (`"outport"`) | One input, no output | One output terminal of the sheet's owning block |
+| Kind | `role` | Ports on its own sheet | What it is |
+| --- | --- | --- | --- |
+| `BlockSubsystem` (`"subsystem"`) | `roleDynamic` (the zero value) | One input port per child Inport, one output port per child Outport | The block that owns a sheet |
+| `BlockInport` (`"inport"`) | `roleSource` | No input, one output | One input terminal of the sheet's owning block |
+| `BlockOutport` (`"outport"`) | `roleSink` | One input, no output | One output terminal of the sheet's owning block |
+
+**`role` is a field an implementer must set deliberately, because it governs
+more than the port shape.** It decides `compileFlow`'s presence checks
+(`simulate.go:144-149`) and `sourceValue`'s waveform dispatch
+(`simulate.go:325-331`), which returns 0 in silence for a `roleSource` kind
+with no `waveform` hook. The values above are chosen for what they do on the
+child sheet itself, where these blocks are wired: `roleSource` gives Inport
+`arityNone`, so `Connect` refuses a wire *into* an Inport, and `roleSink` gives
+Outport `HasOutput() == false`, so `Connect` refuses a wire *out of* an
+Outport. Both are exactly right.
+
+Neither ever reaches the compiler — `Run` refuses a subsystem sheet and
+`expandFlow` erases both kinds before `compileFlow` sees a block list — so
+Inport's absent `waveform` is unreachable rather than silently zero. That is a
+load-bearing coincidence, so it gets a guard rather than a comment: a test over
+`blockDefinitions` asserting **every `roleSource` kind either sets `waveform`
+or sets `insideSubsystem`**, in the shape of the variadic-ports guard that
+already exists.
+
+A subsystem block is `roleDynamic`, so `HasOutput()` is true even for one with
+no Outports yet. `Connect` then refuses the wire one check later, on
+`hasOutputPort`, with "Reactor has no output port 0" — the right message, one
+step further down than a reader might expect.
 
 Inport and Outport are legal **only on a subsystem's own sheet**. A top-level
 sheet has no parent block to give terminals to, so adding one there is
 refused: **"Inport blocks belong inside a subsystem"**. The rule is one field
-on the definition, read by `AddBlock` (which enforces it) and by the palette
-(which omits the two kinds on a top-level sheet), in the same way `HasInput()`
-is read by both the wiring rules and the canvas:
+on the definition, read by `AddBlock` and by the palette, in the same way
+`HasInput()` is read by both the wiring rules and the canvas:
 
 ```go
 // insideSubsystem is true for the two kinds that only mean something on a
@@ -264,6 +326,16 @@ is read by both the wiring rules and the canvas:
 // terminals, and a top-level sheet has no owning block.
 insideSubsystem bool
 ```
+
+**Reading it from the palette is an exported-API change, not a template
+tweak.** The palette's only source is `studio.BlockLibrary()`
+(`view.go:233`), which takes no arguments and has no flow context;
+`newWorkbenchView` holds the workspace but `BlockLibrary` cannot see it. Per-
+sheet omission therefore means changing an exported signature and its one call
+site — `BlockLibrary(insideSubsystem bool)`, answered from the same field
+`AddBlock` enforces. H3 carries that as a named deliverable. Doing it any other
+way (filtering in the view against a locally spelled kind list) would put a
+second authority on where a kind may be placed.
 
 ### The subsystem's definition entry
 
@@ -334,16 +406,40 @@ Note the asymmetry — an input port holds one wire, an output port fans out —
 so the message counts: **"Reactor has 2 wires on output port 1; disconnect
 them first"**.
 
-**`created func(ctx context.Context, tx *sql.Tx, block Block) error`** runs
-inside `AddBlock`'s transaction for kinds whose block is not the whole of what
-exists. Subsystem is the only one: it inserts the child flow with the parent's
-`project_id`, `parent_block_id = block.ID`, `name = ''`, `position = 0`. Nil
-for every other kind. This keeps the catalog the single authority for what a
-kind *is*, rather than adding a `if kind == BlockSubsystem` to `AddBlock`.
+**`created`** runs inside `AddBlock`'s transaction for kinds whose block is not
+the whole of what exists. Subsystem is the only one: it inserts the child flow.
+Nil for every other kind. This keeps the catalog the single authority for what
+a kind *is*, rather than adding an `if kind == BlockSubsystem` to `AddBlock`.
 
-### One rule has to move
+The obvious signature — `func(ctx, tx, block Block) error` — does not fit, and
+the mismatch is worth spelling out because it costs `AddBlock` one column.
+`AddBlock` never assembles a `Block` value: it inserts columns and keeps the
+`LastInsertId`. And its existence check reads `SELECT 1 FROM flows WHERE id = ?`
+(`studio.go:43`), so it does not have the `project_id` the child row needs. So
+the hook takes what the insert actually produces, and the existence check
+selects one more column into the same `ErrNotFound` branch:
 
-`compileFlow`'s arity walk refuses a variadic block with no inputs:
+```go
+// created runs inside AddBlock's transaction for a kind whose block owns rows
+// outside the blocks table. It receives the ids the insert has just produced
+// rather than a Block value, because AddBlock never assembles one.
+created func(ctx context.Context, tx *sql.Tx, placed placedBlock) error
+
+type placedBlock struct {
+    BlockID   int64
+    FlowID    int64
+    ProjectID int64  // from AddBlock's existence check, widened to
+    Name      string // SELECT project_id FROM flows WHERE id = ?
+}
+```
+
+Subsystem's hook inserts `project_id` from `placed.ProjectID`,
+`parent_block_id = placed.BlockID`, `name = ''`, `position = 0`.
+
+### One rule moves, and it is hygiene rather than a prerequisite
+
+`compileFlow`'s arity walk refuses a variadic block with no inputs
+(`simulate.go:197-200`):
 
 ```go
 case arityVariadic:
@@ -352,11 +448,20 @@ case arityVariadic:
     }
 ```
 
-That is Sum's rule, not variadic's. A subsystem with no Inports is
-legitimate — a self-contained sheet with its own Step source is the obvious
-case — so the check moves into Sum's own `checkInputs` hook, which already
-exists and already carries Sum's other cross-field rule. The message text is
-unchanged and no test asserts it, so this is a pure relocation.
+That is Sum's rule, not variadic's: "at least one" is a statement about signs,
+and any future variadic kind inherits it today without being asked. It moves
+into Sum's own `checkInputs` hook, which already exists and already carries
+Sum's other cross-field rule. The message text is unchanged and no test asserts
+it, so the relocation is pure.
+
+**It is not, however, needed for subsystems, and an earlier draft of this
+document claimed it was.** A subsystem with no Inports is legitimate — a
+self-contained sheet with its own Step source — but that case never meets this
+check, because `expandFlow`'s splice step 3 drops every subsystem block before
+`compileFlow` sees a block list. Nothing in *Compilation* depends on the
+relocation. H2 carries it as optional layering hygiene that may be dropped
+without affecting any other task, and it is flagged here so an implementer
+reconciling the two sections does not stall looking for the case.
 
 ### How child ports become parent ports
 
@@ -503,6 +608,36 @@ The tab strip's `Active` flag then compares against `Trail[0].FlowID` rather
 than the open flow's id, so descending into a subsystem leaves its root sheet's
 tab lit rather than lighting none.
 
+### What a subsystem sheet's chrome shows
+
+`Run` refuses a subsystem sheet, so the workbench must not offer to run one.
+Two things in the current shell would otherwise contradict that, and both are
+part of this navigation question rather than separate polish:
+
+- **The run form is unconditional** (`workbench.html:203`), so a subsystem
+  sheet would open with a live "Run model" button whose only possible answer is
+  a refusal.
+- **`Flow.NeedsRun` is permanently true** on a subsystem sheet.
+  `snapshot` sets it from `snapshot.LastRun == nil` (`store.go:854`), and no
+  `simulation_runs` row can ever exist for a sheet that cannot be run, so the
+  dock's staleness state would be stuck amber forever and would mean nothing.
+
+`workbenchView` therefore gains one flag, `CanRun`, true exactly when the open
+sheet is top-level — `len(Trail) == 1`. It gates the run form, the staleness
+banner, and the `Cmd`/`Ctrl` + `Enter` binding in `shortcuts.js`, which must be
+inert here or the keyboard would reach a refusal the button no longer offers.
+In their place the dock shows one line naming the sheet that runs this one,
+linking to `Trail[0]`: *Simulated from **Reactor temperature loop***.
+
+`Flow.NeedsRun` keeps its meaning and its query; it is simply not read on a
+subsystem sheet, and nothing else reads it there — the tab strip never shows
+one.
+
+Carrying a domain refusal into the view as a flag is the established pattern
+here, not a duplicated rule: `registerRowView.CanDelete` does exactly this for
+the last-project refusal, and `view.go:39-41` gives the reason — "the control
+is absent rather than present and doomed."
+
 ### Gestures
 
 | Gesture | Action | Rationale |
@@ -612,33 +747,78 @@ const maxExpandedBlocks = 1024
 Exceeding it is refused: **"this flowsheet expands to more than 1024
 blocks"**.
 
-### Namespacing, and why the existing names already suffice
+### Namespacing, and why the existing names suffice — but only since `663759f`
 
-The compiler names signals `block_%d_source`, `block_%d_input` (and
-`block_%d_input_%d` once `VJKI5N` lands) and `block_%d_output`, all keyed on
-the block id. In a flattened graph those names are already unique, and the
-reason is a short theorem rather than a hope:
+**This section is stated against the naming scheme at HEAD, and it would have
+been false against the one this document was first drafted on.** That is worth
+recording, because the difference is the whole argument.
 
-1. `blocks.id` is `INTEGER PRIMARY KEY` on one table, so ids are unique across
-   every flowsheet in the database.
-2. The containment relation is a tree, and each subsystem block owns exactly
-   one child sheet (`UNIQUE(parent_block_id)`), so flattening visits each
-   block row exactly once. No row is ever instantiated twice.
-3. Therefore the flattened list holds distinct ids, and every name derived
-   from one is distinct.
+Before `663759f` (`VJKI5N`, compile wiring by port) a variadic block's inbound
+signal was `block_%d_input_from_%d` — built from **two different blocks' ids**,
+the target and the source. The splice rewrites the source id of every wire
+crossing a subsystem boundary, so it could collapse two names into one: a
+subsystem `S` whose two Outports are both driven by one internal gain `G`,
+wired `S.0 → Sum.0` and `S.1 → Sum.1`, splices to two wires that both spell
+`block_Sum_input_from_G`. Two `controlsys.Connection` entries with an identical
+`To`, and one signal vanishing into the other's place — the same defect
+`663759f`'s own message describes for a fan-out into two Sum ports, where it
+"came out halved".
 
-**Depending on that silently would be fragile, so the design makes the
-dependence explicit.** `expandFlow` states the invariant in its comment, and a
-test — `TestExpandedGraphHasDistinctSignalNames`, over a three-level
-fixture — asserts it rather than trusting it.
+At HEAD (`simulate.go:333-347`) the names are:
 
-Step 2 is the one that would fail first. **The day a subsystem sheet can be
-instantiated more than once** — a library link, a model reference — the block
-id stops being the instance identity, and the fix is named now so nobody has
-to rediscover it: flattening already carries each block's *path*, the list of
-subsystem block ids from the root, for the naming below; a
-`signalPrefix(path)` prepended in the three name functions is the whole
-change. It is not built now because nothing can produce a second instance.
+```go
+sourceSignalName(id)        = fmt.Sprintf("block_%d_source", id)
+inputSignalName(id, port)   = fmt.Sprintf("block_%d_input_%d", id, port)
+outputSignalName(id, port)  = fmt.Sprintf("block_%d_output_%d", id, port)
+```
+
+Every name is now built from **one block's id and one of that block's own
+ports**. That is what makes the theorem true, and it needs two parts rather
+than the one an earlier draft gave.
+
+**Part 1 — every name is distinct.** A system's names all carry its own block
+id as a prefix, so names from different blocks cannot collide; within one
+block, the ports are distinct integers because `wiredInputPorts`
+(`simulate.go:266-284`) refuses a repeat. So it reduces to distinct block ids
+in the flattened list, which holds because (a) `blocks.id` is
+`INTEGER PRIMARY KEY` on one table, so ids are unique across every flowsheet,
+and (b) the containment relation is a tree with `UNIQUE(parent_block_id)`, so
+flattening visits each row exactly once and no row is ever instantiated twice.
+
+**Part 2 — no two connections share a `To`.** This is the part the splice could
+have broken and does not, for a reason that should be stated as an invariant of
+the splice rather than checked afterwards: **both splice steps rewrite only the
+*source* end of a wire, never the target end.** Step 1 replaces `I.0 → Y.q`
+with `X.p → Y.q`; step 2 replaces `S.o → Z.r` with `W.p → Z.r`. The
+`(target, targetPort)` pair is carried over untouched in both. So every input
+port in the flattened graph carries exactly the number of wires it carried on
+its own sheet — one, because each sheet's `Connect` enforces one wire per input
+port.
+
+The reviewer's collision case is the test to write, because at HEAD it is not a
+collision but a fan-out: `S.0 → Sum.0` and `S.1 → Sum.1` with one internal `G`
+driving both Outports splice to `G.0 → Sum.0` and `G.0 → Sum.1` — the same
+`From`, two different `To`s, which is what `ConnectByName` handles and what
+`663759f` exists to make work. `TestFlatteningFansOneSubsystemOutputIntoTwoPortsOfOneSum`
+asserts the Sum receives the signal **twice** rather than once.
+
+**Depending on any of this silently would be fragile, so the design makes the
+dependence explicit.** `expandFlow` states both parts in its comment, and
+`TestExpandedGraphHasDistinctSignalNames`, over a three-level fixture, asserts
+part 1 rather than trusting it.
+
+Part 1(b) is what fails first. **The day a subsystem sheet can be instantiated
+more than once** — a library link, a model reference — the block id stops being
+the instance identity, and the fix is named now so nobody has to rediscover it:
+flattening already carries each block's *path*, the list of subsystem block ids
+from the root, for the naming below; a `signalPrefix(path)` prepended in the
+three name functions is the whole change. It is not built now because nothing
+can produce a second instance.
+
+**H6 is therefore hard-blocked on `VJKI5N`, not merely sequenced after it.**
+That task has landed, so the block is already satisfied; the dependency is
+recorded because a splice written against the old two-id naming would have been
+silently wrong rather than obviously broken.
 
 ### Names the user reads
 
@@ -793,30 +973,44 @@ Ready to file. Ergo ids are not assigned here.
 
 | Task | Depends on | Deliverable |
 | --- | --- | --- |
-| **H1** Containment column and the five top-level queries | — | `flows.parent_block_id`, the unique index, `ensureSubsystemFlows` ordered after `ensureProjects` and **before** `ensureFlowPositions`; `flowSelect` → `topLevelFlowSelect`; the filters in `CurrentWorkspace`, `ProjectWorkspace`, `Current`, `DeleteFlow`'s survivor count, and both position queries. No new block kinds — a database with no subsystems must behave identically, and a legacy database must migrate with its tab order untouched. Test: the existing pre-projects fixture opens and re-opens unchanged |
-| **H2** Parameter-derived output ports | — (the landed port work) | `outputPorts` hook, `outputPortCount(parameters)`, `checkWiredOutputPorts`, the output half of the variadic-kinds guard test, and the relocation of "needs at least one input" from `compileFlow`'s variadic case into Sum's `checkInputs`. Every existing kind's answers unchanged. Runs in parallel with H1 |
-| **H3** The three kinds and the `created` hook | H1, H2 | `BlockSubsystem`, `BlockInport`, `BlockOutport`; `Parameters.Inports`/`Outports` and their clone; `insideSubsystem` read by `AddBlock` and the palette; `maxSubsystemDepth` and its refusal; `created` creating the child sheet in `AddBlock`'s transaction; `Block.ChildFlowID` from `snapshot`'s left join |
+| **H1** Containment column and the nine top-level queries | — | `flows.parent_block_id`, the unique index, `ensureSubsystemFlows` ordered after `ensureProjects` and **before** `ensureFlowPositions`; then **all nine rows of the query table**, not just the `flowSelect` rename — rows 5 and 6 (`DeleteFlow`'s landing queries, `ReorderFlows`'s `belongs`) each break a working gesture on their own, and row 9 needs the predicate on *both* the inner `ROW_NUMBER()` source and the outer `UPDATE` or every legacy database fails to open. No new block kinds — a database with no subsystems must behave identically. Tests: the existing pre-projects fixture opens and re-opens unchanged; with a child sheet present, a reorder is accepted and deleting the sheet that owns it lands on the correct neighbour |
+| **H2** Parameter-derived output ports | — (the landed port work) | `outputPorts` hook, `outputPortCount(parameters)`, `checkWiredOutputPorts`, and the output half of the variadic-kinds guard test. Every existing kind's answers unchanged. Runs in parallel with H1. **Optional, droppable:** relocating "needs at least one input" into Sum's `checkInputs` is layering hygiene — no subsystem ever reaches that check, because `expandFlow` drops subsystem blocks first |
+| **H3** The three kinds and the `created` hook | H1, H2 | `BlockSubsystem`, `BlockInport`, `BlockOutport` with their `role` values and the guard test that every `roleSource` kind sets `waveform` or `insideSubsystem`; `Parameters.Inports`/`Outports` and their clone; `maxSubsystemDepth` and its refusal; `created` plus the `placedBlock` value and the widening of `AddBlock`'s existence check to `SELECT project_id`; `Block.ChildFlowID` from `snapshot`'s left join. **Named API change:** `studio.BlockLibrary()` gains a parameter and its one call site at `view.go:233` changes, because the palette cannot otherwise omit Inport and Outport on a top-level sheet |
 | **H4** `syncSubsystemPorts` | H3 | The one authority for the parent's port surface: the id-ordered read, the unique-name refusal, the add/rename/remove diff, the orphan refusal, the renumbering of surviving wires, and `touchModel` climbing to every ancestor. Tests for each row of the wire table |
 | **H5** Cascade and deep duplication | H3 | `copyFlowContents` recursive, used by `DuplicateFlow` and `DuplicateBlocks`; the three lifecycle refusals on child sheets; a cascade test at `maxSubsystemDepth` proving one `DELETE` removes the whole subtree |
-| **H6** `expandFlow` | H4, H5, and ideally `VJKI5N` | The flattening pass, its three queries, the splice, the two boundary refusals, `maxExpandedBlocks`, qualified names, and `Run` refusing a child sheet. Tests: a subsystem-free sheet expands to itself and every existing numeric assertion holds; a two-level sheet matches the same model drawn flat to 1e-12; distinct signal names over a three-level fixture |
-| **H7** Navigation | H1, H3 | `Workspace.Trail` and the recursive trail query; the breadcrumb partial; `Active` by `Trail[0]`; the descent and ascent gestures in `js/contextmenu.js`, `js/input.js` and `js/shortcuts.js`; no new route |
+| **H6** `expandFlow` | H4, H5, and **`VJKI5N` (hard — landed as `663759f`)** | The flattening pass, its three queries, the splice, the two boundary refusals, `maxExpandedBlocks`, qualified names, and `Run` refusing a child sheet. Tests: a subsystem-free sheet expands to itself and every existing numeric assertion holds; a two-level sheet matches the same model drawn flat to 1e-12; distinct signal names over a three-level fixture; and `TestFlatteningFansOneSubsystemOutputIntoTwoPortsOfOneSum` — one internal gain driving two Outports wired into two ports of one Sum, asserting the signal arrives **twice**. That last one is the case a splice written against the pre-`663759f` naming would have halved |
+| **H7** Navigation | H1, H3 | `Workspace.Trail` and the recursive trail query; the breadcrumb partial; `Active` by `Trail[0]`; the descent and ascent gestures in `js/contextmenu.js`, `js/input.js` and `js/shortcuts.js`; `workbenchView.CanRun` gating the run form, the staleness banner and the `Cmd`/`Ctrl` + `Enter` binding, with the "Simulated from …" line in their place; no new route |
 | **H8** Subsystem ports on the canvas | H4, and `KE3PPL` | N labelled input pips and M labelled output pips on a subsystem card, drawn from the same derivation the wiring rules read; the inspector's connection list naming ports by their Inport names |
 | **H9** Verification and documentation | H6, H7, H8 | A CDP pass in the style of `docs/workbench-ergonomics.md`'s record — build a subsystem, wire it, descend and ascend, Back across levels, delete a wired Inport and read the refusal, simulate and compare against the flat equivalent, restart and reopen. Replace the "not yet supported" paragraph in `README.md`; add the descent gestures to `docs/workbench-ergonomics.md` |
 
 `H1` and `H2` are independent of each other and of everything already in
-flight. `H6` should follow `VJKI5N` (compile wiring by port) so that flattening
-produces port-qualified names rather than order-dependent ones; it is not
-strictly blocked, but landing it first would mean writing the splice against a
-naming scheme that is about to change.
+flight. **`H6` is hard-blocked on `VJKI5N`** — port-qualified signal names are
+what make the namespacing theorem true, and a splice written against the old
+two-id naming would have been silently wrong rather than obviously broken. That
+task landed as `663759f`, so the block is satisfied; it is recorded because the
+reason is not recoverable from the code once both are in.
+
+**H1 is the largest and least glamorous task in this list, and it is the one
+most likely to be under-scoped.** It is nine queries in four files, three of
+which break a working gesture and one of which stops legacy databases opening.
+Anything that treats it as "add a column and rename `flowSelect`" will ship all
+four defects.
 
 ## What dependent tasks must know
 
 - **The edge lives on the child.** `flows.parent_block_id`, never
   `blocks.child_flow_id`. Anything that reads "which sheet does this block
   own" reads it through that column.
-- **`parent_block_id IS NULL` is the definition of a top-level sheet**, and it
-  belongs in `topLevelFlowSelect` rather than in each caller, for the same
-  reason the amber dot's condition does.
+- **`parent_block_id IS NULL` is the definition of a top-level sheet**, and
+  `topLevelFlowSelect` states it for the two *lists* — not for the eight other
+  places that read `flows`. Adding a new query over `flows` means deciding
+  which of the two it is; the nine-row table is the enumeration to check
+  against.
+- **`flowSelect` is not the only path to `flows`.** `ReorderFlows`,
+  `DeleteFlow`'s landing queries and `generatedFlowName` each hold a raw
+  `SELECT` of their own. An earlier draft of this document assumed otherwise
+  and was wrong about `ReorderFlows` in a way that would have disabled
+  drag-to-reorder entirely.
 - **The catalog stays pure.** A subsystem's port counts come from
   `Parameters.Inports` / `Outports`, written by `syncSubsystemPorts`, so
   `inputPortCount(parameters)` never learns about the database.
@@ -836,6 +1030,14 @@ naming scheme that is about to change.
 - **Block ids are the instance identity, and that is only true while a sheet
   can be instantiated once.** Anything that changes that must prepend
   `signalPrefix(path)`.
+- **The splice rewrites only the source end of a wire.** That is what keeps one
+  wire per input port after flattening, which is half the namespacing theorem.
+  A future splice that touches a target port owns a new argument for why no two
+  connections share a `To`.
+- **A signal name is built from one block's id and one of its own ports.**
+  Before `663759f` a variadic input name was built from two blocks' ids, and
+  the splice could collapse two such names into one. Anything that reintroduces
+  a name spanning two blocks reintroduces that collision.
 - **Editing a subsystem makes every ancestor stale.** `touchModel` climbs;
   `touchLayout` does not.
 - **A subsystem sheet is not a tab, not a register chip, and not runnable.**
