@@ -73,6 +73,14 @@ func simulate(blocks []Block, connections []Connection, request SimulationReques
 }
 
 func compileModel(blocks []Block, connections []Connection) (*compiledModel, error) {
+	return compileRequestedModel(blocks, connections, modelCompileRequest{includeSinks: true})
+}
+
+func compileRequestedModel(
+	blocks []Block,
+	connections []Connection,
+	request modelCompileRequest,
+) (*compiledModel, error) {
 	if len(blocks) == 0 {
 		return nil, invalid("add blocks before running the simulation")
 	}
@@ -99,8 +107,11 @@ func compileModel(blocks []Block, connections []Connection) (*compiledModel, err
 	if len(sources) == 0 {
 		return nil, invalid("add at least one source block before simulating")
 	}
-	if len(sinks) == 0 {
+	if request.includeSinks && len(sinks) == 0 {
 		return nil, invalid("add at least one Scope or Spectrum Analyzer before simulating")
+	}
+	if !request.includeSinks && len(request.probes) == 0 {
+		return nil, invalid("select at least one output signal before compiling")
 	}
 
 	for _, connection := range connections {
@@ -232,12 +243,33 @@ func compileModel(blocks []Block, connections []Connection) (*compiledModel, err
 		inputs[i] = signal.Name
 		compiledInputs[i] = compiledInput{signal: signal, source: source}
 	}
-	outputs := make([]string, len(sinks))
-	compiledOutputs := make([]compiledOutput, len(sinks))
-	for i, sink := range sinks {
-		signal := outputSignals[compiledPort{blockID: sink.ID, port: 0}]
+	requestedProbes := make([]modelProbe, 0, len(sinks)+len(request.probes))
+	if request.includeSinks {
+		for _, sink := range sinks {
+			requestedProbes = append(requestedProbes, modelProbe{
+				BlockID: sink.ID, OutputPort: 0,
+			})
+		}
+	}
+	requestedProbes = append(requestedProbes, request.probes...)
+	requestedProbes = uniqueModelProbes(requestedProbes)
+
+	outputs := make([]string, len(requestedProbes))
+	compiledOutputs := make([]compiledOutput, len(requestedProbes))
+	for i, probe := range requestedProbes {
+		block, ok := blockByID[probe.BlockID]
+		if !ok {
+			return nil, invalid("an analysis probe references missing block %d", probe.BlockID)
+		}
+		signal, ok := outputSignals[compiledPort{
+			blockID: probe.BlockID,
+			port:    probe.OutputPort,
+		}]
+		if !ok {
+			return nil, invalid("%s has no output port %d", block.Name, probe.OutputPort)
+		}
 		outputs[i] = signal.Name
-		compiledOutputs[i] = compiledOutput{signal: signal, sink: sink}
+		compiledOutputs[i] = compiledOutput{signal: signal, block: block}
 	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {

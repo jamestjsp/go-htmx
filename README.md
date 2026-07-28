@@ -254,6 +254,13 @@ time-domain metadata, dimensions, and a snapshot of the diagram provenance.
 Simulation and analysis consume that artifact instead of reconstructing
 controlsys channel order or exposing its mutable matrices.
 
+Analysis probes identify a block and output port rather than spelling an
+internal controlsys name. The compiler coalesces duplicates in first-request
+order and exposes those signals while composing the graph; a later subset is
+selected with `controlsys.SelectByName`. Scope and Spectrum Analyzer blocks
+remain simulation consumers, not the authority on which signals analysis may
+inspect.
+
 The linear boundary is deliberate. State-Space is deferred until the editor supports matrices and MIMO ports. Unit Delay and discrete filters require an explicit mixed-sample-time policy. Product, Saturation, Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this compiler does not silently linearize them.
 
 The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.

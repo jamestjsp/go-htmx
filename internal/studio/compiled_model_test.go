@@ -1,8 +1,12 @@
 package studio
 
 import (
+	"math"
 	"reflect"
 	"testing"
+
+	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 func TestCompiledModelOwnsNamedChannelsAndProvenance(t *testing.T) {
@@ -106,6 +110,145 @@ func TestCompiledModelMetadataAndSystemCopiesCannotMutateArtifact(t *testing.T) 
 	freshSystem := model.systemCopy()
 	if freshSystem.InputName[0] != "block_1_source" || freshSystem.A.At(0, 0) == 99 {
 		t.Fatal("controlsys system copy mutated the compiled model")
+	}
+}
+
+func TestCompiledModelProbesBranchedFeedbackInRequestOrder(t *testing.T) {
+	blocks := []Block{
+		{ID: 1, Kind: BlockSource, Name: "Setpoint", Parameters: Parameters{Amplitude: 1}},
+		{ID: 2, Kind: BlockSum, Name: "Error", Parameters: Parameters{Signs: "+-"}},
+		{ID: 3, Kind: BlockPID, Name: "Controller", Parameters: Parameters{
+			Proportional: 2, Integral: 1, Derivative: 0.2, FilterTime: 0.051,
+		}},
+		{ID: 4, Kind: BlockTransfer, Name: "Plant", Parameters: Parameters{
+			Numerator: []float64{1}, Denominator: []float64{1, 1},
+		}},
+		{ID: 5, Kind: BlockGain, Name: "Monitor scale", Parameters: Parameters{Gain: 3}},
+	}
+	connections := []Connection{
+		{ID: 1, SourceID: 1, TargetID: 2, TargetPort: 0},
+		{ID: 2, SourceID: 2, TargetID: 3},
+		{ID: 3, SourceID: 3, TargetID: 4},
+		{ID: 4, SourceID: 4, TargetID: 2, TargetPort: 1},
+		{ID: 5, SourceID: 4, TargetID: 5},
+	}
+	probes := []modelProbe{
+		{BlockID: 3}, {BlockID: 1}, {BlockID: 3},
+		{BlockID: 5}, {BlockID: 4},
+	}
+
+	model, err := compileRequestedModel(blocks, connections, modelCompileRequest{probes: probes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantNames := []string{
+		"block_3_output_0",
+		"block_1_output_0",
+		"block_5_output_0",
+		"block_4_output_0",
+	}
+	if got := model.systemCopy().OutputName; !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("composed output names = %v, want %v", got, wantNames)
+	}
+
+	request := SimulationRequest{Duration: 10, SampleTime: 0.1}
+	response, err := model.response(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(response.OutputName, wantNames) {
+		t.Fatalf("response output names = %v, want %v", response.OutputName, wantNames)
+	}
+
+	controller, err := realizeBlock(blocks[2], []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plant, err := realizeBlock(blocks[3], []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, err := realizeBlock(blocks[4], []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := realizeBlock(Block{
+		ID: 99, Kind: BlockGain, Name: "Identity", Parameters: Parameters{Gain: 1},
+	}, []int{0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	openLoop, err := controlsys.Series(controller, plant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedLoop, err := controlsys.Feedback(openLoop, nil, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errorPath, err := controlsys.Feedback(identity, openLoop, -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPath, err := controlsys.Series(errorPath, controller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorPath, err := controlsys.Series(closedLoop, monitor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	input := mat.NewDense(len(response.T), 1, make([]float64, len(response.T)))
+	for sample := range response.T {
+		input.Set(sample, 0, 1)
+	}
+	controlWant, err := controlsys.Lsim(controlPath, input, response.T, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plantWant, err := controlsys.Lsim(closedLoop, input, response.T, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorWant, err := controlsys.Lsim(monitorPath, input, response.T, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for sample := range response.T {
+		assertClose(t, response.Y.At(0, sample), controlWant.Y.At(0, sample), sample, "controller")
+		assertClose(t, response.Y.At(1, sample), 1, sample, "source")
+		assertClose(t, response.Y.At(2, sample), monitorWant.Y.At(0, sample), sample, "monitor branch")
+		assertClose(t, response.Y.At(3, sample), plantWant.Y.At(0, sample), sample, "plant")
+	}
+
+	selected, err := model.selectOutputs([]modelProbe{
+		{BlockID: 4}, {BlockID: 3}, {BlockID: 4},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedResponse, err := selected.response(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedNames := []string{"block_4_output_0", "block_3_output_0"}
+	if !reflect.DeepEqual(selected.systemCopy().InputName, []string{"block_1_source"}) ||
+		!reflect.DeepEqual(selectedResponse.OutputName, selectedNames) {
+		t.Fatalf("selected metadata = inputs %v, outputs %v",
+			selected.systemCopy().InputName, selectedResponse.OutputName)
+	}
+	for sample := range response.T {
+		assertClose(t, selectedResponse.Y.At(0, sample), response.Y.At(3, sample), sample, "selected plant")
+		assertClose(t, selectedResponse.Y.At(1, sample), response.Y.At(0, sample), sample, "selected controller")
+	}
+}
+
+func assertClose(t *testing.T, got, want float64, sample int, signal string) {
+	t.Helper()
+	if diff := math.Abs(got - want); diff > 1e-10 {
+		t.Fatalf("%s sample %d = %.12g, want %.12g (diff %.3g)",
+			signal, sample, got, want, diff)
 	}
 }
 

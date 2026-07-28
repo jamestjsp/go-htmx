@@ -28,6 +28,16 @@ type compiledPort struct {
 	port    int
 }
 
+type modelProbe struct {
+	BlockID    int64
+	OutputPort int
+}
+
+type modelCompileRequest struct {
+	includeSinks bool
+	probes       []modelProbe
+}
+
 type compiledInput struct {
 	signal compiledSignal
 	source Block
@@ -35,7 +45,7 @@ type compiledInput struct {
 
 type compiledOutput struct {
 	signal compiledSignal
-	sink   Block
+	block  Block
 }
 
 type compiledModelDimensions struct {
@@ -122,7 +132,57 @@ func (m *compiledModel) systemCopy() *controlsys.System {
 	return m.system.Copy()
 }
 
-func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
+func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, error) {
+	if len(probes) == 0 {
+		return nil, invalid("select at least one output signal")
+	}
+	outputByPort := make(map[compiledPort]compiledOutput, len(m.outputs))
+	for _, output := range m.outputs {
+		outputByPort[compiledPort{blockID: output.signal.BlockID, port: output.signal.Port}] = output
+	}
+
+	unique := uniqueModelProbes(probes)
+	outputs := make([]compiledOutput, len(unique))
+	names := make([]string, len(unique))
+	for i, probe := range unique {
+		output, ok := outputByPort[compiledPort{blockID: probe.BlockID, port: probe.OutputPort}]
+		if !ok {
+			return nil, invalid(
+				"block %d output port %d was not exposed during compilation",
+				probe.BlockID, probe.OutputPort,
+			)
+		}
+		outputs[i] = output
+		names[i] = output.signal.Name
+	}
+
+	system, err := m.system.SelectByName(m.system.InputName, names)
+	if err != nil {
+		return nil, fmt.Errorf("select compiled outputs: %w", err)
+	}
+	return &compiledModel{
+		system:     system,
+		inputs:     m.inputs,
+		outputs:    outputs,
+		signals:    m.signals,
+		provenance: m.provenance,
+	}, nil
+}
+
+func uniqueModelProbes(probes []modelProbe) []modelProbe {
+	unique := make([]modelProbe, 0, len(probes))
+	seen := make(map[modelProbe]struct{}, len(probes))
+	for _, probe := range probes {
+		if _, ok := seen[probe]; ok {
+			continue
+		}
+		seen[probe] = struct{}{}
+		unique = append(unique, probe)
+	}
+	return unique
+}
+
+func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeResponse, error) {
 	steps := int(math.Round(request.Duration/request.SampleTime)) + 1
 	times := make([]float64, steps)
 	inputData := make([]float64, steps*len(m.inputs))
@@ -137,26 +197,36 @@ func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("simulate flowsheet: %w", err)
 	}
+	return response, nil
+}
 
+func (m *compiledModel) run(request SimulationRequest) (*Simulation, error) {
+	response, err := m.response(request)
+	if err != nil {
+		return nil, err
+	}
 	run := &Simulation{
 		Duration:   request.Duration,
 		SampleTime: request.SampleTime,
-		Times:      times,
+		Times:      response.T,
 	}
 	for outputIndex, output := range m.outputs {
-		values := make([]float64, steps)
-		for sample := range steps {
+		if !output.block.Kind.isSink() {
+			continue
+		}
+		values := make([]float64, len(response.T))
+		for sample := range response.T {
 			values[sample] = response.Y.At(outputIndex, sample)
 		}
-		if output.sink.Kind.isSpectrumSink() {
-			run.Spectra = append(run.Spectra, spectrumFor(output.sink, values, request.SampleTime))
+		if output.block.Kind.isSpectrumSink() {
+			run.Spectra = append(run.Spectra, spectrumFor(output.block, values, request.SampleTime))
 		} else {
 			run.Series = append(run.Series, Series{
-				BlockID: output.sink.ID,
-				Name:    output.sink.Name,
+				BlockID: output.block.ID,
+				Name:    output.block.Name,
 				Values:  values,
 			})
-			run.Metrics = append(run.Metrics, metricFor(output.sink.Name, times, values))
+			run.Metrics = append(run.Metrics, metricFor(output.block.Name, response.T, values))
 		}
 	}
 	return run, nil
