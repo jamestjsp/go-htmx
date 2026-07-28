@@ -335,6 +335,14 @@ applicability metadata: exact internal delays retain frequency-crossing
 margins but do not claim finite-order bandwidth or root-locus results, and a
 sampled passivity pass is never presented as an analytic certificate.
 
+`Studio.RunAnalysis` is the workbench boundary for those analysis intents. It
+owns the snapshot, named-channel selection, calculation, ephemeral per-flow
+cache, and revision comparison. Dynamics, frequency, and loop results remain
+side by side for comparison; a model edit keeps them visible but marks them
+stale, while a layout-only move leaves their model revision current. The dock
+renders step, pole-zero, Bode, Nyquist, Nichols, singular-value, and root-locus
+views from that shared channel and revision metadata.
+
 The linear boundary is deliberate. Continuous and discrete state-space,
 transfer-function, delay, and named MIMO models stay within controlsys.
 Continuous/discrete mixtures and unresolved multirate execution are refused

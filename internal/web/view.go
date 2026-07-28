@@ -107,6 +107,7 @@ type workbenchView struct {
 	Sheet           sheetGeometry
 	Tabs            []flowTabView
 	Chart           chartView
+	Analysis        analysisView
 	Error           string
 	Updated         string
 	BlockCount      int
@@ -231,6 +232,53 @@ type spectrumView struct {
 	MaxFrequency  string
 }
 
+type analysisView struct {
+	Available bool
+	Inputs    []analysisChannelOptionView
+	Outputs   []analysisChannelOptionView
+	Results   []analysisResultView
+	Stale     bool
+	Revision  string
+}
+
+type analysisChannelOptionView struct {
+	Value    string
+	Name     string
+	Selected bool
+}
+
+type analysisResultView struct {
+	Kind     string
+	Title    string
+	Created  string
+	Revision string
+	Channel  string
+	Stale    bool
+	Metrics  []analysisMetricView
+	Plots    []analysisPlotView
+	Notices  []string
+}
+
+type analysisMetricView struct {
+	Label string
+	Value string
+}
+
+type analysisPlotView struct {
+	Title   string
+	XLabel  string
+	YLabel  string
+	Paths   []chartPath
+	Markers []analysisMarkerView
+}
+
+type analysisMarkerView struct {
+	X     float64
+	Y     float64
+	Label string
+	Kind  string
+}
+
 func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
 	snapshot := workspace.Snapshot
 	view := workbenchView{
@@ -312,7 +360,425 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 		}
 	}
 	view.Chart = newChartView(snapshot.LastRun)
+	view.Analysis = newAnalysisView(workspace.Analysis)
 	return view
+}
+
+func newAnalysisView(workspace studio.AnalysisWorkspace) analysisView {
+	view := analysisView{
+		Available: len(workspace.Inputs) > 0 && len(workspace.Outputs) > 0,
+		Revision:  workspace.ModelUpdatedAt.Local().Format("15:04:05.000"),
+	}
+	for _, channel := range workspace.Inputs {
+		view.Inputs = append(view.Inputs, analysisChannelOptionView{
+			Value:    channelRefValue(channel.ChannelRef),
+			Name:     channel.Name,
+			Selected: channel.ChannelRef == workspace.SelectedInput,
+		})
+	}
+	for _, channel := range workspace.Outputs {
+		view.Outputs = append(view.Outputs, analysisChannelOptionView{
+			Value:    channelRefValue(channel.ChannelRef),
+			Name:     channel.Name,
+			Selected: channel.ChannelRef == workspace.SelectedOutput,
+		})
+	}
+	if workspace.Dynamics != nil {
+		view.Results = append(view.Results, dynamicsResultView(*workspace.Dynamics))
+		view.Stale = view.Stale || workspace.Dynamics.Stale
+	}
+	if workspace.Frequency != nil {
+		view.Results = append(view.Results, frequencyResultView(*workspace.Frequency))
+		view.Stale = view.Stale || workspace.Frequency.Stale
+	}
+	if workspace.Loop != nil {
+		view.Results = append(view.Results, loopResultView(*workspace.Loop))
+		view.Stale = view.Stale || workspace.Loop.Stale
+	}
+	return view
+}
+
+func dynamicsResultView(record studio.DynamicsAnalysisRecord) analysisResultView {
+	result := record.Result
+	view := analysisResultView{
+		Kind:     "dynamics",
+		Title:    "Dynamics & time",
+		Created:  record.CreatedAt.Local().Format("15:04:05"),
+		Revision: result.ModelUpdatedAt.Local().Format("15:04:05.000"),
+		Channel:  result.Input.Name + " → " + result.Output.Name,
+		Stale:    record.Stale,
+	}
+	if result.Stable != nil {
+		value := "unstable"
+		if *result.Stable {
+			value = "stable"
+		}
+		view.Metrics = append(view.Metrics, analysisMetricView{Label: "Stability", Value: value})
+	}
+	if result.DCGain != nil {
+		view.Metrics = append(view.Metrics, analysisMetricView{
+			Label: "DC gain", Value: formatAnalysisNumber(*result.DCGain),
+		})
+	}
+	view.Metrics = append(view.Metrics,
+		analysisMetricView{Label: "Poles", Value: fmt.Sprintf("%d", len(result.Poles))},
+		analysisMetricView{Label: "Zeros", Value: fmt.Sprintf("%d", len(result.Zeros))},
+	)
+	if result.StepExperiment != nil {
+		step := result.StepExperiment
+		view.Plots = append(view.Plots, analysisLinePlot(
+			"Step response", "time (s)", "output",
+			[]analysisSeries{{
+				Name: "step", Color: "#e17845",
+				X: step.Times, Y: step.Values,
+			}},
+			nil,
+		))
+		if step.Metrics.RiseTime != nil {
+			view.Metrics = append(view.Metrics, analysisMetricView{
+				Label: "Rise time", Value: formatAnalysisNumber(*step.Metrics.RiseTime) + " s",
+			})
+		}
+		if step.Metrics.SettlingTime != nil {
+			view.Metrics = append(view.Metrics, analysisMetricView{
+				Label: "Settling", Value: formatAnalysisNumber(*step.Metrics.SettlingTime) + " s",
+			})
+		}
+	}
+	if len(result.Poles) > 0 || len(result.Zeros) > 0 {
+		var markers []analysisPoint
+		for _, pole := range result.Poles {
+			markers = append(markers, analysisPoint{
+				X: pole.Real, Y: pole.Imag, Label: "×", Kind: "pole",
+			})
+		}
+		for _, zero := range result.Zeros {
+			markers = append(markers, analysisPoint{
+				X: zero.Real, Y: zero.Imag, Label: "○", Kind: "zero",
+			})
+		}
+		view.Plots = append(view.Plots, analysisLinePlot(
+			"Pole-zero map", "real", "imaginary", nil, markers,
+		))
+	}
+	for _, issue := range result.Issues {
+		view.Notices = append(view.Notices, issue.Operation+": "+issue.Message)
+	}
+	return view
+}
+
+func frequencyResultView(record studio.FrequencyAnalysisRecord) analysisResultView {
+	result := record.Result
+	view := analysisResultView{
+		Kind:     "frequency",
+		Title:    "Frequency response",
+		Created:  record.CreatedAt.Local().Format("15:04:05"),
+		Revision: result.ModelUpdatedAt.Local().Format("15:04:05.000"),
+		Stale:    record.Stale,
+	}
+	if len(result.Inputs) > 0 && len(result.Outputs) > 0 {
+		view.Channel = result.Inputs[0].Name + " → " + result.Outputs[0].Name
+	}
+	view.Metrics = append(view.Metrics,
+		analysisMetricView{Label: "Grid", Value: fmt.Sprintf("%d points", len(result.Grid.Omega))},
+		analysisMetricView{Label: "Frequency", Value: result.Units.Frequency},
+		analysisMetricView{Label: "Magnitude", Value: result.Units.Magnitude},
+	)
+	if len(result.Bode) > 0 {
+		view.Plots = append(view.Plots, analysisPointerPlot(
+			"Bode magnitude", "log₁₀ ω", "dB",
+			result.Grid.Omega, result.Bode[0].MagnitudeDB, true, "#e17845",
+		))
+	}
+	if result.Nyquist != nil {
+		view.Plots = append(view.Plots, complexSamplePlot(
+			"Nyquist", "real", "imaginary",
+			result.Nyquist.Positive, "#2a8f83",
+		))
+	}
+	if result.Nichols != nil {
+		view.Plots = append(view.Plots, pointerXYPlot(
+			"Nichols", "phase (deg)", "magnitude (dB)",
+			result.Nichols.PhaseDegrees,
+			result.Nichols.MagnitudeDB,
+			"#c9a13b",
+		))
+	}
+	if result.SingularValues != nil {
+		var series []analysisSeries
+		for index, values := range result.SingularValues.Values {
+			series = append(series, analysisSeries{
+				Name:  fmt.Sprintf("σ%d", index+1),
+				Color: chartColors[index%len(chartColors)],
+				X:     transformedFrequencies(result.Grid.Omega),
+				Y:     pointerValues(values),
+			})
+		}
+		view.Plots = append(view.Plots, analysisLinePlot(
+			"Singular values", "log₁₀ ω", "absolute gain", series, nil,
+		))
+	}
+	for _, issue := range result.Issues {
+		view.Notices = append(view.Notices, issue.Operation+": "+issue.Message)
+	}
+	return view
+}
+
+func loopResultView(record studio.LoopAnalysisRecord) analysisResultView {
+	result := record.Result
+	view := analysisResultView{
+		Kind:     "loop",
+		Title:    "Loop robustness",
+		Created:  record.CreatedAt.Local().Format("15:04:05"),
+		Revision: result.ModelUpdatedAt.Local().Format("15:04:05.000"),
+		Channel:  result.Input.Name + " → " + result.Output.Name,
+		Stale:    record.Stale,
+		Metrics: []analysisMetricView{
+			{Label: "Basis", Value: "explicit SISO"},
+			{Label: "Domain", Value: result.Domain},
+		},
+	}
+	if result.Margins != nil {
+		view.Metrics = append(view.Metrics,
+			analysisMetricView{
+				Label: "Gain margin", Value: formatOptionalAnalysisNumber(result.Margins.GainMarginDB, "unbounded", " dB"),
+			},
+			analysisMetricView{
+				Label: "Phase margin", Value: formatOptionalAnalysisNumber(result.Margins.PhaseMarginDegrees, "unbounded", "°"),
+			},
+		)
+	}
+	if result.Bandwidth != nil {
+		value := formatOptionalAnalysisNumber(result.Bandwidth.RadPerSecond, "unbounded", " rad/s")
+		view.Metrics = append(view.Metrics, analysisMetricView{Label: "Bandwidth", Value: value})
+	}
+	if result.DiskMargin != nil {
+		view.Metrics = append(view.Metrics, analysisMetricView{
+			Label: "Peak sensitivity",
+			Value: formatOptionalAnalysisNumber(result.DiskMargin.PeakSensitivity, "undefined", ""),
+		})
+	}
+	if result.Passivity != nil {
+		view.Metrics = append(view.Metrics, analysisMetricView{
+			Label: "Passivity evidence", Value: result.Passivity.Status,
+		})
+	}
+	if result.RootLocus != nil {
+		var series []analysisSeries
+		for index, branch := range result.RootLocus.Branches {
+			x := make([]float64, len(branch))
+			y := make([]float64, len(branch))
+			for sample, value := range branch {
+				x[sample], y[sample] = value.Real, value.Imag
+			}
+			series = append(series, analysisSeries{
+				Name: fmt.Sprintf("branch %d", index+1), Color: chartColors[index%len(chartColors)],
+				X: x, Y: y,
+			})
+		}
+		view.Plots = append(view.Plots, analysisLinePlot(
+			"Root locus", "real", "imaginary", series, nil,
+		))
+	}
+	for _, applicability := range result.Applicability {
+		if applicability.Status != "available" {
+			view.Notices = append(view.Notices,
+				applicability.Operation+": "+applicability.Detail,
+			)
+		}
+	}
+	return view
+}
+
+const analysisPlotWidth = 400.0
+const analysisPlotHeight = 140.0
+
+var chartColors = []string{"#e17845", "#2a8f83", "#c9a13b", "#5277a8"}
+
+type analysisSeries struct {
+	Name  string
+	Color string
+	X     []float64
+	Y     []float64
+}
+
+type analysisPoint struct {
+	X     float64
+	Y     float64
+	Label string
+	Kind  string
+}
+
+func analysisLinePlot(
+	title string,
+	xLabel string,
+	yLabel string,
+	series []analysisSeries,
+	points []analysisPoint,
+) analysisPlotView {
+	plot := analysisPlotView{Title: title, XLabel: xLabel, YLabel: yLabel}
+	minX, maxX, minY, maxY, ok := analysisBounds(series, points)
+	if !ok {
+		return plot
+	}
+	for _, values := range series {
+		var path strings.Builder
+		started := false
+		for i := 0; i < len(values.X) && i < len(values.Y); i++ {
+			x, y := values.X[i], values.Y[i]
+			if !finiteViewNumber(x) || !finiteViewNumber(y) {
+				started = false
+				continue
+			}
+			command := "L"
+			if !started {
+				command = "M"
+				started = true
+			}
+			fmt.Fprintf(&path, "%s %.2f %.2f ", command,
+				scaleAnalysis(x, minX, maxX, 18, analysisPlotWidth-10),
+				scaleAnalysis(y, minY, maxY, analysisPlotHeight-16, 10),
+			)
+		}
+		if path.Len() > 0 {
+			plot.Paths = append(plot.Paths, chartPath{
+				Name: values.Name, D: strings.TrimSpace(path.String()), Color: values.Color,
+			})
+		}
+	}
+	for _, point := range points {
+		plot.Markers = append(plot.Markers, analysisMarkerView{
+			X:     scaleAnalysis(point.X, minX, maxX, 18, analysisPlotWidth-10),
+			Y:     scaleAnalysis(point.Y, minY, maxY, analysisPlotHeight-16, 10),
+			Label: point.Label,
+			Kind:  point.Kind,
+		})
+	}
+	return plot
+}
+
+func analysisBounds(
+	series []analysisSeries,
+	points []analysisPoint,
+) (float64, float64, float64, float64, bool) {
+	minX, maxX := math.Inf(1), math.Inf(-1)
+	minY, maxY := math.Inf(1), math.Inf(-1)
+	add := func(x, y float64) {
+		if !finiteViewNumber(x) || !finiteViewNumber(y) {
+			return
+		}
+		minX, maxX = math.Min(minX, x), math.Max(maxX, x)
+		minY, maxY = math.Min(minY, y), math.Max(maxY, y)
+	}
+	for _, values := range series {
+		for i := 0; i < len(values.X) && i < len(values.Y); i++ {
+			add(values.X[i], values.Y[i])
+		}
+	}
+	for _, point := range points {
+		add(point.X, point.Y)
+	}
+	if math.IsInf(minX, 1) {
+		return 0, 0, 0, 0, false
+	}
+	minX, maxX = paddedAnalysisRange(minX, maxX)
+	minY, maxY = paddedAnalysisRange(minY, maxY)
+	return minX, maxX, minY, maxY, true
+}
+
+func paddedAnalysisRange(minimum, maximum float64) (float64, float64) {
+	if minimum == maximum {
+		padding := math.Max(math.Abs(minimum)*0.1, 1)
+		return minimum - padding, maximum + padding
+	}
+	padding := (maximum - minimum) * 0.05
+	return minimum - padding, maximum + padding
+}
+
+func scaleAnalysis(value, minimum, maximum, low, high float64) float64 {
+	return low + (value-minimum)*(high-low)/(maximum-minimum)
+}
+
+func analysisPointerPlot(
+	title, xLabel, yLabel string,
+	x []float64,
+	y []*float64,
+	logX bool,
+	color string,
+) analysisPlotView {
+	values := pointerValues(y)
+	if logX {
+		x = transformedFrequencies(x)
+	}
+	return analysisLinePlot(title, xLabel, yLabel, []analysisSeries{{
+		Name: title, Color: color, X: x, Y: values,
+	}}, nil)
+}
+
+func pointerXYPlot(
+	title, xLabel, yLabel string,
+	x, y []*float64,
+	color string,
+) analysisPlotView {
+	return analysisLinePlot(title, xLabel, yLabel, []analysisSeries{{
+		Name: title, Color: color, X: pointerValues(x), Y: pointerValues(y),
+	}}, nil)
+}
+
+func complexSamplePlot(
+	title, xLabel, yLabel string,
+	values []studio.ComplexSample,
+	color string,
+) analysisPlotView {
+	x := make([]float64, len(values))
+	y := make([]float64, len(values))
+	for i, value := range values {
+		x[i], y[i] = math.NaN(), math.NaN()
+		if value.Real != nil && value.Imag != nil {
+			x[i], y[i] = *value.Real, *value.Imag
+		}
+	}
+	return analysisLinePlot(title, xLabel, yLabel, []analysisSeries{{
+		Name: title, Color: color, X: x, Y: y,
+	}}, nil)
+}
+
+func pointerValues(values []*float64) []float64 {
+	result := make([]float64, len(values))
+	for i, value := range values {
+		result[i] = math.NaN()
+		if value != nil {
+			result[i] = *value
+		}
+	}
+	return result
+}
+
+func transformedFrequencies(values []float64) []float64 {
+	result := make([]float64, len(values))
+	for i, value := range values {
+		result[i] = math.Log10(value)
+	}
+	return result
+}
+
+func finiteViewNumber(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func channelRefValue(ref studio.ChannelRef) string {
+	return fmt.Sprintf("%d:%d:%d", ref.BlockID, ref.Port, ref.Channel)
+}
+
+func formatAnalysisNumber(value float64) string {
+	return fmt.Sprintf("%.4g", value)
+}
+
+func formatOptionalAnalysisNumber(value *float64, fallback, suffix string) string {
+	if value == nil {
+		return fallback
+	}
+	return formatAnalysisNumber(*value) + suffix
 }
 
 func blockByID(blocks []studio.Block, id int64) studio.Block {

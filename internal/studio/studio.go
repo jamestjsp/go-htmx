@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Studio struct {
-	db  *sql.DB
-	now func() time.Time
+	db         *sql.DB
+	now        func() time.Time
+	analysisMu sync.RWMutex
+	analyses   map[int64]analysisCache
 }
 
 func (s *Studio) Current(ctx context.Context) (Snapshot, error) {

@@ -1779,6 +1779,318 @@ body.is-resizing-dock .studio-grid {
   font-weight: 600;
 }
 
+/* --------------------------------- Control analysis -----------
+   The analysis workspace shares the simulation dock's lit surface but
+   carries its own revision plate. Results are cached by the Studio and
+   remain visible after a model edit with an explicit stale treatment. */
+.analysis-workspace {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-top: 1px solid var(--sheet-line);
+  background:
+    linear-gradient(180deg, rgb(42 143 131 / 4%), transparent 120px),
+    var(--sheet);
+}
+
+.analysis-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.analysis-header .eyebrow {
+  color: var(--probe-deep);
+}
+
+.analysis-header h2 {
+  margin: 2px 0 0;
+  font-size: var(--fs-400);
+  font-weight: 650;
+}
+
+.analysis-header p {
+  margin: 2px 0 0;
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+}
+
+.analysis-stale {
+  flex: none;
+  padding: 6px 9px;
+  border: 1px solid #c9902a;
+  border-radius: var(--radius-sm);
+  color: #66460b;
+  background: #fff5d9;
+  font-size: var(--fs-100);
+  font-weight: 700;
+}
+
+.analysis-form {
+  display: grid;
+  grid-template-columns:
+    minmax(130px, .75fr)
+    minmax(190px, 1.35fr)
+    minmax(190px, 1.35fr)
+    minmax(86px, .55fr)
+    minmax(86px, .55fr)
+    minmax(96px, .6fr)
+    auto;
+  align-items: end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--sheet-line);
+  border-radius: var(--radius);
+  background: var(--sheet-card);
+}
+
+.analysis-form label {
+  min-width: 0;
+  color: var(--ink-muted);
+  font-size: var(--fs-100);
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.analysis-form label > span {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.analysis-form input,
+.analysis-form select {
+  width: 100%;
+  height: 32px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid var(--sheet-line);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  background: #fff;
+  font-family: var(--font-mono);
+  font-size: var(--fs-100);
+}
+
+.analysis-form select {
+  font-family: var(--font-ui);
+}
+
+.analysis-run-button {
+  white-space: nowrap;
+}
+
+.analysis-empty {
+  padding: 13px 14px;
+  border: 1px dashed var(--sheet-line);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+  background: rgb(255 255 255 / 45%);
+}
+
+.analysis-empty strong {
+  color: var(--ink);
+  font-size: var(--fs-200);
+}
+
+.analysis-empty p {
+  margin: 3px 0 0;
+  font-size: var(--fs-100);
+  line-height: 1.45;
+}
+
+.analysis-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 390px), 1fr));
+  gap: 10px;
+}
+
+.analysis-result {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--sheet-line);
+  border-radius: var(--radius);
+  background: var(--sheet-card);
+}
+
+.analysis-result.is-stale {
+  border-color: #c9902a;
+  background:
+    linear-gradient(135deg, rgb(201 144 42 / 7%) 0 12px, transparent 12px 24px),
+    var(--sheet-card);
+  background-size: 24px 24px;
+}
+
+.analysis-result-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 11px;
+  border-bottom: 1px solid var(--sheet-line-soft);
+  background: rgb(245 248 247 / 92%);
+}
+
+.analysis-kind {
+  color: var(--probe-deep);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.analysis-result-head h3 {
+  margin: 2px 0 0;
+  font-size: var(--fs-300);
+  font-weight: 650;
+}
+
+.analysis-result-head p {
+  max-width: 340px;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: var(--fs-100);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-revision {
+  flex: none;
+  display: grid;
+  justify-items: end;
+  align-content: start;
+  gap: 1px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.analysis-revision b {
+  color: var(--probe-deep);
+  letter-spacing: .08em;
+}
+
+.is-stale .analysis-revision b {
+  color: #8a5d0c;
+}
+
+.analysis-revision span,
+.analysis-revision small {
+  color: var(--ink-muted);
+}
+
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  margin: 0;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--sheet-line-soft);
+}
+
+.analysis-metrics div {
+  min-width: 0;
+  padding: 4px 8px 4px 0;
+}
+
+.analysis-metrics dt {
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.analysis-metrics dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-200);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analysis-plots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.analysis-plot {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--sheet-line-soft);
+  border-radius: var(--radius-sm);
+  background: #fbfcfc;
+}
+
+.analysis-plot figcaption {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--sheet-line-soft);
+  font-size: 10px;
+}
+
+.analysis-plot figcaption strong {
+  color: var(--ink);
+}
+
+.analysis-plot figcaption span {
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+}
+
+.analysis-plot svg {
+  width: 100%;
+  min-width: 230px;
+  display: block;
+}
+
+.analysis-axis {
+  stroke: #cfd8d5;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.analysis-path {
+  stroke-width: 1.8;
+  vector-effect: non-scaling-stroke;
+}
+
+.analysis-marker {
+  fill: var(--probe-deep);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.analysis-marker-pole {
+  fill: #bd5b3d;
+}
+
+.analysis-notices {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 8px 11px 10px 26px;
+  border-top: 1px solid var(--sheet-line-soft);
+  color: var(--ink-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .solver-badge {
   display: grid;
   align-content: start;
@@ -2795,6 +3107,14 @@ body.is-resizing-dock .studio-grid {
   .metric-panel {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .analysis-form {
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
+  }
+
+  .analysis-channel-field {
+    grid-column: span 1;
+  }
 }
 
 @media (max-width: 1120px) {
@@ -2932,6 +3252,10 @@ body.is-resizing-dock .studio-grid {
     overflow: visible;
   }
 
+  .analysis-results {
+    grid-template-columns: 1fr;
+  }
+
   .inspector-panel {
     order: 1;
     display: block;
@@ -3008,6 +3332,22 @@ body.is-resizing-dock .studio-grid {
 
   .run-button {
     margin-left: auto;
+  }
+
+  .analysis-header {
+    display: grid;
+  }
+
+  .analysis-stale {
+    width: fit-content;
+  }
+
+  .analysis-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .analysis-channel-field {
+    grid-column: 1 / -1;
   }
 
   .metric-panel {

@@ -682,6 +682,75 @@ func TestConnectionErrorRendersInline(t *testing.T) {
 	}
 }
 
+func TestAnalysisWorkspaceRetainsResultsAndMarksModelEditsStale(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findKindBlock(t, snapshot.Blocks, "source")
+	plant := findKindBlock(t, snapshot.Blocks, "lag")
+	channel := func(block studio.Block) string {
+		return fmt.Sprintf("%d:0:0", block.ID)
+	}
+	values := url.Values{
+		"analysis_intent":    {"dynamics"},
+		"analysis_input":     {channel(source)},
+		"analysis_output":    {channel(plant)},
+		"analysis_horizon":   {"8"},
+		"analysis_points":    {"40"},
+		"analysis_base_step": {"0.1"},
+	}
+	response := request(t, server, http.MethodPost, "/flows/1/analyses", values)
+	if response.Code != http.StatusOK {
+		t.Fatalf("dynamics status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"Control analysis", "Dynamics &amp; time", "Step response",
+		"Pole-zero map", "CURRENT",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("dynamics workspace does not contain %q", expected)
+		}
+	}
+
+	values.Set("analysis_intent", "frequency")
+	response = request(t, server, http.MethodPost, "/flows/1/analyses", values)
+	if response.Code != http.StatusOK {
+		t.Fatalf("frequency status = %d, body = %s", response.Code, response.Body.String())
+	}
+	for _, expected := range []string{
+		"Dynamics &amp; time", "Frequency response", "Bode magnitude",
+		"Nyquist", "Nichols", "Singular values",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("retained workspace does not contain %q", expected)
+		}
+	}
+
+	_, err = service.UpdateBlock(ctx, plant.ID, studio.BlockUpdate{
+		Name: plant.Name,
+		Parameters: map[string]string{
+			"time_constant": "9",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = request(t, server, http.MethodGet, "/projects/1/flows/1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("edited workspace status = %d", response.Code)
+	}
+	for _, expected := range []string{
+		"Model changed · prior analysis is stale", "STALE",
+	} {
+		if !strings.Contains(response.Body.String(), expected) {
+			t.Errorf("stale workspace does not contain %q", expected)
+		}
+	}
+}
+
 // The connect form's port fields are optional: a client written before ports
 // omits them and keeps wiring each block's first terminal, and one that sends
 // them is taken at its word. A field that is present but unreadable is a

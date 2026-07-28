@@ -273,6 +273,7 @@ type Workspace struct {
 	Project  Project
 	Flows    []Flow
 	Snapshot Snapshot
+	Analysis AnalysisWorkspace
 }
 
 type BlockUpdate struct {
