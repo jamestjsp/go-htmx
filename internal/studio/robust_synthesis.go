@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -383,8 +384,8 @@ func validateRobustClosedLoop(
 			outputs, inputs, len(regulated), len(exogenous),
 		)
 	}
-	if !equalStrings(closedLoop.InputName, exogenous) ||
-		!equalStrings(closedLoop.OutputName, regulated) {
+	if !slices.Equal(closedLoop.InputName, exogenous) ||
+		!slices.Equal(closedLoop.OutputName, regulated) {
 		return invalid(
 			"generalized closed loop did not preserve named exogenous and regulated channels",
 		)
