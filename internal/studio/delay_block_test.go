@@ -67,8 +67,8 @@ func TestStoredDelayWithoutModeMigratesToPade(t *testing.T) {
 func TestTransportDelayEditorOffersExplicitRepresentations(t *testing.T) {
 	block := Block{Kind: BlockDelay, Parameters: defaultParameters(BlockDelay)}
 	fields := block.EditorFields()
-	if len(fields) != 4 {
-		t.Fatalf("delay fields = %d, want 4", len(fields))
+	if len(fields) != 5 {
+		t.Fatalf("delay fields = %d, want 5", len(fields))
 	}
 	mode := fields[1]
 	if mode.Name != "delay_mode" || len(mode.Options) != 3 {
@@ -240,7 +240,7 @@ func TestThiranTransportDelayRunsAsDiscreteFlowsheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	domain := model.timeDomain()
-	if domain.Domain != compiledDiscrete || math.Abs(domain.SampleTime-0.1) > 1e-12 {
+	if domain.Domain != timeDomainDiscrete || math.Abs(domain.SampleTime-0.1) > 1e-12 {
 		t.Fatalf("compiled domain = %#v, want discrete at 0.1 s", domain)
 	}
 	run, err := model.run(SimulationRequest{Duration: 2, SampleTime: 0.1})

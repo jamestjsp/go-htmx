@@ -524,11 +524,11 @@ step closure. That makes the policy short.
 already user-visible, and is already bounded (0.01 to 2 seconds, at most
 5,000 samples).
 
-**A discrete block declares its own sample time as a parameter**, defaulting
-to `0` meaning "inherit the base rate". `0` rather than Simulink's `-1`
-because it matches this codebase's `omitempty` `Parameters` and reads as
-unset. The UI question is exactly one new numeric field, "Sample time", with
-`0 = inherit` in its help text — no new editor machinery.
+**A discrete block declares one sample-time source and one value.** The source
+is either `explicit` or `inherited`; inherited resolves to the simulation base
+step, while explicit requires a positive finite number. The inspector exposes
+that distinction directly instead of overloading numeric zero. Stored blocks
+without the source field retain the historical explicit meaning.
 
 **A declared sample time must be a positive integer multiple of the base
 step.** Compute `Ts / baseStep`, round it, and refuse if the rounding moved it
@@ -554,6 +554,14 @@ system at the base rate — it is periodically time-varying. That is the
 concrete reason the rate transition lives in a step closure rather than a
 `controlsys.System`, and it is why `D2D` is listed above as available but
 unused: resampling a block to the base rate would change the block.
+
+The catalog now owns this domain declaration and the compiler resolves
+inherited rates before realizing a block. Equal rates can share one named
+controlsys composition. Integer-related rates produce an `updateEvery = N`
+schedule with zero-order hold semantics; execution of that schedule belongs
+to the segmented driver. Noninteger rates report both configured values and
+the adjacent legal multiples. Continuous and discrete dynamic systems require
+an explicit sampled-data boundary rather than an inferred conversion.
 
 Sample-time *offset* (a block that updates on `k mod N == 1`) is out of scope
 for the first cut. Say so in the field's help text rather than accepting a

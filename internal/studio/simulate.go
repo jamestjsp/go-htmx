@@ -66,7 +66,10 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 }
 
 func simulate(blocks []Block, connections []Connection, request SimulationRequest) (*Simulation, error) {
-	model, err := compileModel(blocks, connections)
+	model, err := compileRequestedModel(blocks, connections, modelCompileRequest{
+		includeSinks: true,
+		baseStep:     request.SampleTime,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -87,6 +90,7 @@ func compileRequestedModel(
 	}
 
 	blockByID := make(map[int64]Block, len(blocks))
+	originalBlockByID := make(map[int64]Block, len(blocks))
 	incoming := make(map[int64][]Connection, len(blocks))
 	var sources, sinks []Block
 	for _, block := range blocks {
@@ -96,11 +100,18 @@ func compileRequestedModel(
 		if !block.Kind.Valid() {
 			return nil, invalid("%s has an unknown block type", block.Name)
 		}
+		original := block
+		original.Parameters = cloneParameters(block.Parameters)
+		block, err := resolveBlockForCompilation(block, request.baseStep)
+		if err != nil {
+			return nil, invalid("%s: %s", original.Name, err)
+		}
 		if err := validateParameters(block.Kind, block.Parameters); err != nil {
 			return nil, invalid("%s: %s", block.Name, err)
 		}
 		block.Parameters = cloneParameters(block.Parameters)
 		blockByID[block.ID] = block
+		originalBlockByID[block.ID] = original
 		switch {
 		case block.Kind.isSource():
 			sources = append(sources, block)
@@ -215,7 +226,9 @@ func compileRequestedModel(
 			signals = append(signals, signal)
 		}
 	}
-	alignNeutralSystemsToDiscreteDomain(systems)
+	if err := applyCompiledTimeDomains(orderedBlocks, systems, request.baseStep); err != nil {
+		return nil, err
+	}
 
 	namedConnections := make([]controlsys.Connection, 0, len(connections))
 	for _, connection := range connections {
@@ -246,7 +259,7 @@ func compileRequestedModel(
 	for i, source := range sources {
 		signal := sourceSignals[source.ID]
 		inputs[i] = signal.Name
-		compiledInputs[i] = compiledInput{signal: signal, source: source}
+		compiledInputs[i] = compiledInput{signal: signal, source: originalBlockByID[source.ID]}
 	}
 	requestedProbes := make([]modelProbe, 0, len(sinks)+len(request.probes))
 	if request.includeSinks {
@@ -274,7 +287,7 @@ func compileRequestedModel(
 			return nil, invalid("%s has no output port %d", block.Name, probe.OutputPort)
 		}
 		outputs[i] = signal.Name
-		compiledOutputs[i] = compiledOutput{signal: signal, block: block}
+		compiledOutputs[i] = compiledOutput{signal: signal, block: originalBlockByID[block.ID]}
 	}
 
 	staticDelays, err := prepareStaticExactDelays(
@@ -320,41 +333,111 @@ func compileRequestedModel(
 		}
 		return left.TargetPort < right.TargetPort
 	})
+	provenanceBlocks := make([]Block, len(orderedBlocks))
+	for i, block := range orderedBlocks {
+		provenanceBlocks[i] = originalBlockByID[block.ID]
+	}
 	return &compiledModel{
 		system:  system,
 		inputs:  compiledInputs,
 		outputs: compiledOutputs,
 		signals: signals,
 		provenance: compiledModelProvenance{
-			Blocks:      orderedBlocks,
+			Blocks:      provenanceBlocks,
 			Connections: provenanceConnections,
 		},
 	}, nil
 }
 
-func alignNeutralSystemsToDiscreteDomain(systems []*controlsys.System) {
-	var sampleTime float64
-	for _, system := range systems {
-		if !system.IsDiscrete() {
+func resolveBlockForCompilation(block Block, baseStep float64) (Block, error) {
+	domain := blockDefinitions[block.Kind].domain(block.Parameters)
+	if domain.kind != timeDomainDiscrete {
+		return block, nil
+	}
+	sampleTime, err := domain.sampleTime.resolve(baseStep)
+	if err != nil {
+		return Block{}, err
+	}
+	block.Parameters.SampleTime = sampleTime
+	block.Parameters.SampleTimeMode = string(sampleTimeExplicit)
+	return block, nil
+}
+
+func applyCompiledTimeDomains(blocks []Block, systems []*controlsys.System, baseStep float64) error {
+	var (
+		hasContinuous bool
+		sampleTimes   []float64
+		discreteNames []string
+	)
+	for i, block := range blocks {
+		domain := blockDefinitions[block.Kind].domain(block.Parameters)
+		switch domain.kind {
+		case timeDomainContinuous:
+			hasContinuous = true
+		case timeDomainDiscrete:
+			sampleTime, err := domain.sampleTime.resolve(0)
+			if err != nil {
+				return invalid("%s: %s", block.Name, err)
+			}
+			if !systems[i].IsDiscrete() || math.Abs(systems[i].Dt-sampleTime) > 1e-9 {
+				return fmt.Errorf(
+					"%s realization sample time %.12g does not match its catalog sample time %.12g",
+					block.Name, systems[i].Dt, sampleTime,
+				)
+			}
+			sampleTimes = append(sampleTimes, sampleTime)
+			discreteNames = append(discreteNames, block.Name)
+		}
+	}
+	if len(sampleTimes) == 0 {
+		return nil
+	}
+	if hasContinuous {
+		return invalid(
+			"flowsheet mixes continuous dynamics with discrete dynamics; add an explicit sampled-data boundary",
+		)
+	}
+
+	if baseStep > 0 {
+		for i, blockSampleTime := range sampleTimes {
+			schedule, err := scheduleSampleTime(blockSampleTime, baseStep)
+			if err != nil {
+				return invalid("%s: %s", discreteNames[i], err)
+			}
+			if schedule.updateEvery > 1 {
+				return invalid(
+					"%s sample time %.12g s updates every %d run samples and requires segmented zero-order-hold execution",
+					discreteNames[i], blockSampleTime, schedule.updateEvery,
+				)
+			}
+		}
+	}
+
+	sampleTime := sampleTimes[0]
+	for _, other := range sampleTimes[1:] {
+		compatibility := compareSampleTimes(sampleTime, other)
+		switch compatibility.relation {
+		case sampleTimesEqual:
 			continue
-		}
-		if sampleTime == 0 {
-			sampleTime = system.Dt
-			continue
-		}
-		if math.Abs(system.Dt-sampleTime) > 1e-12 {
-			return
-		}
-	}
-	if sampleTime == 0 {
-		return
-	}
-	for _, system := range systems {
-		states, _, _ := system.Dims()
-		if states == 0 && !system.HasDelay() {
-			system.Dt = sampleTime
+		case sampleTimesIntegerMultiple:
+			return invalid(
+				"discrete sample times %.12g s and %.12g s have integer ratio %d and require segmented zero-order-hold execution",
+				compatibility.fast, compatibility.slow, compatibility.ratio,
+			)
+		default:
+			return invalid(
+				"discrete sample times %.12g s and %.12g s are not integer multiples",
+				compatibility.fast, compatibility.slow,
+			)
 		}
 	}
+
+	for i, block := range blocks {
+		if blockDefinitions[block.Kind].domain(block.Parameters).kind == timeDomainNeutral {
+			systems[i].Dt = sampleTime
+		}
+	}
+	return nil
 }
 
 func prepareStaticExactDelays(

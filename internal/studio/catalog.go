@@ -95,7 +95,14 @@ type parameterOption struct {
 // Fields without a bound (text, coefficients, Padé order) have nothing to
 // check here — their rules live in the block's validate hook.
 func (field parameterDefinition) validateBound(parameters Parameters) error {
-	if field.bound == nil || field.active != nil && !field.active(parameters) {
+	if field.bound == nil {
+		return nil
+	}
+	value := field.bound.value(parameters)
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return invalid("%s must be finite", field.bound.label)
+	}
+	if field.active != nil && !field.active(parameters) {
 		return nil
 	}
 	return bounded(field.bound.label, field.bound.value(parameters), field.bound.min, field.bound.max)
@@ -146,6 +153,10 @@ type blockDefinition struct {
 	// gain, and realizeSystem supplies that default rather than each of the
 	// five repeating it.
 	realize func(Block, []int) (*controlsys.System, error)
+	// timeDomain is the catalog's declaration of a block's domain contract.
+	// nil means domain-neutral: the compiler may place the block in a
+	// continuous system or retime its static gain to one discrete rate.
+	timeDomain func(Parameters) blockTimeDomain
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
 	waveform func(Parameters, float64) float64
@@ -191,6 +202,13 @@ func (d blockDefinition) realizeSystem(block Block, ports []int) (*controlsys.Sy
 		return d.realize(block, ports)
 	}
 	return controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
+}
+
+func (d blockDefinition) domain(parameters Parameters) blockTimeDomain {
+	if d.timeDomain == nil {
+		return neutralTimeDomain()
+	}
+	return d.timeDomain(parameters)
 }
 
 // isSource and isSink read a block's structural role, replacing the two
@@ -494,6 +512,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				0,
 			)
 		},
+		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("τ = %.3g s", parameters.TimeConstant)
 		},
@@ -512,7 +531,8 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				0,
 			)
 		},
-		summary: func(Parameters) string { return "1 / s" },
+		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
+		summary:    func(Parameters) string { return "1 / s" },
 	},
 	BlockTransfer: {
 		BlockDefinition: BlockDefinition{
@@ -534,6 +554,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			}
 			return result.Sys, nil
 		},
+		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
 		validate: func(parameters Parameters) error {
 			if len(parameters.Numerator) == 0 || len(parameters.Denominator) == 0 {
 				return invalid("transfer function coefficients are required")
@@ -573,6 +594,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				controlsys.WithFilter(block.Parameters.FilterTime),
 			).System()
 		},
+		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
 		summary: func(parameters Parameters) string {
 			return fmt.Sprintf("P %.3g · I %.3g · D %.3g",
 				parameters.Proportional, parameters.Integral, parameters.Derivative)
@@ -584,7 +606,8 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Exact delay with explicit Padé and Thiran approximations", Glyph: "e⁻ˢ", Tag: "DELAY",
 		},
 		Defaults: Parameters{
-			Delay: 1, DelayMode: delayModeExact, Approximation: 3, SampleTime: 0.1,
+			Delay: 1, DelayMode: delayModeExact, Approximation: 3,
+			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
 		},
 		Parameters: []parameterDefinition{
 			numberField("delay", "Delay", "delay", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.Delay }),
@@ -616,12 +639,28 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				text: func(parameters Parameters) string { return strconv.Itoa(parameters.Approximation) },
 				Help: "Used only by Padé and Thiran representations.",
 			},
+			{
+				Name: "sample_time_mode", Label: "Sample time source", Type: "select",
+				Options: []parameterOption{
+					{Value: string(sampleTimeExplicit), Label: "Explicit"},
+					{Value: string(sampleTimeInherited), Label: "Inherit run sample time"},
+				},
+				set: func(parameters *Parameters, raw string) error {
+					parameters.SampleTimeMode = strings.ToLower(strings.TrimSpace(raw))
+					return nil
+				},
+				text: func(parameters Parameters) string {
+					return string(normalizedSampleTimeMode(parameters))
+				},
+				Help: "Used by the discrete Thiran representation.",
+			},
 			conditionalNumberField(
 				"sample_time", "Approximation sample time", "sample time",
 				"0.01", 0.001, 10, "sec",
 				func(p *Parameters) *float64 { return &p.SampleTime },
 				func(parameters Parameters) bool {
-					return normalizedDelayMode(parameters) == delayModeThiran
+					return normalizedDelayMode(parameters) == delayModeThiran &&
+						normalizedSampleTimeMode(parameters) == sampleTimeExplicit
 				},
 			),
 		},
@@ -639,6 +678,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			case delayModePade:
 				return controlsys.PadeDelay(block.Parameters.Delay, block.Parameters.Approximation)
 			case delayModeThiran:
+				if normalizedSampleTimeMode(block.Parameters) == sampleTimeInherited {
+					return nil, invalid("inherited Thiran sample time must be resolved from the run sample time")
+				}
 				return controlsys.ThiranDelay(
 					block.Parameters.Delay,
 					block.Parameters.Approximation,
@@ -648,10 +690,20 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				return nil, invalid("delay representation must be exact, Padé, or Thiran")
 			}
 		},
+		timeDomain: func(parameters Parameters) blockTimeDomain {
+			if normalizedDelayMode(parameters) == delayModeThiran {
+				return discreteTimeDomain(parameters)
+			}
+			return continuousTimeDomain()
+		},
 		validate: func(parameters Parameters) error {
 			mode := normalizedDelayMode(parameters)
 			if mode != delayModeExact && mode != delayModePade && mode != delayModeThiran {
 				return invalid("delay representation must be exact, Padé, or Thiran")
+			}
+			sampleMode := normalizedSampleTimeMode(parameters)
+			if sampleMode != sampleTimeExplicit && sampleMode != sampleTimeInherited {
+				return invalid("sample time mode must be explicit or inherited")
 			}
 			if mode == delayModeExact {
 				return nil
@@ -660,13 +712,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				return invalid("approximation order must be between %d and %d", minApproximation, maxApproximation)
 			}
 			if mode == delayModeThiran {
-				samples := parameters.Delay / parameters.SampleTime
-				minimum := float64(parameters.Approximation) - 0.5
-				if samples < minimum {
-					return invalid(
-						"Thiran delay must be at least %.1f samples for order %d; increase delay, reduce order, or reduce sample time",
-						minimum, parameters.Approximation,
-					)
+				if sampleMode == sampleTimeExplicit {
+					samples := parameters.Delay / parameters.SampleTime
+					minimum := float64(parameters.Approximation) - 0.5
+					if samples < minimum {
+						return invalid(
+							"Thiran delay must be at least %.1f samples for order %d; increase delay, reduce order, or reduce sample time",
+							minimum, parameters.Approximation,
+						)
+					}
 				}
 			}
 			return nil
@@ -676,6 +730,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			case delayModeExact:
 				return fmt.Sprintf("%.3g s · exact", parameters.Delay)
 			case delayModeThiran:
+				if normalizedSampleTimeMode(parameters) == sampleTimeInherited {
+					return fmt.Sprintf("%.3g s · Thiran %d @ run step", parameters.Delay, parameters.Approximation)
+				}
 				return fmt.Sprintf("%.3g s · Thiran %d @ %.3g s", parameters.Delay, parameters.Approximation, parameters.SampleTime)
 			default:
 				return fmt.Sprintf("%.3g s · Padé %d", parameters.Delay, parameters.Approximation)

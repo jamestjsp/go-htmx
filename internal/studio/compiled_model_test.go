@@ -34,7 +34,7 @@ func TestCompiledModelOwnsNamedChannelsAndProvenance(t *testing.T) {
 	if got, want := model.dimensions(), (compiledModelDimensions{States: 1, Inputs: 2, Outputs: 2}); got != want {
 		t.Fatalf("dimensions = %+v, want %+v", got, want)
 	}
-	if got, want := model.timeDomain(), (compiledModelTimeDomain{Domain: compiledContinuous}); got != want {
+	if got, want := model.timeDomain(), (compiledModelTimeDomain{Domain: timeDomainContinuous}); got != want {
 		t.Fatalf("time domain = %+v, want %+v", got, want)
 	}
 

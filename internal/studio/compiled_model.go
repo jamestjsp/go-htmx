@@ -36,6 +36,7 @@ type modelProbe struct {
 type modelCompileRequest struct {
 	includeSinks bool
 	probes       []modelProbe
+	baseStep     float64
 }
 
 type compiledInput struct {
@@ -54,15 +55,8 @@ type compiledModelDimensions struct {
 	Outputs int
 }
 
-type compiledModelDomain uint8
-
-const (
-	compiledContinuous compiledModelDomain = iota
-	compiledDiscrete
-)
-
 type compiledModelTimeDomain struct {
-	Domain     compiledModelDomain
+	Domain     timeDomainKind
 	SampleTime float64
 }
 
@@ -89,9 +83,9 @@ func (m *compiledModel) dimensions() compiledModelDimensions {
 }
 
 func (m *compiledModel) timeDomain() compiledModelTimeDomain {
-	domain := compiledContinuous
+	domain := timeDomainContinuous
 	if m.system.IsDiscrete() {
-		domain = compiledDiscrete
+		domain = timeDomainDiscrete
 	}
 	return compiledModelTimeDomain{Domain: domain, SampleTime: m.system.Dt}
 }
