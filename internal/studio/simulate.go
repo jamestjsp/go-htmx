@@ -269,6 +269,16 @@ func wiredInputPorts(block Block, inputs []Connection) ([]int, error) {
 		ports[i] = connection.TargetPort
 	}
 	sort.Ints(ports)
+	// A negative index is not a terminal on any block, and it is the one bad
+	// port that cannot be compiled into something harmless: Sum reads its sign
+	// at that index, so the wire would panic mid-request instead of being
+	// refused. Connect turns such a wire away, but the column carries no CHECK
+	// to stop one being stored and copying a flowsheet reproduces it verbatim
+	// — the same reach as the duplicate below, and it gets the same wording
+	// Connect uses so a bad port reads the same whenever it surfaces.
+	if len(ports) > 0 && ports[0] < 0 {
+		return nil, invalid("%s has no input port %d", block.Name, ports[0])
+	}
 	for i := 1; i < len(ports); i++ {
 		// One terminal, one signal. Connect refuses a second wire onto an
 		// occupied port, but the schema cannot, so a model written by an older

@@ -122,13 +122,15 @@ type blockDefinition struct {
 	// the same signals.
 	declareWiredPorts func(Parameters, int) (Parameters, bool)
 	// realize builds the block's controlsys realization from its own
-	// parameters and the input ports its wires land on, in ascending order.
-	// The ports are what a variadic kind needs: Sum's signs are its ports, so
-	// the sign an input carries has to come from the terminal it arrived on
-	// rather than from its place in the list. A fixed-arity kind reads
-	// neither. nil means the block has no dynamics of its own: every source
-	// and sink realizes as a unit gain, and realizeSystem supplies that
-	// default rather than each of the five repeating it.
+	// parameters and the input ports its wires land on: ascending, distinct,
+	// and never negative, which compileFlow establishes before calling so a
+	// hook can index by port without re-checking. The ports are what a
+	// variadic kind needs: Sum's signs are its ports, so the sign an input
+	// carries has to come from the terminal it arrived on rather than from its
+	// place in the list. A fixed-arity kind reads neither. nil means the block
+	// has no dynamics of its own: every source and sink realizes as a unit
+	// gain, and realizeSystem supplies that default rather than each of the
+	// five repeating it.
 	realize func(Block, []int) (*controlsys.System, error)
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
