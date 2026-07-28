@@ -497,6 +497,15 @@ dimensions, transfer-function and state-space parameter round trips, discrete
 sample-time inheritance, non-mutating candidate generation, atomic apply, and
 stale-candidate refusal.
 
+The guided-controller tests cover every `controlsys.Pidtune` type, independent
+crossover and phase-margin calculations, PID2 reference/measurement sign
+semantics, discrete sample-time preservation, exact-delay disclosure, and
+atomic stale-safe apply. Named loop-sensitivity tests check `So+To=I` and
+`Si+Ti=I` for noncommutative MIMO models, preserve measurement and control
+channel names, and compare current and candidate Bode, singular-value,
+H-infinity, and SISO robustness evidence on one frequency grid. See
+`docs/pid-design.md` and `docs/loop-sensitivity.md`.
+
 Interaction behavior cannot be covered by Go tests. It was verified by driving
 real pointer and key gestures against headless Chrome over CDP — 88 checks
 across viewport, snapping, selection, keyboard, context menus, and wiring — at

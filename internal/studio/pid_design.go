@@ -32,15 +32,6 @@ type PIDDesignGains struct {
 	SampleTime       float64 `json:"sampleTime,omitempty"`
 }
 
-type PIDMarginEvidence struct {
-	GainMarginDB               *float64 `json:"gainMarginDb,omitempty"`
-	GainMarginUnbounded        bool     `json:"gainMarginUnbounded,omitempty"`
-	PhaseMarginDegrees         *float64 `json:"phaseMarginDegrees,omitempty"`
-	PhaseMarginUnbounded       bool     `json:"phaseMarginUnbounded,omitempty"`
-	GainCrossoverRadPerSecond  *float64 `json:"gainCrossoverRadPerSecond,omitempty"`
-	PhaseCrossoverRadPerSecond *float64 `json:"phaseCrossoverRadPerSecond,omitempty"`
-}
-
 type PIDFrequencyEvidence struct {
 	Omega                 []float64  `json:"omega"`
 	CurrentMagnitudeDB    []*float64 `json:"currentMagnitudeDb"`
@@ -56,21 +47,21 @@ type PIDStepEvidence struct {
 }
 
 type PIDDesignCandidate struct {
-	FlowID              int64                  `json:"flowId"`
-	SourceModelRevision time.Time              `json:"sourceModelRevision"`
-	ControllerBlockID   int64                  `json:"controllerBlockId"`
-	Type                controlsys.PidtuneType `json:"type"`
-	TargetCrossover     float64                `json:"targetCrossover,omitempty"`
-	TargetPhaseMargin   float64                `json:"targetPhaseMargin"`
-	Gains               PIDDesignGains         `json:"gains"`
-	CurrentMargin       *PIDMarginEvidence     `json:"currentMargin,omitempty"`
-	CandidateMargin     *PIDMarginEvidence     `json:"candidateMargin,omitempty"`
-	Frequency           PIDFrequencyEvidence   `json:"frequency"`
-	Step                *PIDStepEvidence       `json:"step,omitempty"`
-	Warnings            []string               `json:"warnings,omitempty"`
-	Controller          *controlsys.System     `json:"-"`
-	ReferenceController *controlsys.System     `json:"-"`
-	ClosedLoop          *controlsys.System     `json:"-"`
+	FlowID              int64                    `json:"flowId"`
+	SourceModelRevision time.Time                `json:"sourceModelRevision"`
+	ControllerBlockID   int64                    `json:"controllerBlockId"`
+	Type                controlsys.PidtuneType   `json:"type"`
+	TargetCrossover     float64                  `json:"targetCrossover,omitempty"`
+	TargetPhaseMargin   float64                  `json:"targetPhaseMargin"`
+	Gains               PIDDesignGains           `json:"gains"`
+	CurrentMargin       *ClassicalMarginAnalysis `json:"currentMargin,omitempty"`
+	CandidateMargin     *ClassicalMarginAnalysis `json:"candidateMargin,omitempty"`
+	Frequency           PIDFrequencyEvidence     `json:"frequency"`
+	Step                *PIDStepEvidence         `json:"step,omitempty"`
+	Warnings            []string                 `json:"warnings,omitempty"`
+	Controller          *controlsys.System       `json:"-"`
+	ReferenceController *controlsys.System       `json:"-"`
+	ClosedLoop          *controlsys.System       `json:"-"`
 	changes             []tunedParameterChange
 }
 
@@ -332,31 +323,23 @@ func comparePIDFrequency(
 	}
 	result := PIDFrequencyEvidence{Omega: append([]float64(nil), omega...)}
 	for i := range omega {
-		result.CurrentMagnitudeDB = append(result.CurrentMagnitudeDB, finitePIDValue(currentBode.MagDBAt(i, 0, 0)))
-		result.CurrentPhaseDegrees = append(result.CurrentPhaseDegrees, finitePIDValue(currentBode.PhaseAt(i, 0, 0)))
-		result.CandidateMagnitudeDB = append(result.CandidateMagnitudeDB, finitePIDValue(candidateBode.MagDBAt(i, 0, 0)))
-		result.CandidatePhaseDegrees = append(result.CandidatePhaseDegrees, finitePIDValue(candidateBode.PhaseAt(i, 0, 0)))
+		result.CurrentMagnitudeDB = append(result.CurrentMagnitudeDB, finitePointer(currentBode.MagDBAt(i, 0, 0)))
+		result.CurrentPhaseDegrees = append(result.CurrentPhaseDegrees, finitePointer(currentBode.PhaseAt(i, 0, 0)))
+		result.CandidateMagnitudeDB = append(result.CandidateMagnitudeDB, finitePointer(candidateBode.MagDBAt(i, 0, 0)))
+		result.CandidatePhaseDegrees = append(result.CandidatePhaseDegrees, finitePointer(candidateBode.PhaseAt(i, 0, 0)))
 	}
 	return result, nil
 }
 
-func pidMarginEvidence(result *controlsys.MarginResult) *PIDMarginEvidence {
-	evidence := &PIDMarginEvidence{
-		GainMarginDB:               finitePIDValue(result.GainMargin),
-		PhaseMarginDegrees:         finitePIDValue(result.PhaseMargin),
-		GainCrossoverRadPerSecond:  finitePIDValue(result.WgFreq),
-		PhaseCrossoverRadPerSecond: finitePIDValue(result.WpFreq),
+func pidMarginEvidence(result *controlsys.MarginResult) *ClassicalMarginAnalysis {
+	return &ClassicalMarginAnalysis{
+		GainMarginDB:               finitePointer(result.GainMargin),
+		PhaseMarginDegrees:         finitePointer(result.PhaseMargin),
+		GainCrossoverRadPerSecond:  finitePointer(result.WgFreq),
+		PhaseCrossoverRadPerSecond: finitePointer(result.WpFreq),
+		NoFiniteGainMargin:         !finite(result.GainMargin),
+		NoFinitePhaseMargin:        !finite(result.PhaseMargin),
 	}
-	evidence.GainMarginUnbounded = math.IsInf(result.GainMargin, 1)
-	evidence.PhaseMarginUnbounded = math.IsInf(result.PhaseMargin, 1)
-	return evidence
-}
-
-func finitePIDValue(value float64) *float64 {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return nil
-	}
-	return &value
 }
 
 func comparePIDStep(

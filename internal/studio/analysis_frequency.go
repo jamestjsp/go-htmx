@@ -13,6 +13,7 @@ const (
 	defaultFrequencyPoints     = 200
 	maxAnalysisChannelsPerAxis = 16
 	maxFrequencyResponseTraces = 64
+	maxFrequencyPoints         = 2000
 )
 
 type FrequencyAnalysisRequest struct {
@@ -238,7 +239,7 @@ func validateFrequencyRequest(request FrequencyAnalysisRequest) error {
 			maxFrequencyResponseTraces,
 		)
 	}
-	if request.Points < 0 || request.Points == 1 || request.Points > 2000 {
+	if request.Points < 0 || request.Points == 1 || request.Points > maxFrequencyPoints {
 		return invalid("automatic frequency points must be 0 for the default or between 2 and 2,000")
 	}
 	if len(request.Omega) == 1 {
