@@ -159,6 +159,36 @@ func TestDynamicsAnalysisDoesNotRunAnImplicitStepExperiment(t *testing.T) {
 	}
 }
 
+func TestDynamicsAnalysisDoesNotMisstateInternallyDelayedLoopOrder(t *testing.T) {
+	result, err := analyzeDynamics(
+		[]Block{
+			{ID: 1, Kind: BlockSource, Name: "Input", Parameters: Parameters{Amplitude: 1}},
+			{ID: 2, Kind: BlockSum, Name: "Error", Parameters: Parameters{Signs: "+-"}},
+			{ID: 3, Kind: BlockLag, Name: "Plant", Parameters: Parameters{TimeConstant: 1}},
+			{ID: 4, Kind: BlockDelay, Name: "Feedback delay", Parameters: Parameters{
+				Delay: 0.2, DelayMode: delayModeExact,
+			}},
+		},
+		[]Connection{
+			{SourceID: 1, TargetID: 2, TargetPort: 0},
+			{SourceID: 4, TargetID: 2, TargetPort: 1},
+			{SourceID: 2, TargetID: 3},
+			{SourceID: 3, TargetID: 4},
+		},
+		DynamicsAnalysisRequest{
+			Input: ChannelRef{BlockID: 1}, Output: ChannelRef{BlockID: 4},
+			Step: &StepExperiment{Horizon: 5},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stable != nil || len(result.Poles) != 0 || result.StepExperiment != nil ||
+		!hasAnalysisIssue(result.Issues, "full-order-dynamics") {
+		t.Fatalf("internally delayed diagnostics = %#v", result)
+	}
+}
+
 func analysisSISOBlocks(numerator, denominator []float64) []Block {
 	return []Block{
 		{ID: 1, Kind: BlockSource, Name: "Excitation", Parameters: Parameters{Amplitude: 1}},

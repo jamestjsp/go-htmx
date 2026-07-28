@@ -114,6 +114,7 @@ func analyzeDynamics(
 	if err != nil {
 		return DynamicsAnalysis{}, err
 	}
+	hasInternalDelay := model.system.HasInternalDelay()
 	system, inputs, outputs, err := model.selectChannels(
 		[]ChannelRef{request.Input},
 		[]ChannelRef{request.Output},
@@ -124,6 +125,13 @@ func analyzeDynamics(
 	result := DynamicsAnalysis{
 		Input:  analyzedChannel(request.Input, inputs[0]),
 		Output: analyzedChannel(request.Output, outputs[0]),
+	}
+	if hasInternalDelay || system.HasInternalDelay() {
+		result.addIssue(
+			"full-order-dynamics",
+			fmt.Errorf("stability, poles, zeros, DC gain, damping, and step metrics are unavailable for an internally delayed model; frequency analysis remains available"),
+		)
+		return result, nil
 	}
 
 	stable, err := system.IsStable()

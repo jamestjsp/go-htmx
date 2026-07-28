@@ -319,6 +319,14 @@ metrics are separate from the arbitrary-source metrics stored on normal
 simulation runs. Undefined operations return named issues beside any valid
 partial results rather than non-finite JSON values.
 
+`Studio.AnalyzeFrequency` selects one or more named input/output channels.
+It reports Bode paths in dB and unwrapped degrees, SISO Nyquist and Nichols
+data, and linear singular values for rectangular MIMO models. Frequency grids
+are always angular frequency in rad/s; callers may provide a strictly
+increasing grid or request an automatic one. Discrete grids end at `π/Dt`.
+This model frequency response is distinct from the Spectrum Analyzer, which
+is an FFT of one sampled simulation signal.
+
 The linear boundary is deliberate. Continuous and discrete state-space,
 transfer-function, delay, and named MIMO models stay within controlsys.
 Continuous/discrete mixtures and unresolved multirate execution are refused
