@@ -824,9 +824,13 @@ async function installProbe(session) {
     // client routing pass.
     bench.redundancyCheck = (kickName) => new Promise((resolve, reject) => {
       let firstPass = null
+      let responseMode = 'swap'
       const readPaths = () => Array.from(document.querySelectorAll('[data-edge-source]'))
           .map((path) => path.getAttribute('d') || '')
-      const captureFirstPass = () => {
+      const captureFirstPass = (event) => {
+        if (event.detail?.xhr?.getResponseHeader('HX-Reswap') === 'none') {
+          responseMode = 'bounded'
+        }
         if (firstPass === null) firstPass = readPaths()
       }
       document.addEventListener('htmx:afterSwap', captureFirstPass, false)
@@ -850,7 +854,7 @@ async function installProbe(session) {
         }
         let before = firstPass
         let after = settled
-        let mode = 'swap'
+        let mode = responseMode
         if (kickName === 'negativeControl') {
           mode = 'invalidation'
           const edge = document.querySelector('.signal-line[data-edge-source]')
@@ -878,7 +882,7 @@ async function installProbe(session) {
           const delta = a.reduce((worst, n, i) => Math.max(worst, Math.abs(n - b[i])), 0)
           if (delta > maxDelta) maxDelta = delta
         })
-        resolve({
+        const result = {
           kick: kickName,
           mode,
           paths: firstPass.length,
@@ -887,7 +891,21 @@ async function installProbe(session) {
           afterSwapFilled: firstPass.filter(Boolean).length,
           afterSettleFilled: settled.filter(Boolean).length,
           sample: firstPass.length ? { afterSwap: firstPass[0], afterSettle: settled[0] } : null
-        })
+        }
+        const fullSwapFailed = mode === 'swap' &&
+          (result.afterSwapFilled !== 0 ||
+            result.afterSettleFilled !== result.paths ||
+            result.changed !== result.paths)
+        const boundedSwapFailed = mode === 'bounded' &&
+          (result.afterSwapFilled !== result.paths ||
+            result.afterSettleFilled !== result.paths ||
+            result.changed !== 0)
+        const invalidationFailed = mode === 'invalidation' &&
+          (result.afterSettleFilled !== result.paths || result.changed === 0)
+        if (fullSwapFailed || boundedSwapFailed || invalidationFailed) {
+          result.error = mode + ' route-authority contract failed'
+        }
+        resolve(result)
       }
       const onSettle = () => requestAnimationFrame(finish)
       document.addEventListener('htmx:afterSettle', onSettle, false)
@@ -1195,9 +1213,9 @@ function report(results) {
   }
 
   out.push('', '### Route-authority and cache-invalidation gate', '')
-  out.push('The server must leave every path empty afterSwap and the single client pass must fill every path afterSettle.')
-  out.push('For normal swaps, `changed` should equal `paths`; `negativeControl` moves a connected block after')
-  out.push('settle and MUST change at least one cached path.', '')
+  out.push('Full swaps must leave every path empty afterSwap and fill them in the single client pass.')
+  out.push('A bounded stable-schema edit must preserve every populated path unchanged; `negativeControl` moves')
+  out.push('a connected block after settle and must change at least one cached path. Any violation fails the row.', '')
   out.push('| blocks | interaction | mode | paths | filled afterSwap | filled afterSettle | changed | max delta |')
   out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
