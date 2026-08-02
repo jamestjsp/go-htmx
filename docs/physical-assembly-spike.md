@@ -21,7 +21,7 @@ does not expose a domain-neutral across/through variable contract.
 ## What was tested
 
 `internal/studio/physical_assembly_spike_test.go` builds two independent
-families of multi-component models using the pinned `controlsys v1.2.0` API.
+families of multi-component models using the pinned `controlsys v1.3.0` API.
 Each component is the hand-solvable linear one-port model
 
 ```text

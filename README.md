@@ -204,7 +204,7 @@ flowchart LR
     Studio["Studio service<br/>domain operations"]
     SQLite[("SQLite<br/>projects, flows, events, runs")]
     Compiler["Flow compiler<br/>graph to state space"]
-    Controlsys["controlsys v1.2.0<br/>named composition, simulation, analysis"]
+    Controlsys["controlsys v1.3.0<br/>named composition, simulation, analysis"]
 
     Browser -- "HTML requests" --> HTTP
     HTTP -- "add, connect, tune, run" --> Studio
@@ -431,7 +431,7 @@ with the required conversion or scheduling action. Product, Saturation,
 Switch, Relay, and logic blocks require a nonlinear or hybrid solver; this
 compiler does not silently linearize them.
 
-The module pins `github.com/jamestjsp/controlsys` to `v1.2.0` and includes the Gonum fork replacement required by that package.
+The module pins `github.com/jamestjsp/controlsys` to `v1.3.0` and includes the Gonum fork replacement required by that package.
 
 ## SQLite data
 

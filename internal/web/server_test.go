@@ -997,6 +997,78 @@ func TestSimulationReturnsSVGTrendAndMetrics(t *testing.T) {
 	}
 }
 
+func TestSimulationRendersNamedAlgebraicLoopDiagnostic(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	workspace, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := addFlow(t, service, workspace.Project.ID, "Singular recycle")
+
+	_, sourceID, err := service.AddBlock(ctx, flowID, studio.BlockSource, studio.Point{X: 100, Y: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sumID, err := service.AddBlock(ctx, flowID, studio.BlockSum, studio.Point{X: 400, Y: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateBlock(ctx, sumID, studio.BlockUpdate{
+		Name: "Recycle sum", Parameters: map[string]string{"signs": "++"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, gainID, err := service.AddBlock(ctx, flowID, studio.BlockGain, studio.Point{X: 700, Y: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateBlock(ctx, gainID, studio.BlockUpdate{
+		Name: "Recycle gain", Parameters: map[string]string{"gain": "1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, scopeID, err := service.AddBlock(ctx, flowID, studio.BlockScope, studio.Point{X: 1000, Y: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, wire := range []studio.Wire{
+		{SourceID: sourceID, TargetID: sumID, TargetPort: 0},
+		{SourceID: sumID, TargetID: gainID},
+		{SourceID: gainID, TargetID: sumID, TargetPort: 1},
+		{SourceID: gainID, TargetID: scopeID},
+	} {
+		if _, err := service.Connect(ctx, flowID, wire); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	response := request(
+		t,
+		server,
+		http.MethodPost,
+		fmt.Sprintf("/flows/%d/simulations", flowID),
+		url.Values{"duration": {"1"}, "sample_time": {"0.1"}},
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		"Recycle sum", "input port 2", "Recycle gain",
+		"output port 1", "exactly singular",
+		"add dynamics or change a direct-feedthrough gain",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("browser diagnostic does not contain %q: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "block_"+strconv.FormatInt(sumID, 10)+"_input") {
+		t.Fatalf("browser diagnostic leaks an internal signal name: %s", body)
+	}
+}
+
 func TestStaticAssetsAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{

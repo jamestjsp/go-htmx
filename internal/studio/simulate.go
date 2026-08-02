@@ -370,9 +370,7 @@ func compileRequestedModel(
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
 		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
-			return nil, invalid(
-				"flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain",
-			)
+			return nil, invalid("%s", algebraicLoopMessage(err, signals, originalBlockByID))
 		}
 		if errors.Is(err, controlsys.ErrDomainMismatch) {
 			return nil, invalid(

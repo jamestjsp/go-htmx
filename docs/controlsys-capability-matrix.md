@@ -1,6 +1,6 @@
 # controlsys capability coverage
 
-Process Lab pins `github.com/jamestjsp/controlsys v1.2.0`. This matrix records
+Process Lab pins `github.com/jamestjsp/controlsys v1.3.0`. This matrix records
 where the application uses each practical package family and, just as
 importantly, where it deliberately does not expose a package primitive as a
 product operation.
@@ -23,6 +23,7 @@ Status meanings:
 | State-space, SISO transfer function, MIMO transfer function, ZPK, gain, and FRD construction | **Browser** | Library blocks compile to named systems in `catalog.go`; analytic MIMO equivalence is covered by `rich_lti_test.go`. FRD remains frequency-domain-only. |
 | Named inputs, outputs, and states | **Browser** | Every rich model and vector-routing block owns complete names. Port schemas reject width/name mismatches before compilation. |
 | Series, parallel, sums, branches, selections, permutations, and feedback | **Browser** | The flowsheet compiler assembles one arbitrary named graph with `ConnectByName`. This is the product form of block-diagram algebra; users are not limited to positional `Series` calls. |
+| Typed algebraic-loop diagnostics | **Browser** | `AlgebraicLoopError` signal names are translated back to authored block, port, and MIMO channel identities. Exact and near-singular feedthrough conditions retain actionable conditioning evidence, with a generic fallback for older sentinel-only errors. |
 | `Append`, `BlkDiag`, connection matrices, and `SumBlk` | **Non-goal** | These are alternate programmatic encodings of the named graph. Exposing both would create two authorities for wiring and signal order. |
 | Lower LFT | **Browser/Studio** | Exact-delay feedback and generalized-plant validation use LFT semantics. H2/H∞ candidates independently rebuild their generalized closed loop with `LFT`. Upper-LFT authoring is deferred until an uncertainty-block model exists. |
 | Exact input/output and internal delays | **Browser** | Transport Delay and per-channel MIMO delays retain exact metadata. Static paths use exact shifts; dynamic feedback uses delay-preserving LFT assembly. |

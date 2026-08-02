@@ -268,9 +268,20 @@ func TestCompileTranslatesUnsolvableAlgebraicLoop(t *testing.T) {
 	if !errors.As(err, &validation) {
 		t.Fatalf("error = %v, want ValidationError", err)
 	}
-	const want = "flowsheet contains an unsolvable algebraic loop; add dynamics or change a direct-feedthrough gain"
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err, want)
+	for _, expected := range []string{
+		`"Sum" input port 2`,
+		`"Sum" output port 1`,
+		`"Gain" input port 1`,
+		`"Gain" output port 1`,
+		"the direct-feedthrough equation is exactly singular",
+		"add dynamics or change a direct-feedthrough gain",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error does not contain %q: %v", expected, err)
+		}
+	}
+	if strings.Contains(err.Error(), "block_") {
+		t.Fatalf("error leaks an internal signal name: %v", err)
 	}
 }
 

@@ -3,7 +3,7 @@ module github.com/jamestjsp/go-htmx
 go 1.26.3
 
 require (
-	github.com/jamestjsp/controlsys v1.2.0
+	github.com/jamestjsp/controlsys v1.3.0
 	gonum.org/v1/gonum v0.15.0
 	modernc.org/sqlite v1.54.0
 )

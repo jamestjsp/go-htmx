@@ -7,10 +7,10 @@ for the engine strategy and now also records which layers have been delivered.
 Read this before changing sampled-data execution or adding a nonlinear block
 such as Product, Saturation, Switch, Relay, or logic.
 
-## What controlsys v1.2.0 actually provides
+## What controlsys v1.3.0 actually provides
 
 Verified against the pinned module source, not the README. The package was
-read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.2.0/`.
+read at `$(go env GOMODCACHE)/github.com/jamestjsp/controlsys@v1.3.0/`.
 The engine measurements below are persistent regressions in
 `internal/studio`, including `controlsys_delay_contract_test.go`.
 
