@@ -708,3 +708,6 @@
 {"type":"state","ts":"2026-08-02T18:35:26.958459Z","data":{"id":"5VEWZM","state":"done","ts":"2026-08-02T18:35:26.958459Z"}}
 {"type":"claim","ts":"2026-08-02T18:35:27.07544Z","data":{"id":"VURP5Q","agent_id":"codex@process-lab","ts":"2026-08-02T18:35:27.07544Z"}}
 {"type":"state","ts":"2026-08-02T18:35:27.07544Z","data":{"id":"VURP5Q","state":"doing","ts":"2026-08-02T18:35:27.07544Z"}}
+{"type":"message","ts":"2026-08-02T18:41:22.559425Z","data":{"task_id":"VURP5Q","kind":"done","text":"Passed the 400/640 normal route-authority matrix, the 400-block 4x CPU gate, all Node tests, full Go race tests, vet, build, formatting, diff, and Docker config checks. Documented accepted and rejected benchmark variants; ready to push draft PR #8.","ts":"2026-08-02T18:41:22.559425Z"}}
+{"type":"unclaim","ts":"2026-08-02T18:41:22.559425Z","data":{"id":"VURP5Q","ts":"2026-08-02T18:41:22.559425Z"}}
+{"type":"state","ts":"2026-08-02T18:41:22.559425Z","data":{"id":"VURP5Q","state":"done","ts":"2026-08-02T18:41:22.559425Z"}}
