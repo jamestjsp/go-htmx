@@ -159,11 +159,39 @@ and prints the sign beside it. Its inspector rows put the destination input
 and sign first, then the source output, so two wires from one source into
 different Sum ports remain distinguishable.
 
-Server-rendered SVG paths and the client redraw both use the endpoint's
-resolved integer vertical offset: the declared port centre when it exists, or
-the block midpoint for a preserved legacy wire beyond the declared sign list.
-Those offsets are carried on the path markup, not recomputed from currently
-visible port buttons.
+### Automatic signal routing
+
+`orthogonal-routing.js` is the one authority for signal geometry. The server
+renders connection ids, endpoint block ids, port ids, and resolved vertical
+port centres; it does not render a competing path. `geometry.js` turns the
+current block rectangles into obstacles and asks the router for every path on
+first load, after an HTMX swap or history restore, and while a block moves.
+`wiring.js` uses the same operation for the draft edge.
+
+Routes follow the Simulink reading convention:
+
+- every segment is horizontal or vertical;
+- a signal leaves an output to the right and enters an input from the left;
+- block rectangles are expanded by a clearance margin before pathfinding;
+- short routes and fewer bends win, while crossings and shared segments add
+  cost; and
+- right-to-left feedback uses a clear outer lane instead of looping a spline
+  back through the model.
+
+The router builds a rectilinear visibility graph from the endpoint and obstacle
+coordinates, then finds the lowest-cost deterministic path. Earlier connections
+become occupancy hints for later ones, which separates avoidable overlaps while
+leaving the result stable across reloads. If crowded geometry has no graph path,
+the fallback is still orthogonal.
+
+Automatic block arrangement, editable manual waypoints, and shared branch
+junctions are intentionally separate problems. Routing reacts to the positions
+the user chose; it does not move blocks or change the stored connection model.
+
+Endpoint offsets remain the declared port centre when it exists, or the block
+midpoint for a preserved legacy wire beyond the declared sign list. Those
+offsets are carried on the path markup, not recomputed from currently visible
+port buttons.
 
 Self-connections are refused on the client with a status message rather
 than a server round trip and an error banner. The server remains the
