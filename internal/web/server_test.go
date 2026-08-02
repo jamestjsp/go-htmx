@@ -1157,6 +1157,18 @@ func TestPageLoadsTheCanvasEntryPointAsAModule(t *testing.T) {
 	}
 }
 
+func TestPagesRemoveHTMXSettleDelay(t *testing.T) {
+	server, _ := openTestServer(t)
+	for _, path := range []string{"/", "/projects/1/flows/1"} {
+		body := request(t, server, http.MethodGet, path, nil).Body.String()
+		config := strings.Index(body, `<meta name="htmx-config" content='{"defaultSettleDelay":0}'>`)
+		htmx := strings.Index(body, `<script src="/assets/htmx-2.0.10.min.js"></script>`)
+		if config < 0 || htmx < 0 || config > htmx {
+			t.Errorf("%s htmx config=%d script=%d", path, config, htmx)
+		}
+	}
+}
+
 func TestMoveBlocksBatchThroughHTTP(t *testing.T) {
 	server, service := openTestServer(t)
 	snapshot, err := service.Current(context.Background())

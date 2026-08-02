@@ -442,9 +442,9 @@ async function benchBrowser(session, fixture, zoom) {
   return { loads, observed, edits, moves, redraws, drag, profiles }
 }
 
-// benchRedundancy is the gate behind the claim that routing afterSwap and
-// again afterSettle is redundant. It walks every interaction that swaps
-// #workbench and compares the authoritative client paths after both passes.
+// benchRedundancy is retained as the command-line name for the route-authority
+// gate. It proves that server paths are empty afterSwap, the single client
+// pass fills them afterSettle, and a geometry change invalidates the cache.
 //
 // It mutates the fixture — it adds, wires, unwires and deletes — so it
 // runs after every timing measurement is complete.
@@ -686,13 +686,12 @@ async function installProbe(session) {
       return { ms: performance.now() - t0, paths }
     }
 
-    // Does the afterSettle routing pass change the paths produced by the
-    // afterSwap pass?
+    // Does the one afterSettle routing pass populate every server-empty path?
     //
     // The server now emits empty d attributes and the browser router is the
     // route authority. Every application listener was registered before this
-    // probe, so these bubble listeners read the DOM after each application
-    // re-apply pass. Identical arrays prove the second pass was redundant.
+    // probe, so these bubble listeners see the raw swap and then the completed
+    // client routing pass.
     bench.redundancyCheck = (kickName) => new Promise((resolve, reject) => {
       let firstPass = null
       const readPaths = () => Array.from(document.querySelectorAll('[data-edge-source]'))
@@ -719,35 +718,45 @@ async function installProbe(session) {
           })
           return
         }
+        let before = firstPass
+        let after = settled
+        let mode = 'swap'
+        if (kickName === 'negativeControl') {
+          mode = 'invalidation'
+          const edge = document.querySelector('.signal-line[data-edge-source]')
+          const card = edge && document.querySelector(
+            '.block-card[data-block-id="' + edge.dataset.edgeSource + '"]')
+          if (!card) {
+            resolve({ kick: kickName, error: 'no connected block for invalidation control' })
+            return
+          }
+          before = settled
+          card.style.left = (card.offsetLeft + 100) + 'px'
+          window.dispatchEvent(new Event('resize'))
+          after = readPaths()
+        }
         let changed = 0
-        let numericDiffers = 0
         let maxDelta = 0
-        let firstNumeric = null
-        firstPass.forEach((value, index) => {
-          if (value !== settled[index]) changed += 1
+        before.forEach((value, index) => {
+          if (value !== after[index]) changed += 1
           const a = numbers(value)
-          const b = numbers(settled[index])
+          const b = numbers(after[index])
           if (a.length !== b.length) {
-            numericDiffers += 1
             maxDelta = Infinity
-            if (!firstNumeric) firstNumeric = { firstPass: value, settled: settled[index] }
             return
           }
           const delta = a.reduce((worst, n, i) => Math.max(worst, Math.abs(n - b[i])), 0)
           if (delta > maxDelta) maxDelta = delta
-          if (delta > 1e-6) {
-            numericDiffers += 1
-            if (!firstNumeric) firstNumeric = { firstPass: value, settled: settled[index], delta }
-          }
         })
         resolve({
           kick: kickName,
+          mode,
           paths: firstPass.length,
           changed,
-          numericDiffers,
           maxDelta,
-          sample: firstPass.length ? { firstPass: firstPass[0], settled: settled[0] } : null,
-          firstNumeric
+          afterSwapFilled: firstPass.filter(Boolean).length,
+          afterSettleFilled: settled.filter(Boolean).length,
+          sample: firstPass.length ? { afterSwap: firstPass[0], afterSettle: settled[0] } : null
         })
       }
       const onSettle = () => requestAnimationFrame(finish)
@@ -810,30 +819,10 @@ async function installProbe(session) {
         if (!tab) throw new Error('only one flowsheet in this project')
         tab.click()
       },
-      // The falsification row. A gate that has never failed is not
-      // evidence, so this one displaces a card between the swap and the
-      // re-apply, which is exactly the situation where redrawEdges is
-      // load-bearing: the server's curve is then stale and the redraw
-      // has to fix it. It must report a non-zero numeric count. If it
-      // ever reports zero, the probe is broken and every other row in
-      // the table is worthless.
-      //
-      // The displacement happens on a capture-phase afterSettle rather
-      // than afterSwap: at afterSwap the node querySelector returns is
-      // the one htmx is about to discard (see reapply.js), so the nudge
-      // would be thrown away with it.
-      negativeControl: () => {
-        const nudge = () => {
-          document.removeEventListener('htmx:afterSettle', nudge, true)
-          const card = document.querySelector('.block-card')
-          if (card) card.style.left = (card.offsetLeft + 100) + 'px'
-        }
-        document.addEventListener('htmx:afterSettle', nudge, true)
-        // selectBlock rather than the inspector form: it swaps from any
-        // state, including the sheet tabSwitch has just left us on,
-        // where nothing is selected and there is no inspector form.
-        bench.kicks.selectBlock()
-      },
+      // After this swap settles, redundancyCheck moves the source of a live
+      // route and dispatches the application's normal resize redraw. At least
+      // one path must change or the cache-invalidation probe is broken.
+      negativeControl: () => bench.kicks.selectBlock(),
       _submit: (selector) => {
         const form = document.querySelector(selector)
         if (!form) throw new Error('no ' + selector + ' on the page')
@@ -1057,28 +1046,29 @@ function report(results) {
     }
   }
 
-  out.push('', '### Redundancy gate — does afterSettle change the afterSwap routes?', '')
-  out.push('Client-authored paths after the first and second re-apply pass, per swap-producing interaction.')
-  out.push('`numeric` must be zero for normal interactions: a non-zero value means the second pass was needed.')
-  out.push('`negativeControl` displaces a card mid-swap and MUST be non-zero;')
-  out.push('a zero there means the probe is broken and every other row is worthless.', '')
-  out.push('| blocks | interaction | paths | strings changed | numeric differs | max delta |')
-  out.push('| --- | --- | --- | --- | --- | --- |')
+  out.push('', '### Route-authority and cache-invalidation gate', '')
+  out.push('The server must leave every path empty afterSwap and the single client pass must fill every path afterSettle.')
+  out.push('For normal swaps, `changed` should equal `paths`; `negativeControl` moves a connected block after')
+  out.push('settle and MUST change at least one cached path.', '')
+  out.push('| blocks | interaction | mode | paths | filled afterSwap | filled afterSettle | changed | max delta |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     for (const check of size.redundancy ?? []) {
       if (check.error) {
-        out.push(`| ${size.blocks} | ${check.kick} | — | — | — | ${check.error} |`)
+        out.push(`| ${size.blocks} | ${check.kick} | — | — | — | — | — | ${check.error} |`)
         continue
       }
       const changed = check.paths ? `${check.changed}/${check.paths}` : '0/0'
-      out.push(`| ${size.blocks} | ${check.kick} | ${check.paths} | ${changed} | ` +
-        `**${check.numericDiffers}** | ${check.maxDelta.toExponential(1)} |`)
+      const delta = Number.isFinite(check.maxDelta) ? check.maxDelta.toExponential(1) : '∞'
+      out.push(`| ${size.blocks} | ${check.kick} | ${check.mode} | ${check.paths} | ` +
+        `${check.afterSwapFilled} | ${check.afterSettleFilled} | **${changed}** | ` +
+        `${delta} |`)
     }
   }
   const sample = results.sizes.flatMap((s) => s.redundancy ?? []).find((c) => c.sample && c.paths)
   if (sample) {
     out.push('', 'One path after each client routing pass:', '', '```',
-      `afterSwap: ${sample.sample.firstPass}`, `afterSettle: ${sample.sample.settled}`, '```')
+      `afterSwap: ${sample.sample.afterSwap}`, `afterSettle: ${sample.sample.afterSettle}`, '```')
   }
 
   out.push('', '### Where the time goes (sampling profile, 100µs, taken separately from the timings above)', '')

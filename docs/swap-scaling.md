@@ -16,10 +16,7 @@ restore. The second pass was measured and is redundant.
 
 The benchmark fixture had also drifted behind the port-aware Sum contract. It
 now creates three Sum input ports, wires its two fixture signals to distinct
-ports, and leaves the third for the connect/disconnect interaction gate. The
-gate now compares client paths after `htmx:afterSwap` and
-`htmx:afterSettle`; every normal interaction produced identical paths, while
-the displaced-card negative control changed two.
+ports, and leaves the third for the connect/disconnect interaction gate.
 
 Focused current-main runs used:
 
@@ -72,6 +69,37 @@ then replace the per-edge Cartesian visibility-graph hot path with a
 deterministic fast path and bounded fallback, and add negotiated compression.
 Partial workbench swaps and a JavaScript/TypeScript asset pipeline remain
 unjustified unless the post-fix profile still misses these budgets.
+
+### Milestone 1: one swap pass and reusable routes
+
+The first refactor removes the discarded `htmx:afterSwap` re-apply, sets
+HTMX's unused settle delay to zero, indexes block and edge DOM nodes once per
+redraw, and carries computed routes across whole-workbench swaps. Reuse is
+allowed only when signatures of the flow ID, sheet geometry, every block
+rectangle, and every connection endpoint match and every live edge has a
+cached route.
+
+The route-authority gate now checks the resulting architecture directly:
+every server path is empty after `afterSwap`, every path is populated after
+the single `afterSettle` pass, and moving a connected source in the negative
+control must invalidate and change its two SVG paths.
+
+Focused validation used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 50 --server-reps 5 --swap-reps 2 --load-reps 2 --skip-profile
+node docs/swap-scaling-bench.mjs --sizes 400 --server-reps 3 --swap-reps 3 --load-reps 1 --skip-profile
+```
+
+At 50 blocks, parameter edits fell from 112–114 ms to 31–33 ms. At 400
+blocks, the edit median fell from 6.86–7.00 seconds to 108–112 ms total and
+119–125 ms to the next frame, meeting the 150 ms acceptance budget. The
+unchanged-route redraw is now about 6 ms.
+
+Initial 400-block load remains 3.71–3.82 seconds, and the full redraw forced
+at drag release still produced 1.5–2.3 second long tasks. Both results isolate
+the next milestone: replace the Cartesian visibility graph. They also show
+why caching alone is not a complete responsiveness fix.
 
 Read this before proposing out-of-band swaps, per-card patching, canvas
 virtualisation, or any other change whose motivation is "the full swap must be
