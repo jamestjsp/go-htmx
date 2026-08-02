@@ -74,6 +74,20 @@ func TestTrainTutorialValuesRemainEditable(t *testing.T) {
 	if updatedStep.Parameters.StepTime != 150 {
 		t.Fatalf("step time = %g, want 150", updatedStep.Parameters.StepTime)
 	}
+	updatedStep, err = validateBlockUpdate(step, BlockUpdate{
+		Name: "Command",
+		Parameters: map[string]string{
+			"amplitude":     "1",
+			"initial_value": "0",
+			"step_time":     "7200",
+		},
+	})
+	if err != nil {
+		t.Fatalf("two-hour step time: %v", err)
+	}
+	if updatedStep.Parameters.StepTime != 7200 {
+		t.Fatalf("slow-process step time = %g, want 7200", updatedStep.Parameters.StepTime)
+	}
 
 	pid := Block{Kind: BlockPID, Name: "PI controller", Parameters: defaultParameters(BlockPID)}
 	pidFields := make(map[string]ParameterField)
@@ -104,8 +118,11 @@ func TestTrainTutorialValuesRemainEditable(t *testing.T) {
 		Kind: BlockStateSpace, Parameters: defaultParameters(BlockStateSpace),
 	}
 	for _, field := range stateSpace.EditorFields() {
-		if field.Name == "sample_time" && field.Step != "0.001" {
-			t.Fatalf("state-space sample-time step = %q, want 0.001", field.Step)
+		if field.Name != "sample_time" {
+			continue
+		}
+		if field.Min != "0.001" || field.Max != "" || field.Step != "0.001" {
+			t.Fatalf("state-space sample-time bounds = %#v", field)
 		}
 	}
 }

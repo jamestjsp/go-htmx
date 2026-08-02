@@ -61,9 +61,10 @@ type fieldBound struct {
 	// "proportional gain must be...". Kept as its own value rather than
 	// derived from Label, since the two are independently user-visible
 	// strings that happen to coincide for most fields but not all.
-	label    string
-	min, max float64
-	value    func(Parameters) float64
+	label string
+	min   float64
+	max   *float64
+	value func(Parameters) float64
 }
 
 type parameterDefinition struct {
@@ -109,7 +110,13 @@ func (field parameterDefinition) validateBound(parameters Parameters) error {
 	if field.active != nil && !field.active(parameters) {
 		return nil
 	}
-	return bounded(field.bound.label, field.bound.value(parameters), field.bound.min, field.bound.max)
+	if field.bound.max == nil {
+		if value < field.bound.min {
+			return invalid("%s must be at least %g", field.bound.label, field.bound.min)
+		}
+		return nil
+	}
+	return bounded(field.bound.label, value, field.bound.min, *field.bound.max)
 }
 
 type blockDefinition struct {
@@ -597,7 +604,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("amplitude", "Final value", "final value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
 			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
-			numberField("step_time", "Step time", "step time", "0.05", 0, MaxSimulationDuration, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
+			minimumNumberField("step_time", "Step time", "step time", "0.05", 0, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
 		},
 		role: roleSource,
 		waveform: func(parameters Parameters, _ int, t float64) float64 {
@@ -1344,7 +1351,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			},
 			conditionalNumberField(
 				"sample_time", "Approximation sample time", "sample time",
-				"0.001", 0.001, 10, "sec",
+				"0.001", MinSimulationSampleTime, "sec",
 				func(p *Parameters) *float64 { return &p.SampleTime },
 				func(parameters Parameters) bool {
 					return normalizedDelayMode(parameters) == delayModeThiran &&
@@ -1848,15 +1855,27 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 
 // numberField builds a scalar float field from a selector picking its home
 // in Parameters, so the block definition stays the only place that names it.
-// min and max are the field's one range authority: the editor's Min/Max
-// attributes and validateBound's enforcement both derive from these two
-// numbers, so the range cannot state itself two different ways. boundsLabel
+// min and the optional max are the field's one range authority: the editor's
+// Min/Max attributes and validateBound's enforcement both derive from them,
+// so the range cannot state itself two different ways. boundsLabel
 // is kept distinct from label because the two are independently user-visible
 // strings — see fieldBound's comment.
 func numberField(name, label, boundsLabel, step string, min, max float64, unit string, field func(*Parameters) *float64) parameterDefinition {
+	return scalarNumberField(name, label, boundsLabel, step, min, &max, unit, field)
+}
+
+func minimumNumberField(name, label, boundsLabel, step string, min float64, unit string, field func(*Parameters) *float64) parameterDefinition {
+	return scalarNumberField(name, label, boundsLabel, step, min, nil, unit, field)
+}
+
+func scalarNumberField(name, label, boundsLabel, step string, min float64, max *float64, unit string, field func(*Parameters) *float64) parameterDefinition {
+	maximum := ""
+	if max != nil {
+		maximum = formatFloat(*max)
+	}
 	return parameterDefinition{
 		Name: name, Label: label, Type: "number",
-		Step: step, Min: formatFloat(min), Max: formatFloat(max), Unit: unit,
+		Step: step, Min: formatFloat(min), Max: maximum, Unit: unit,
 		set: func(parameters *Parameters, raw string) error {
 			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
 			if err != nil {
@@ -1877,13 +1896,13 @@ func numberField(name, label, boundsLabel, step string, min, max float64, unit s
 
 func conditionalNumberField(
 	name, label, boundsLabel, step string,
-	minimum, maximum float64,
+	minimum float64,
 	unit string,
 	field func(*Parameters) *float64,
 	active func(Parameters) bool,
 ) parameterDefinition {
-	definition := numberField(
-		name, label, boundsLabel, step, minimum, maximum, unit, field,
+	definition := minimumNumberField(
+		name, label, boundsLabel, step, minimum, unit, field,
 	)
 	definition.active = active
 	return definition
@@ -1907,7 +1926,7 @@ func sampleTimeFields() []parameterDefinition {
 		},
 		conditionalNumberField(
 			"sample_time", "Sample time", "sample time",
-			"0.001", 0.001, 10, "sec",
+			"0.001", MinSimulationSampleTime, "sec",
 			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
 			func(parameters Parameters) bool {
 				return normalizedSampleTimeMode(parameters) == sampleTimeExplicit

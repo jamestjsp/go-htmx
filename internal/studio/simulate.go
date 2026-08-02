@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	MaxSimulationDuration       = 3600
-	maxSimulationSamples        = 5000
-	maxSimulationResultChannels = 16
-	maxSimulationSamplesLabel   = "5,000"
+	MinSimulationDuration       float64 = 1
+	MinSimulationSampleTime     float64 = 0.001
+	maxSimulationSamples                = 5000
+	maxSimulationResultChannels         = 16
+	maxSimulationSamplesLabel           = "5,000"
 )
 
 func SimulationLimitsText() string {
@@ -73,16 +74,21 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 }
 
 func validateSimulationRequest(request SimulationRequest) error {
-	if request.Duration < 1 || request.Duration > MaxSimulationDuration {
+	if math.IsNaN(request.Duration) || math.IsInf(request.Duration, 0) ||
+		request.Duration < MinSimulationDuration {
 		return invalid(
-			"duration must be between 1 and %d seconds",
-			MaxSimulationDuration,
+			"duration must be finite and at least %g second",
+			MinSimulationDuration,
 		)
 	}
-	if request.SampleTime < 0.01 || request.SampleTime > 2 {
-		return invalid("sample time must be between 0.01 and 2 seconds")
+	if math.IsNaN(request.SampleTime) || math.IsInf(request.SampleTime, 0) ||
+		request.SampleTime < MinSimulationSampleTime {
+		return invalid(
+			"sample time must be finite and at least %g seconds",
+			MinSimulationSampleTime,
+		)
 	}
-	samples := int(math.Round(request.Duration/request.SampleTime)) + 1
+	samples := math.Round(request.Duration/request.SampleTime) + 1
 	if samples > maxSimulationSamples {
 		return invalid("simulation is limited to %s samples", maxSimulationSamplesLabel)
 	}
