@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "mimo-transfer-pairwise-delay-step",
+  "release": "R2026a",
+  "reference": {
+    "title": "Time Delays in Linear Systems",
+    "url": "https://www.mathworks.com/help/control/ug/time-delays-in-linear-systems.html",
+    "section": "Transport Delay in MIMO Transfer Function",
+    "accessed": "2026-08-02"
+  },
+  "mapping": {
+    "processLabBlock": "mimo_transfer",
+    "mathWorksConcept": "MIMO transfer function IODelay",
+    "supportedSubset": "Continuous double-precision 2x2 transfer matrix with one denominator per output row and grid-aligned output-by-input delays.",
+    "intentionalDeviations": [
+      "The Process Lab MIMO Transfer Function uses one denominator polynomial per output row.",
+      "Expected samples are generated analytically and are not MATLAB or Simulink output."
+    ]
+  },
+  "oracle": {
+    "kind": "mathworks-formula-analytic",
+    "description": "Each output is the sum of independently delayed first-order step responses derived from the documented output-by-input IODelay semantics."
+  },
+  "simulation": {
+    "sampleTime": 0.1,
+    "duration": 1.0
+  },
+  "model": {
+    "inputNames": ["feed", "recycle"],
+    "outputNames": ["temperature", "pressure"],
+    "inputValues": [1.0, 1.0],
+    "numerators": [
+      [[1.0], [2.0]],
+      [[3.0], [4.0]]
+    ],
+    "denominators": [
+      [1.0, 1.0],
+      [1.0, 2.0]
+    ],
+    "delays": [
+      [0.1, 0.2],
+      [0.3, 0.4]
+    ]
+  }
+}
