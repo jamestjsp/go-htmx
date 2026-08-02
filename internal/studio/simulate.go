@@ -249,13 +249,15 @@ func compileRequestedModel(
 		blockInitialState := make([]float64, states)
 		if initial := blockDefinitions[block.Kind].initialState; initial != nil {
 			authored := initial(block.Parameters)
-			if len(authored) != states {
+			if authored != nil && len(authored) != states {
 				return nil, fmt.Errorf(
 					"%s initial state has %d values for %d realization states",
 					block.Name, len(authored), states,
 				)
 			}
-			copy(blockInitialState, authored)
+			if authored != nil {
+				copy(blockInitialState, authored)
+			}
 			for _, value := range authored {
 				if value != 0 {
 					hasAuthoredInitialState = true

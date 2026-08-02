@@ -80,6 +80,7 @@ type parameterDefinition struct {
 	Options     []parameterOption
 	active      func(Parameters) bool
 	shape       func(Parameters) (int, int)
+	optional    bool
 	// set and text are the field's own read/write: the one place that knows
 	// which Parameters member this name maps to. Nothing outside the
 	// definition switches on Name again.
@@ -335,6 +336,33 @@ func normalizedDelayMode(parameters Parameters) string {
 	return strings.ToLower(strings.TrimSpace(parameters.DelayMode))
 }
 
+// exactTransportDelayWithHistory realizes y=x+delay(u-x), where the compiler
+// initializes the constant state x to the authored Initial output.
+func exactTransportDelayWithHistory(delay float64) (*controlsys.System, error) {
+	system, err := controlsys.New(
+		mat.NewDense(1, 1, []float64{0}),
+		mat.NewDense(1, 1, []float64{0}),
+		mat.NewDense(1, 1, []float64{1}),
+		mat.NewDense(1, 1, []float64{0}),
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	err = system.SetInternalDelay(
+		[]float64{delay},
+		mat.NewDense(1, 1, []float64{0}),
+		mat.NewDense(1, 1, []float64{-1}),
+		mat.NewDense(1, 1, []float64{1}),
+		mat.NewDense(1, 1, []float64{1}),
+		mat.NewDense(1, 1, []float64{0}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return system, nil
+}
+
 // maxInputSigns bounds how many inputs a Sum can name, and so how many input
 // ports it can expose. The one place that states it: the sign field's own
 // validate hook enforces it and declareWiredPorts refuses to widen past it,
@@ -479,6 +507,23 @@ func validateSelectorParameters(parameters Parameters) error {
 }
 
 func defaultDiscreteStateSpaceParameters() Parameters {
+	a, _ := NewMatrixValue(1, 1, []float64{1})
+	b, _ := NewMatrixValue(1, 1, []float64{1})
+	c, _ := NewMatrixValue(1, 1, []float64{1})
+	d, _ := NewMatrixValue(1, 1, []float64{1})
+	initial, _ := NewVectorValue([]float64{0})
+	inputs, _ := NewChannelNames([]string{"u"})
+	outputs, _ := NewChannelNames([]string{"y"})
+	states, _ := NewChannelNames([]string{"x"})
+	return Parameters{
+		A: &a, B: &b, C: &c, D: &d,
+		InitialState: &initial,
+		InputNames:   &inputs, OutputNames: &outputs, StateNames: &states,
+		SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+	}
+}
+
+func legacyDiscreteStateSpaceParameters() Parameters {
 	a, _ := NewMatrixValue(2, 2, []float64{0.8, 0, 0, 0.5})
 	b, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
 	c, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
@@ -521,7 +566,40 @@ func validateDiscreteStateSpaceParameters(parameters Parameters) error {
 			"state-space channel-name counts must match input, output, and state dimensions",
 		)
 	}
+	if err := validateStateSpaceInitialState(parameters, states); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateStateSpaceInitialState(parameters Parameters, states int) error {
+	if parameters.InitialState == nil {
+		return nil
+	}
+	values := parameters.InitialState.Len()
+	if values != 1 && values != states {
+		return invalid(
+			"initial conditions must contain one value or one value per state (%d)",
+			states,
+		)
+	}
+	return nil
+}
+
+func stateSpaceInitialState(parameters Parameters) []float64 {
+	states, _ := parameters.A.Dims()
+	if parameters.InitialState == nil {
+		return make([]float64, states)
+	}
+	values := parameters.InitialState.Values()
+	if len(values) == states {
+		return values
+	}
+	initial := make([]float64, states)
+	for index := range initial {
+		initial[index] = values[0]
+	}
+	return initial
 }
 
 func validateDiscretizedTransferParameters(parameters Parameters) error {
@@ -1325,10 +1403,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{
 			Delay: 1, DelayMode: delayModeExact, Approximation: 3,
-			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+			InitialOutput: 0,
+			SampleTime:    0.1, SampleTimeMode: string(sampleTimeExplicit),
 		},
 		Parameters: []parameterDefinition{
 			numberField("delay", "Delay", "delay", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.Delay }),
+			optionalFiniteNumberField(
+				"initial_output", "Initial output", "initial output", "scalar",
+				func(parameters *Parameters) *float64 { return &parameters.InitialOutput },
+			),
 			{
 				Name: "delay_mode", Label: "Representation", Type: "select",
 				Options: []parameterOption{
@@ -1385,6 +1468,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			switch normalizedDelayMode(block.Parameters) {
 			case delayModeExact:
+				if block.Parameters.Delay > 0 && block.Parameters.InitialOutput != 0 {
+					return exactTransportDelayWithHistory(block.Parameters.Delay)
+				}
 				system, err := controlsys.NewGain(mat.NewDense(1, 1, []float64{1}), 0)
 				if err != nil {
 					return nil, err
@@ -1408,6 +1494,13 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				return nil, invalid("delay representation must be exact, Padé, or Thiran")
 			}
 		},
+		initialState: func(parameters Parameters) []float64 {
+			if normalizedDelayMode(parameters) == delayModeExact &&
+				parameters.Delay > 0 && parameters.InitialOutput != 0 {
+				return []float64{parameters.InitialOutput}
+			}
+			return nil
+		},
 		timeDomain: func(parameters Parameters) blockTimeDomain {
 			if normalizedDelayMode(parameters) == delayModeThiran {
 				return discreteTimeDomain(parameters)
@@ -1418,6 +1511,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			mode := normalizedDelayMode(parameters)
 			if mode != delayModeExact && mode != delayModePade && mode != delayModeThiran {
 				return invalid("delay representation must be exact, Padé, or Thiran")
+			}
+			if mode != delayModeExact && parameters.InitialOutput != 0 {
+				return invalid("initial output is supported only by exact transport delay")
 			}
 			sampleMode := normalizedSampleTimeMode(parameters)
 			if sampleMode != sampleTimeExplicit && sampleMode != sampleTimeInherited {
@@ -1468,6 +1564,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			matrixField("b", "B matrix", func(parameters *Parameters) **MatrixValue { return &parameters.B }),
 			matrixField("c", "C matrix", func(parameters *Parameters) **MatrixValue { return &parameters.C }),
 			matrixField("d", "D matrix", func(parameters *Parameters) **MatrixValue { return &parameters.D }),
+			optionalVectorField(
+				"initial_state", "Initial conditions",
+				func(parameters *Parameters) **VectorValue { return &parameters.InitialState },
+			),
 			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
 				return &parameters.InputNames
 			}),
@@ -1487,7 +1587,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			return system, nil
 		},
 		timeDomain: representationTimeDomain,
-		validate:   validateStateSpaceParameters,
+		initialState: func(parameters Parameters) []float64 {
+			return stateSpaceInitialState(parameters)
+		},
+		validate: validateStateSpaceParameters,
 		summary: func(parameters Parameters) string {
 			states, _ := parameters.A.Dims()
 			return fmt.Sprintf(
@@ -1739,6 +1842,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			matrixField("b", "B matrix", func(parameters *Parameters) **MatrixValue { return &parameters.B }),
 			matrixField("c", "C matrix", func(parameters *Parameters) **MatrixValue { return &parameters.C }),
 			matrixField("d", "D matrix", func(parameters *Parameters) **MatrixValue { return &parameters.D }),
+			optionalVectorField(
+				"initial_state", "Initial conditions",
+				func(parameters *Parameters) **VectorValue { return &parameters.InitialState },
+			),
 			channelNamesField("input_names", "Input channels", func(parameters *Parameters) **ChannelNames {
 				return &parameters.InputNames
 			}),
@@ -1781,6 +1888,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		timeDomain: func(parameters Parameters) blockTimeDomain {
 			return discreteTimeDomain(parameters)
+		},
+		initialState: func(parameters Parameters) []float64 {
+			return stateSpaceInitialState(parameters)
 		},
 		validate: validateDiscreteStateSpaceParameters,
 		summary: func(parameters Parameters) string {
@@ -1949,6 +2059,15 @@ func finiteNumberField(
 			value: func(parameters Parameters) float64 { return *field(&parameters) },
 		},
 	}
+}
+
+func optionalFiniteNumberField(
+	name, label, boundsLabel, unit string,
+	field func(*Parameters) *float64,
+) parameterDefinition {
+	definition := finiteNumberField(name, label, boundsLabel, unit, field)
+	definition.optional = true
+	return definition
 }
 
 func conditionalNumberField(
@@ -2206,6 +2325,15 @@ func vectorField(
 	}
 }
 
+func optionalVectorField(
+	name, label string,
+	field func(*Parameters) **VectorValue,
+) parameterDefinition {
+	definition := vectorField(name, label, field)
+	definition.optional = true
+	return definition
+}
+
 func channelNamesField(
 	name, label string,
 	field func(*Parameters) **ChannelNames,
@@ -2269,6 +2397,7 @@ func cloneParameters(parameters Parameters) Parameters {
 	parameters.InputNames = cloneChannelNames(parameters.InputNames)
 	parameters.OutputNames = cloneChannelNames(parameters.OutputNames)
 	parameters.StateNames = cloneChannelNames(parameters.StateNames)
+	parameters.InitialState = cloneVectorValue(parameters.InitialState)
 	parameters.Vector = cloneVectorValue(parameters.Vector)
 	parameters.TransferNumerators = clonePolynomialMatrixValue(parameters.TransferNumerators)
 	parameters.TransferDenominators = clonePolynomialMatrixValue(parameters.TransferDenominators)
@@ -2330,6 +2459,9 @@ func validateBlockUpdate(block Block, update BlockUpdate) (Block, error) {
 	for _, field := range definition.Parameters {
 		value, exists := update.Parameters[field.Name]
 		if !exists {
+			if field.optional {
+				continue
+			}
 			return Block{}, invalid("%s is required", strings.ToLower(field.Label))
 		}
 		if err := field.set(&parameters, value); err != nil {

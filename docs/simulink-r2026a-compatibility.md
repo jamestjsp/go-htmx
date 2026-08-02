@@ -108,7 +108,7 @@ value. The value supplies constant pre-simulation history until the aligned
 delayed input becomes available. The default remains zero, so existing models
 keep the same realization, delay-aware driver selection, and no-delay fast
 path. Padé and Thiran are explicit approximation modes and do not reinterpret
-Initial output as approximation-state coordinates.
+Initial output as approximation-state coordinates; they reject a nonzero value.
 
 The executable fixture derives continuous and discrete State-Space responses
 from the documented equations and Transport Delay values from its documented
