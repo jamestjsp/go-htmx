@@ -22,20 +22,21 @@ const (
 type TunableField string
 
 const (
-	TunableGain             TunableField = "gain"
-	TunableProportional     TunableField = "proportional"
-	TunableIntegral         TunableField = "integral"
-	TunableDerivative       TunableField = "derivative"
-	TunableFilterTime       TunableField = "filter_time"
-	TunableSetpointWeight   TunableField = "setpoint_weight"
-	TunableDerivativeWeight TunableField = "derivative_weight"
-	TunableMatrixGain       TunableField = "matrix_gain"
-	TunableNumerator        TunableField = "numerator"
-	TunableTransferNum      TunableField = "transfer_numerator"
-	TunableStateA           TunableField = "state_a"
-	TunableStateB           TunableField = "state_b"
-	TunableStateC           TunableField = "state_c"
-	TunableStateD           TunableField = "state_d"
+	TunableGain              TunableField = "gain"
+	TunableProportional      TunableField = "proportional"
+	TunableIntegral          TunableField = "integral"
+	TunableDerivative        TunableField = "derivative"
+	TunableFilterCoefficient TunableField = "filter_coefficient"
+	TunableFilterTime        TunableField = "filter_time"
+	TunableSetpointWeight    TunableField = "setpoint_weight"
+	TunableDerivativeWeight  TunableField = "derivative_weight"
+	TunableMatrixGain        TunableField = "matrix_gain"
+	TunableNumerator         TunableField = "numerator"
+	TunableTransferNum       TunableField = "transfer_numerator"
+	TunableStateA            TunableField = "state_a"
+	TunableStateB            TunableField = "state_b"
+	TunableStateC            TunableField = "state_c"
+	TunableStateD            TunableField = "state_d"
 )
 
 type TunableParameterRef struct {
@@ -446,7 +447,7 @@ func tunableControllerBlock(
 		}
 		tunable = controlsys.NewTunablePID(
 			fmt.Sprintf("block-%d-pid", block.ID),
-			kp, ki, kd, block.Parameters.FilterTime, effectiveSampleTime,
+			kp, ki, kd, pidFilterTime(block.Parameters), effectiveSampleTime,
 		)
 	case BlockTransfer, BlockDiscreteTransfer:
 		numerator := make([]*controlsys.TunableReal, len(block.Parameters.Numerator))
@@ -708,8 +709,15 @@ func setTunedParameter(
 		parameters.Integral = value
 	case TunableDerivative:
 		parameters.Derivative = value
+	case TunableFilterCoefficient:
+		parameters.FilterCoefficient = value
+		parameters.FilterTime = 0
 	case TunableFilterTime:
-		parameters.FilterTime = value
+		if value <= 0 {
+			return invalid("tuned filter time must be positive")
+		}
+		parameters.FilterCoefficient = 1 / value
+		parameters.FilterTime = 0
 	case TunableSetpointWeight:
 		parameters.SetpointWeight = value
 	case TunableDerivativeWeight:

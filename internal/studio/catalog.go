@@ -1278,24 +1278,24 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 	BlockPID: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockPID, Label: "PID Controller", Category: "Control",
-			Description: "Filtered parallel PID", Glyph: "PID", Tag: "CONTROL",
+			Description: "Parallel-form PID with filtered derivative", Glyph: "PID", Tag: "CONTROL",
 		},
 		Defaults: Parameters{
-			Proportional: 1, Integral: 0.5, FilterTime: 0.1,
+			Proportional: 1, Integral: 1, FilterCoefficient: 100,
 			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
 		},
 		Parameters: append([]parameterDefinition{
-			numberField("proportional", "Proportional Kp", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
-			numberField("integral", "Integral Ki", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
-			numberField("derivative", "Derivative Kd", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
-			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.001", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("proportional", "Proportional P", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral I", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative D", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			pidFilterCoefficientField(),
 		}, representationTimeFields()...),
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.NewPID(
 				block.Parameters.Proportional,
 				block.Parameters.Integral,
 				block.Parameters.Derivative,
-				controlsys.WithFilter(block.Parameters.FilterTime),
+				controlsys.WithFilter(pidFilterTime(block.Parameters)),
 				controlsys.WithTs(representationSampleTime(block.Parameters)),
 			).System()
 		},
@@ -1308,7 +1308,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				parameters.Proportional,
 				parameters.Integral,
 				parameters.Derivative,
-				controlsys.WithFilter(parameters.FilterTime),
+				controlsys.WithFilter(pidFilterTime(parameters)),
 				controlsys.WithTs(representationSampleTime(parameters)),
 			).System()
 			if err != nil {
@@ -1325,18 +1325,18 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 	BlockPID2: {
 		BlockDefinition: BlockDefinition{
 			Kind: BlockPID2, Label: "2-DOF PID Controller", Category: "Control",
-			Description: "Reference-weighted filtered parallel PID", Glyph: "PID2", Tag: "CONTROL",
+			Description: "Parallel-form 2-DOF PID with filtered derivative", Glyph: "PID2", Tag: "CONTROL",
 		},
 		Defaults: Parameters{
-			Proportional: 1, Integral: 0.5, FilterTime: 0.1,
+			Proportional: 1, Integral: 1, FilterCoefficient: 100,
 			SetpointWeight: 1, DerivativeWeight: 1,
 			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
 		},
 		Parameters: append([]parameterDefinition{
-			numberField("proportional", "Proportional Kp", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
-			numberField("integral", "Integral Ki", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
-			numberField("derivative", "Derivative Kd", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
-			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.001", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("proportional", "Proportional P", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral I", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative D", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			pidFilterCoefficientField(),
 			numberField("setpoint_weight", "Setpoint weight b", "setpoint weight", "any", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.SetpointWeight }),
 			numberField("derivative_weight", "Derivative weight c", "derivative weight", "any", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.DerivativeWeight }),
 		}, representationTimeFields()...),
@@ -1356,7 +1356,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				block.Parameters.Proportional,
 				block.Parameters.Integral,
 				block.Parameters.Derivative,
-				block.Parameters.FilterTime,
+				pidFilterTime(block.Parameters),
 				block.Parameters.SetpointWeight,
 				block.Parameters.DerivativeWeight,
 				controlsys.WithTs(representationSampleTime(block.Parameters)),
@@ -1371,7 +1371,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				parameters.Proportional,
 				parameters.Integral,
 				parameters.Derivative,
-				parameters.FilterTime,
+				pidFilterTime(parameters),
 				parameters.SetpointWeight,
 				parameters.DerivativeWeight,
 				controlsys.WithTs(representationSampleTime(parameters)),

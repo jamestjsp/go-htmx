@@ -43,8 +43,15 @@ func TestDesignPIDControllerSupportsEveryControlsysPIDTypeWithoutMutation(t *tes
 			if candidate.Gains.SampleTime != 0 {
 				t.Fatalf("continuous PID Dt = %g", candidate.Gains.SampleTime)
 			}
-			if _, err := json.Marshal(candidate); err != nil {
+			encoded, err := json.Marshal(candidate)
+			if err != nil {
 				t.Fatalf("candidate is not JSON-safe: %v", err)
+			}
+			if candidate.Gains.FilterCoefficient <= 0 ||
+				!strings.Contains(string(encoded), `"filterCoefficient"`) ||
+				strings.Contains(string(encoded), `"filterTime"`) {
+				t.Fatalf("candidate filter boundary = %#v, JSON %s",
+					candidate.Gains, encoded)
 			}
 		})
 	}
@@ -56,7 +63,7 @@ func TestDesignPIDControllerSupportsEveryControlsysPIDTypeWithoutMutation(t *tes
 		t.Fatal("read-only PID design changed the model revision")
 	}
 	if parameters := findBlock(t, after.Blocks, controllerID).Parameters; parameters.Proportional != 1 ||
-		parameters.Integral != 0.5 {
+		parameters.Integral != 1 {
 		t.Fatalf("read-only PID design changed controller parameters: %#v", parameters)
 	}
 }
@@ -140,7 +147,7 @@ func TestPIDDesignAppliesAtomicallyAndRejectsStaleCandidate(t *testing.T) {
 	if parameters.Proportional != candidate.Gains.Proportional ||
 		parameters.Integral != candidate.Gains.Integral ||
 		parameters.Derivative != candidate.Gains.Derivative ||
-		parameters.FilterTime != candidate.Gains.FilterTime {
+		parameters.FilterCoefficient != candidate.Gains.FilterCoefficient {
 		t.Fatalf("applied parameters = %#v, candidate = %#v", parameters, candidate.Gains)
 	}
 	if _, err := service.ApplyPIDDesignCandidate(ctx, candidate); err == nil ||
@@ -293,7 +300,7 @@ func TestPIDDesignGatesIntegratorDelayUnstableAndDiscretePlants(t *testing.T) {
 						Name: "Controller",
 						Parameters: map[string]string{
 							"proportional": "1", "integral": "0.5",
-							"derivative": "0", "filter_time": "0.1",
+							"derivative": "0", "filter_coefficient": "10",
 							"time_domain": "discrete", "sample_time": "0.1",
 						},
 					},

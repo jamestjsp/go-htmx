@@ -114,6 +114,33 @@ The executable fixture derives continuous and discrete State-Space responses
 from the documented equations and Transport Delay values from its documented
 history behavior. These analytic values are not MATLAB or Simulink output.
 
+## PID and PID2 parallel-form subset
+
+PID Controller and 2-DOF PID Controller blocks expose the R2026a parallel-form
+parameters `P`, `I`, `D`, and derivative filter coefficient `N`. Process Lab
+maps them to controlsys's equivalent filter time at the adapter boundary with
+`Tf = 1/N`; saved models and controller-design candidates retain `N` as the
+public value. Existing saved blocks authored with `filterTime` are migrated to
+the equivalent coefficient when loaded.
+
+The supported continuous controller is
+`P + I/s + D*N*s/(s+N)`. The discrete controller uses the documented Forward
+Euler integration and filter methods at Process Lab's explicit sample time.
+PID2 adds the documented proportional and derivative setpoint weights:
+`P*(b*r-y) + I/s*(r-y) + D*N*s/(s+N)*(c*r-y)`.
+
+New blocks use the documented direct defaults `P=1`, `I=1`, `D=0`, and
+`N=100`; PID2 also uses `b=c=1`. Process Lab's single parallel-form editor
+represents P, I, PI, PD, and PID controller types by setting unused gains to
+zero instead of adding a separate type menu. It does not yet expose Ideal form,
+unfiltered derivatives, inherited discrete sample time, saturation,
+anti-windup, reset, tracking, or external parameter ports.
+
+The executable PID fixture checks direct defaults, continuous public time and
+frequency responses, discrete Forward Euler frequency response, and both PID2
+input paths against equations in the official R2026a block documentation.
+These analytic values are not MATLAB or Simulink output.
+
 ## Fixture layout
 
 Versioned fixtures live under

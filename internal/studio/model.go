@@ -75,23 +75,26 @@ func (k BlockKind) HasOutput() bool {
 }
 
 type Parameters struct {
-	Amplitude            float64                 `json:"amplitude,omitempty"`
-	InitialValue         float64                 `json:"initialValue,omitempty"`
-	InitialCondition     float64                 `json:"initialCondition,omitempty"`
-	InitialOutput        float64                 `json:"initialOutput,omitempty"`
-	StepTime             float64                 `json:"stepTime,omitempty"`
-	Value                float64                 `json:"value,omitempty"`
-	Bias                 float64                 `json:"bias,omitempty"`
-	Frequency            float64                 `json:"frequency,omitempty"`
-	Phase                float64                 `json:"phase,omitempty"`
-	Gain                 float64                 `json:"gain,omitempty"`
-	Signs                string                  `json:"signs,omitempty"`
-	TimeConstant         float64                 `json:"timeConstant,omitempty"`
-	Numerator            []float64               `json:"numerator,omitempty"`
-	Denominator          []float64               `json:"denominator,omitempty"`
-	Proportional         float64                 `json:"proportional,omitempty"`
-	Integral             float64                 `json:"integral,omitempty"`
-	Derivative           float64                 `json:"derivative,omitempty"`
+	Amplitude         float64   `json:"amplitude,omitempty"`
+	InitialValue      float64   `json:"initialValue,omitempty"`
+	InitialCondition  float64   `json:"initialCondition,omitempty"`
+	InitialOutput     float64   `json:"initialOutput,omitempty"`
+	StepTime          float64   `json:"stepTime,omitempty"`
+	Value             float64   `json:"value,omitempty"`
+	Bias              float64   `json:"bias,omitempty"`
+	Frequency         float64   `json:"frequency,omitempty"`
+	Phase             float64   `json:"phase,omitempty"`
+	Gain              float64   `json:"gain,omitempty"`
+	Signs             string    `json:"signs,omitempty"`
+	TimeConstant      float64   `json:"timeConstant,omitempty"`
+	Numerator         []float64 `json:"numerator,omitempty"`
+	Denominator       []float64 `json:"denominator,omitempty"`
+	Proportional      float64   `json:"proportional,omitempty"`
+	Integral          float64   `json:"integral,omitempty"`
+	Derivative        float64   `json:"derivative,omitempty"`
+	FilterCoefficient float64   `json:"filterCoefficient,omitempty"`
+	// FilterTime is decoded only for saved blocks authored before N became
+	// the public parameter. New blocks and editor updates leave it zero.
 	FilterTime           float64                 `json:"filterTime,omitempty"`
 	SetpointWeight       float64                 `json:"setpointWeight,omitempty"`
 	DerivativeWeight     float64                 `json:"derivativeWeight,omitempty"`

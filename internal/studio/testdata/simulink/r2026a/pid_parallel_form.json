@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "id": "simulink-r2026a-pid-parallel-form",
+  "release": "R2026a",
+  "mappings": [
+    {
+      "processLabBlock": "pid",
+      "mathWorksBlock": "PID Controller and Discrete PID Controller",
+      "supportedSubset": "Parallel form with P, I, D, filtered derivative coefficient N, continuous time, and explicit-sample-time discrete Forward Euler integration and filtering. P, I, PI, PD, and PID behavior is selected by zeroing inactive gains.",
+      "intentionalDeviations": [
+        "Process Lab exposes one parallel-form block instead of separate controller type and form menus.",
+        "Discrete sample time defaults to an explicit 0.1 second value instead of inherited -1 because model-level inherited-rate analysis is not available.",
+        "Ideal form, unfiltered derivative, saturation, anti-windup, reset, tracking, and external coefficient ports are outside this subset."
+      ]
+    },
+    {
+      "processLabBlock": "pid2",
+      "mathWorksBlock": "PID Controller (2DOF) and Discrete PID Controller (2DOF)",
+      "supportedSubset": "Parallel 2DOF PID with proportional setpoint weight b, derivative setpoint weight c, filtered derivative coefficient N, and explicit reference and measurement inputs.",
+      "intentionalDeviations": [
+        "Process Lab exposes one parallel-form block and selects PI, PD, or PID behavior by zeroing inactive gains.",
+        "Ideal form, unfiltered derivative, saturation, anti-windup, reset, tracking, and external coefficient ports are outside this subset."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "pid-direct-defaults",
+      "reference": {
+        "title": "PID Controller",
+        "url": "https://www.mathworks.com/help/simulink/slref/pidcontroller.html",
+        "section": "Block Parameters: Controller, Form, P, I, D, and N",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Defaults are transcribed from the documented parameter table; they are not MATLAB or Simulink output."
+      }
+    },
+    {
+      "id": "pid-parallel-continuous",
+      "reference": {
+        "title": "PID Controller",
+        "url": "https://www.mathworks.com/help/simulink/slref/pidcontroller.html",
+        "section": "Continuous-time parallel form",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected frequency values use C(s)=P+I/s+D*N*s/(s+N); they are not MATLAB or Simulink output."
+      }
+    },
+    {
+      "id": "pid-parallel-discrete-forward-euler",
+      "reference": {
+        "title": "Discrete PID Controller",
+        "url": "https://www.mathworks.com/help/simulink/slref/discretepidcontroller.html",
+        "section": "Forward Euler integration and filter methods",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected frequency values substitute the documented Forward Euler operators; they are not MATLAB or Simulink output."
+      }
+    },
+    {
+      "id": "pid2-parallel-continuous",
+      "reference": {
+        "title": "PID Controller (2DOF)",
+        "url": "https://www.mathworks.com/help/simulink/slref/pidcontroller2dof.html",
+        "section": "Continuous-time parallel form and setpoint weights",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected reference and measurement responses use the documented b and c weighted formula; they are not MATLAB or Simulink output."
+      }
+    }
+  ],
+  "defaults": {
+    "controllerType": "PID",
+    "form": "Parallel",
+    "proportional": 1,
+    "integral": 1,
+    "derivative": 0,
+    "filterCoefficient": 100,
+    "setpointWeight": 1,
+    "derivativeWeight": 1
+  },
+  "scenario": {
+    "proportional": 2,
+    "integral": 0.5,
+    "derivative": 0.25,
+    "filterCoefficient": 20,
+    "setpointWeight": 0.7,
+    "derivativeWeight": 0.3,
+    "sampleTime": 0.1,
+    "omega": [0.2, 2, 10]
+  }
+}
