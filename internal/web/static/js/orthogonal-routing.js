@@ -66,6 +66,46 @@ function segmentIsClear(a, b, obstacles) {
   return obstacles.every((rect) => !segmentCrossesRect(a, b, rect))
 }
 
+function endpointOwner(point, obstacles, output) {
+  return obstacles.findIndex((rect) => {
+    const edge = output ? rect.right : rect.left
+    return Math.abs(point.x - edge) < EPSILON &&
+      point.y >= rect.top - EPSILON &&
+      point.y <= rect.bottom + EPSILON
+  })
+}
+
+function stubEnd(point, direction, length, obstacles, owner) {
+  let distance = length
+  obstacles.forEach((rect, index) => {
+    if (index === owner || point.y <= rect.top + EPSILON || point.y >= rect.bottom - EPSILON) return
+    if (direction > 0) {
+      if (rect.right <= point.x + EPSILON) return
+      distance = rect.left <= point.x + EPSILON
+        ? 0
+        : Math.min(distance, rect.left - point.x)
+      return
+    }
+    if (rect.left >= point.x - EPSILON) return
+    distance = rect.right >= point.x - EPSILON
+      ? 0
+      : Math.min(distance, point.x - rect.right)
+  })
+  return { x: point.x + direction * Math.max(0, distance), y: point.y }
+}
+
+function clearanceLevels(clearance) {
+  const levels = []
+  let level = Math.max(0, Number(clearance) || 0)
+  while (level > EPSILON) {
+    levels.push(level)
+    if (level <= 1) break
+    level /= 2
+  }
+  levels.push(0)
+  return levels
+}
+
 function uniqueSorted(values) {
   return [...new Set(values.map(Number))].sort((a, b) => a - b)
 }
@@ -298,34 +338,72 @@ export function simplifyRoute(points) {
 }
 
 function fallbackRoute(start, end, obstacles, bounds, portStub) {
-  const sourceExit = { x: start.x + portStub, y: start.y }
-  const targetEntry = { x: end.x - portStub, y: end.y }
-  if (sourceExit.x <= targetEntry.x) {
-    const middleX = (sourceExit.x + targetEntry.x) / 2
-    return simplifyRoute([
+  const sourceOwner = endpointOwner(start, obstacles, true)
+  const targetOwner = endpointOwner(end, obstacles, false)
+  const sourceExit = stubEnd(start, 1, portStub, obstacles, sourceOwner)
+  const targetEntry = stubEnd(end, -1, portStub, obstacles, targetOwner)
+  const candidateXs = uniqueSorted([
+    (sourceExit.x + targetEntry.x) / 2,
+    sourceExit.x,
+    targetEntry.x,
+    ...obstacles.flatMap((rect) => [rect.left, rect.right])
+  ])
+  const candidateYs = uniqueSorted([
+    sourceExit.y,
+    targetEntry.y,
+    (sourceExit.y + targetEntry.y) / 2,
+    ...obstacles.flatMap((rect) => [rect.top, rect.bottom])
+  ])
+  const ranked = [
+    ...candidateXs.map((x) => simplifyRoute([
       start,
       sourceExit,
-      { x: middleX, y: sourceExit.y },
-      { x: middleX, y: targetEntry.y },
+      { x, y: sourceExit.y },
+      { x, y: targetEntry.y },
       targetEntry,
       end
-    ])
-  }
-  const top = Math.min(...obstacles.map((rect) => rect.top), sourceExit.y, targetEntry.y)
-  const bottom = Math.max(...obstacles.map((rect) => rect.bottom), sourceExit.y, targetEntry.y)
-  const topLane = bounds ? Math.max(bounds.top, top) : top
-  const bottomLane = bounds ? Math.min(bounds.bottom, bottom) : bottom
-  const topCost = Math.abs(sourceExit.y - topLane) + Math.abs(targetEntry.y - topLane)
-  const bottomCost = Math.abs(sourceExit.y - bottomLane) + Math.abs(targetEntry.y - bottomLane)
-  const lane = bottomCost <= topCost ? bottomLane : topLane
-  return simplifyRoute([
-    start,
-    sourceExit,
-    { x: sourceExit.x, y: lane },
-    { x: targetEntry.x, y: lane },
-    targetEntry,
-    end
-  ])
+    ])),
+    ...candidateYs.map((y) => simplifyRoute([
+      start,
+      sourceExit,
+      { x: sourceExit.x, y },
+      { x: targetEntry.x, y },
+      targetEntry,
+      end
+    ]))
+  ].map((points) => {
+    const segments = routeSegments(points)
+    return {
+      points,
+      outside: bounds ? points.filter((point) => !withinBounds(point, bounds)).length : 0,
+      crossings: segments.reduce((total, segment) => {
+        return total + obstacles.filter((rect) => segmentCrossesRect(segment.a, segment.b, rect)).length
+      }, 0),
+      length: segments.reduce((total, segment) => total + segmentLength(segment.a, segment.b), 0),
+      path: routePath(points)
+    }
+  }).sort((a, b) => {
+    if (a.outside !== b.outside) return a.outside - b.outside
+    if (a.crossings !== b.crossings) return a.crossings - b.crossings
+    if (a.length !== b.length) return a.length - b.length
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+  })
+  return ranked[0].points
+}
+
+function routeWithClearance(source, target, obstacles, occupied, bounds, options, clearance) {
+  const expanded = obstacles.map((rect) => inflateRect(rect, clearance))
+  const sourceOwner = endpointOwner(source, obstacles, true)
+  const targetOwner = endpointOwner(target, obstacles, false)
+  const sourceExit = stubEnd(source, 1, options.portStub, expanded, sourceOwner)
+  const targetEntry = stubEnd(target, -1, options.portStub, expanded, targetOwner)
+  if (sourceOwner >= 0 && sourceExit.x - source.x < clearance - EPSILON) return null
+  if (targetOwner >= 0 && target.x - targetEntry.x < clearance - EPSILON) return null
+
+  const graph = buildVisibilityGraph(sourceExit, targetEntry, expanded, bounds)
+  const main = shortestRoute(graph, occupied, options)
+  if (!main) return null
+  return simplifyRoute([source, sourceExit, ...main, targetEntry, target])
 }
 
 export function routeOrthogonal({
@@ -342,17 +420,18 @@ export function routeOrthogonal({
 }) {
   const source = { x: Number(start.x), y: Number(start.y) }
   const target = { x: Number(end.x), y: Number(end.y) }
-  const expanded = obstacles.map((rect) => inflateRect(rect, clearance))
-  const sourceExit = { x: source.x + portStub, y: source.y }
-  const targetEntry = { x: target.x - portStub, y: target.y }
-  const graph = buildVisibilityGraph(sourceExit, targetEntry, expanded, bounds)
-  const main = shortestRoute(graph, occupied, {
+  const normalized = obstacles.map(normalizeRect)
+  const options = {
+    portStub,
     bendPenalty,
     crossingPenalty,
     overlapPenalty
-  })
-  if (!main) return fallbackRoute(source, target, expanded, bounds, portStub)
-  return simplifyRoute([source, sourceExit, ...main, targetEntry, target])
+  }
+  for (const level of clearanceLevels(clearance)) {
+    const route = routeWithClearance(source, target, normalized, occupied, bounds, options, level)
+    if (route) return route
+  }
+  return fallbackRoute(source, target, normalized, bounds, portStub)
 }
 
 export function routeSegments(points) {
@@ -361,6 +440,11 @@ export function routeSegments(points) {
     segments.push({ a: points[index - 1], b: points[index] })
   }
   return segments
+}
+
+export function routeIntersectsRect(segments, rect, clearance = 0) {
+  const obstacle = inflateRect(rect, clearance)
+  return segments.some((segment) => segmentCrossesRect(segment.a, segment.b, obstacle))
 }
 
 export function routePath(points) {

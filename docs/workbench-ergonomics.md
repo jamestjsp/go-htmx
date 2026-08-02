@@ -165,7 +165,9 @@ different Sum ports remain distinguishable.
 renders connection ids, endpoint block ids, port ids, and resolved vertical
 port centres; it does not render a competing path. `geometry.js` turns the
 current block rectangles into obstacles and asks the router for every path on
-first load, after an HTMX swap or history restore, and while a block moves.
+first load and after an HTMX swap or history restore. During a drag it batches
+pointer events to one animation frame and reroutes only connected signals or
+signals obstructed by the moving block; release performs one full redraw.
 `wiring.js` uses the same operation for the draft edge.
 
 Routes follow the Simulink reading convention:
@@ -181,8 +183,11 @@ Routes follow the Simulink reading convention:
 The router builds a rectilinear visibility graph from the endpoint and obstacle
 coordinates, then finds the lowest-cost deterministic path. Earlier connections
 become occupancy hints for later ones, which separates avoidable overlaps while
-leaving the result stable across reloads. If crowded geometry has no graph path,
-the fallback is still orthogonal.
+leaving the result stable across reloads. When two cards leave less room than
+the normal port stub, the router progressively reduces clearance and shortens
+that stub without entering either card. If crowded geometry has no graph path,
+the fallback tests deterministic orthogonal candidates against the block
+rectangles before selecting one.
 
 Automatic block arrangement, editable manual waypoints, and shared branch
 junctions are intentionally separate problems. Routing reacts to the positions

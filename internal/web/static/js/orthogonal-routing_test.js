@@ -122,3 +122,22 @@ test('is deterministic and retains an orthogonal fallback for blocked geometry',
   assert.deepEqual(second, first)
   assert.match(routePath(first), /^M 200 200 L /)
 })
+
+test('shortens a blocked input stub instead of crossing an adjacent block', () => {
+  const adjacent = block(243, 200)
+  const target = block(426, 200)
+  const source = block(700, 380)
+  const points = routeOrthogonal({
+    start: { x: source.right, y: 422 },
+    end: { x: target.left, y: 242 },
+    obstacles: [adjacent, target, source],
+    bounds: { left: 0, top: 0, right: 1200, bottom: 900 }
+  })
+
+  assertOrthogonal(points)
+  assert.ok(points.at(-2).x >= adjacent.right)
+  assert.ok(points.at(-2).x < target.left)
+  for (const { a, b } of routeSegments(points)) {
+    assert.equal(segmentEntersRect(a, b, adjacent), false, JSON.stringify({ a, b, adjacent }))
+  }
+})

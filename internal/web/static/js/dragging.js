@@ -3,7 +3,12 @@
 // keyboard nudge, and the one request that persists whatever moved.
 // =====================================================================
 import { setStatus, sheet, workbench } from './dom.js'
-import { geometry, redrawEdges } from './geometry.js'
+import {
+  flushRedrawEdges,
+  geometry,
+  redrawEdges,
+  scheduleRedrawEdges
+} from './geometry.js'
 import { currentZoom } from './viewport.js'
 import { isSelected, selectBlock, selectedNodes, setSelection, toggleSelection } from './selection.js'
 
@@ -174,7 +179,9 @@ export function moveDrag(event) {
     member.node.style.left = `${Math.round(memberLeft)}px`
     member.node.style.top = `${Math.round(memberTop)}px`
   })
-  redrawEdges()
+  if (dragging.moved) {
+    scheduleRedrawEdges(dragging.group.map((member) => member.node.dataset.blockId))
+  }
 }
 
 export function endDrag(event) {
@@ -188,6 +195,7 @@ export function endDrag(event) {
     selectBlock(current.node)
     return
   }
+  flushRedrawEdges()
   savePositions(current.group)
 }
 
