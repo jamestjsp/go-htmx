@@ -89,6 +89,31 @@ distinct from an absent legacy field. Unversioned saved blocks continue to
 receive their historical defaults, including a zero-time Step, while newly
 created Step blocks receive the R2026a one-second default.
 
+## State-space and transport-history subset
+
+Continuous and discrete State-Space blocks use the documented direct-block
+matrix defaults `A = B = C = D = 1` and an internal initial condition of zero.
+For multi-state models, Process Lab accepts either one finite value, broadcast
+to every state, or one finite value per row of `A`. Initial states are assembled
+by the compiler in the same realization order used for scalar stateful blocks.
+
+The Discrete State-Space block retains Process Lab's explicit 0.1 second
+new-block sample time. Simulink defaults this parameter to inherited (`-1`),
+which Process Lab cannot represent until model-level inherited-rate analysis is
+available. Named input, output, and state channels also remain a
+Process-Lab-specific extension.
+
+Exact scalar Transport Delay supports the documented finite Initial output
+value. The value supplies constant pre-simulation history until the aligned
+delayed input becomes available. The default remains zero, so existing models
+keep the same realization, delay-aware driver selection, and no-delay fast
+path. Padé and Thiran are explicit approximation modes and do not reinterpret
+Initial output as approximation-state coordinates.
+
+The executable fixture derives continuous and discrete State-Space responses
+from the documented equations and Transport Delay values from its documented
+history behavior. These analytic values are not MATLAB or Simulink output.
+
 ## Fixture layout
 
 Versioned fixtures live under
