@@ -734,6 +734,18 @@ func webStateDesignFlow(
 	); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.UpdateBlock(ctx, plantID, studio.BlockUpdate{
+		Name: "State-Space plant",
+		Parameters: map[string]string{
+			"a": "0.8 0; 0 0.5", "b": "1 0; 0 1",
+			"c": "1 0; 0 1", "d": "0 0; 0 0",
+			"input_names": "u1, u2", "output_names": "y1, y2",
+			"state_names": "x1, x2", "time_domain": "continuous",
+			"sample_time": "0.1",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := service.UpdateBlock(ctx, controllerID, studio.BlockUpdate{
 		Name: "LQG controller",
 		Parameters: map[string]string{
