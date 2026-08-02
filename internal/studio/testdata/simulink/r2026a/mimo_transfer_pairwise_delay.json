@@ -21,6 +21,73 @@
     "kind": "mathworks-formula-analytic",
     "description": "Each output is the sum of independently delayed first-order step responses derived from the documented output-by-input IODelay semantics."
   },
+  "cases": [
+    {
+      "id": "discrete-integer-pairwise-delay",
+      "reference": {
+        "title": "Time Delays in Linear Systems",
+        "url": "https://www.mathworks.com/help/control/ug/time-delays-in-linear-systems.html",
+        "section": "Discrete-Time Transfer Function with Time Delay",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Integer sample delays shift each discrete transfer path by its documented number of sample periods."
+      }
+    },
+    {
+      "id": "mixed-embedded-and-transport-delay",
+      "reference": {
+        "title": "Transport Delay",
+        "url": "https://www.mathworks.com/help/simulink/slref/transportdelay.html",
+        "section": "Description",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Series transport delays add and shift the first-order response on the aligned run grid."
+      }
+    },
+    {
+      "id": "delayed-feedback",
+      "reference": {
+        "title": "Closing Feedback Loops with Time Delays",
+        "url": "https://www.mathworks.com/help/control/ug/closing-feedback-loops-with-time-delays.html",
+        "section": "Closing Feedback Loops with Time Delays",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Before delayed feedback returns, the response equals the open-loop first-order step response."
+      }
+    },
+    {
+      "id": "mimo-delay-frequency-response",
+      "reference": {
+        "title": "Time Delays in Linear Systems",
+        "url": "https://www.mathworks.com/help/control/ug/time-delays-in-linear-systems.html",
+        "section": "Transport Delay in MIMO Transfer Function",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Each path frequency response includes the exact phase factor exp(-i omega tau)."
+      }
+    },
+    {
+      "id": "delay-free-fast-path",
+      "reference": {
+        "title": "lsim",
+        "url": "https://www.mathworks.com/help/control/ref/dynamicsystem.lsim.html",
+        "section": "Input Interpolation Method",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-semantics-controlsys",
+        "description": "A delay-free continuous flowsheet retains Process Lab's existing batch lsim execution path."
+      }
+    }
+  ],
   "simulation": {
     "sampleTime": 0.1,
     "duration": 1.0

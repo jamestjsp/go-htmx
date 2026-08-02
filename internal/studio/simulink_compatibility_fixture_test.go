@@ -33,6 +33,19 @@ type simulinkCompatibilityFixture struct {
 		Kind        string `json:"kind"`
 		Description string `json:"description"`
 	} `json:"oracle"`
+	Cases []struct {
+		ID        string `json:"id"`
+		Reference struct {
+			Title    string `json:"title"`
+			URL      string `json:"url"`
+			Section  string `json:"section"`
+			Accessed string `json:"accessed"`
+		} `json:"reference"`
+		Oracle struct {
+			Kind        string `json:"kind"`
+			Description string `json:"description"`
+		} `json:"oracle"`
+	} `json:"cases"`
 	Simulation struct {
 		SampleTime float64 `json:"sampleTime"`
 		Duration   float64 `json:"duration"`
@@ -88,6 +101,19 @@ func TestR2026aCompatibilityFixtureCarriesTraceableProvenance(t *testing.T) {
 	if !allowedOracles[fixture.Oracle.Kind] || fixture.Oracle.Description == "" {
 		t.Fatalf("oracle provenance = %#v", fixture.Oracle)
 	}
+	for _, compatibilityCase := range fixture.Cases {
+		if compatibilityCase.ID == "" ||
+			compatibilityCase.Reference.Title == "" ||
+			!strings.HasPrefix(compatibilityCase.Reference.URL, "https://www.mathworks.com/help/") ||
+			compatibilityCase.Reference.Section == "" ||
+			compatibilityCase.Reference.Accessed == "" {
+			t.Fatalf("incomplete compatibility case = %#v", compatibilityCase)
+		}
+		if !allowedOracles[compatibilityCase.Oracle.Kind] ||
+			compatibilityCase.Oracle.Description == "" {
+			t.Fatalf("case oracle provenance = %#v", compatibilityCase)
+		}
+	}
 	generatedDescription := strings.ToLower(strings.Join(
 		append(fixture.Mapping.IntentionalDeviations, fixture.Oracle.Description),
 		" ",
@@ -98,8 +124,60 @@ func TestR2026aCompatibilityFixtureCarriesTraceableProvenance(t *testing.T) {
 	}
 }
 
+func requireR2026aCompatibilityCase(
+	t *testing.T,
+	fixture simulinkCompatibilityFixture,
+	id string,
+) {
+	t.Helper()
+	for _, compatibilityCase := range fixture.Cases {
+		if compatibilityCase.ID == id {
+			return
+		}
+	}
+	t.Fatalf("fixture does not trace compatibility case %q", id)
+}
+
 func TestR2026aMIMOTransferPairwiseDelaysRunThroughStudio(t *testing.T) {
 	fixture := loadR2026aMIMODelayFixture(t)
+	flow := createMIMOCompatibilityFlow(t, fixture, modelDomainContinuous)
+	runSnapshot, err := flow.studio.Run(flow.ctx, flow.flowID, SimulationRequest{
+		Duration: fixture.Simulation.Duration, SampleTime: fixture.Simulation.SampleTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := flow.studio.Snapshot(flow.ctx, flow.flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runSnapshot.LastRun == nil || persisted.LastRun == nil ||
+		runSnapshot.LastRun.ID != persisted.LastRun.ID {
+		t.Fatalf("public run was not persisted: returned=%#v stored=%#v",
+			runSnapshot.LastRun, persisted.LastRun)
+	}
+	if persisted.LastRun.Fidelity.Driver != "delay-aware-simulate" {
+		t.Fatalf("simulation driver = %q, want delay-aware-simulate",
+			persisted.LastRun.Fidelity.Driver)
+	}
+	assertMIMOFirstOrderDelayFixture(t, fixture, persisted.LastRun)
+}
+
+type mimoCompatibilityFlow struct {
+	studio     *Studio
+	ctx        context.Context
+	flowID     int64
+	sourceID   int64
+	transferID int64
+	scopeID    int64
+}
+
+func createMIMOCompatibilityFlow(
+	t *testing.T,
+	fixture simulinkCompatibilityFixture,
+	timeDomain string,
+) mimoCompatibilityFlow {
+	t.Helper()
 	studio := openTestStudio(t, filepath.Join(t.TempDir(), "r2026a.db"))
 	ctx := context.Background()
 	seeded, err := studio.Current(ctx)
@@ -171,7 +249,7 @@ func TestR2026aMIMOTransferPairwiseDelaysRunThroughStudio(t *testing.T) {
 			"transfer_delays":       delays.Text(),
 			"input_names":           inputNames.Text(),
 			"output_names":          outputNames.Text(),
-			"time_domain":           modelDomainContinuous,
+			"time_domain":           timeDomain,
 			"sample_time":           strconv.FormatFloat(fixture.Simulation.SampleTime, 'g', -1, 64),
 		},
 	}); err != nil {
@@ -189,27 +267,10 @@ func TestR2026aMIMOTransferPairwiseDelaysRunThroughStudio(t *testing.T) {
 	if _, err := studio.Connect(ctx, flowID, Wire{SourceID: transferID, TargetID: scopeID}); err != nil {
 		t.Fatal(err)
 	}
-
-	runSnapshot, err := studio.Run(ctx, flowID, SimulationRequest{
-		Duration: fixture.Simulation.Duration, SampleTime: fixture.Simulation.SampleTime,
-	})
-	if err != nil {
-		t.Fatal(err)
+	return mimoCompatibilityFlow{
+		studio: studio, ctx: ctx, flowID: flowID,
+		sourceID: sourceID, transferID: transferID, scopeID: scopeID,
 	}
-	persisted, err := studio.Snapshot(ctx, flowID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runSnapshot.LastRun == nil || persisted.LastRun == nil ||
-		runSnapshot.LastRun.ID != persisted.LastRun.ID {
-		t.Fatalf("public run was not persisted: returned=%#v stored=%#v",
-			runSnapshot.LastRun, persisted.LastRun)
-	}
-	if persisted.LastRun.Fidelity.Driver != "delay-aware-simulate" {
-		t.Fatalf("simulation driver = %q, want delay-aware-simulate",
-			persisted.LastRun.Fidelity.Driver)
-	}
-	assertMIMOFirstOrderDelayFixture(t, fixture, persisted.LastRun)
 }
 
 func matrixValueFromRows(rows [][]float64) (MatrixValue, error) {

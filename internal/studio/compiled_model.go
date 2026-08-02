@@ -428,7 +428,7 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 				)
 			}
 		}
-		response, err := simulateSystemByStep(
+		response, err := simulateDiscreteSystem(
 			m.system,
 			mat.NewDense(len(m.inputs), steps, inputData),
 		)
@@ -456,6 +456,17 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		return nil, fmt.Errorf("simulate flowsheet: %w", err)
 	}
 	return response, nil
+}
+
+func simulateDiscreteSystem(system *controlsys.System, input *mat.Dense) (*mat.Dense, error) {
+	if system.HasDelay() {
+		response, err := system.Simulate(input, nil, nil)
+		if err != nil {
+			return nil, err
+		}
+		return response.Y, nil
+	}
+	return simulateSystemByStep(system, input)
 }
 
 func simulateSystemByStep(system *controlsys.System, input *mat.Dense) (*mat.Dense, error) {
@@ -573,7 +584,8 @@ func (m *compiledModel) fidelity(baseStep float64) (Fidelity, error) {
 	if m.system.IsDiscrete() {
 		fidelity.ModelDomain = string(timeDomainDiscrete)
 	}
-	if m.requiresDelayAwareDiscretization() {
+	if m.requiresDelayAwareDiscretization() ||
+		(m.system.IsDiscrete() && m.system.HasDelay()) {
 		fidelity.Driver = "delay-aware-simulate"
 		fidelity.ExactDelayAligned = true
 	} else if m.system.IsDiscrete() {
