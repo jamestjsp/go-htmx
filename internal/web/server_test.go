@@ -246,6 +246,7 @@ func TestWorkbenchRendersValidatedParameterShapes(t *testing.T) {
 	for _, want := range []string{
 		`name="numerator"`,
 		`name="denominator"`,
+		`name="duration" type="number" min="1" max="3600"`,
 		`class="field-shape">1 × 2`,
 		`class="field-shape">1 × 3`,
 		"Descending powers of s",
