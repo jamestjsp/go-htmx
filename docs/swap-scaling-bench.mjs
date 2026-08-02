@@ -11,6 +11,9 @@
 //     --server-reps 30     HTTP samples per endpoint per size
 //     --swap-reps 15       parameter-edit swaps per size per zoom
 //     --load-reps 7        page loads per size per zoom
+//     --cpu-slowdown 4      Chrome CPU throttling rate (default 1)
+//     --skip-profile        omit the CDP sampling profile
+//     --skip-redundancy     omit the multi-interaction routing gate
 //     --out results.json   also write the raw samples as JSON
 //     --keep               leave the scratch directory in place
 //
@@ -52,6 +55,9 @@ const USAGE = `Usage: node docs/swap-scaling-bench.mjs [options]
   --server-reps 30     HTTP samples per endpoint per size
   --swap-reps 15       parameter-edit swaps per size per zoom
   --load-reps 7        page loads per size per zoom
+  --cpu-slowdown 4     Chrome CPU throttling rate (default 1)
+  --skip-profile       Omit the CDP sampling profile
+  --skip-redundancy    Omit the multi-interaction routing gate
   --out results.json   also write the raw samples as JSON
   --keep               leave the scratch directory in place
   --help               print this and exit`
@@ -63,7 +69,18 @@ const USAGE = `Usage: node docs/swap-scaling-bench.mjs [options]
 // block count instead of one short, which is roughly what a real sheet
 // looks like.
 const TRAIN = ['sine', 'gain', 'lag', 'gain', 'sum', 'integrator', 'transfer', 'pid', 'scope', 'spectrum']
-const TRAIN_WIRES = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7], [7, 8], [2, 4], [5, 9]]
+const TRAIN_WIRES = [
+  [0, 1, 0],
+  [1, 2, 0],
+  [2, 3, 0],
+  [3, 4, 0],
+  [4, 5, 0],
+  [5, 6, 0],
+  [6, 7, 0],
+  [7, 8, 0],
+  [2, 4, 1],
+  [5, 9, 0]
+]
 const COLUMNS = 20
 const ORIGIN = { x: 60, y: 80 }
 const STEP = { x: 240, y: 120 } // block size plus a wire run, and a multiple of the 20px grid
@@ -116,7 +133,11 @@ async function main() {
       fixtures.push(await buildFixture(size))
     }
 
-    const results = { generatedAt: new Date().toISOString(), sizes: [] }
+    const results = {
+      generatedAt: new Date().toISOString(),
+      cpuSlowdown: options.cpuSlowdown,
+      sizes: []
+    }
     for (const fixture of fixtures) {
       log(`server timings for ${fixture.blocks} blocks`)
       results.sizes.push({ ...fixture, server: await benchServer(fixture), browser: {} })
@@ -128,6 +149,9 @@ async function main() {
     cleanup.push(session.close)
     await session.send('Page.enable')
     await session.send('Runtime.enable')
+    if (options.cpuSlowdown !== 1) {
+      await session.send('Emulation.setCPUThrottlingRate', { rate: options.cpuSlowdown })
+    }
     for (const entry of results.sizes) {
       for (const zoom of [1, 0.25]) {
         log(`browser timings for ${entry.blocks} blocks at ${Math.round(zoom * 100)}%`)
@@ -135,9 +159,11 @@ async function main() {
       }
     }
     // Last, because it edits the fixtures it runs against.
-    for (const entry of results.sizes) {
-      log(`redundancy gate for ${entry.blocks} blocks`)
-      entry.redundancy = await benchRedundancy(session, entry)
+    if (!options.skipRedundancy) {
+      for (const entry of results.sizes) {
+        log(`redundancy gate for ${entry.blocks} blocks`)
+        entry.redundancy = await benchRedundancy(session, entry)
+      }
     }
 
     report(results)
@@ -191,18 +217,33 @@ async function buildFixture(blocks) {
     const html = await response.text()
     const match = html.match(/data-selected-id="(\d+)"/)
     if (!match) throw new Error(`block ${index} (${kind}) was not added: ${response.status}`)
-    ids.push(match[1])
+    const id = match[1]
+    ids.push(id)
+    if (kind === 'sum') {
+      const form = inspectorForm(html)
+      form.signs = '+++'
+      const updated = await fetch(`${base}/blocks/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(form)
+      })
+      const updatedHTML = await updated.text()
+      if (!updated.ok || /class="error-banner"/.test(updatedHTML)) {
+        throw new Error(`sum ${index} could not expose two input ports: ${updated.status}`)
+      }
+    }
   }
 
   let wires = 0
   for (let train = 0; train < blocks / TRAIN.length; train += 1) {
-    for (const [from, to] of TRAIN_WIRES) {
+    for (const [from, to, targetPort] of TRAIN_WIRES) {
       const response = await fetch(`${base}/flows/${flowID}/connections`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           source_id: ids[train * TRAIN.length + from],
-          target_id: ids[train * TRAIN.length + to]
+          target_id: ids[train * TRAIN.length + to],
+          target_port: String(targetPort)
         })
       })
       const html = await response.text()
@@ -391,19 +432,19 @@ async function benchBrowser(session, fixture, zoom) {
   // The profile runs last and on its own. A sampling profiler perturbs
   // what it measures, so it is never on while the numbers above are
   // being taken; it is here only to say which function the time is in.
-  const profiles = {
-    swap: await profile(session, () => evaluate(session, 'window.__bench.parameterEdit()', true), 5),
-    drag: await profile(session, () => benchDrag(session), 1)
-  }
+  const profiles = options.skipProfile
+    ? { swap: [], drag: [] }
+    : {
+        swap: await profile(session, () => evaluate(session, 'window.__bench.parameterEdit()', true), 5),
+        drag: await profile(session, () => benchDrag(session), 1)
+      }
 
   return { loads, observed, edits, moves, redraws, drag, profiles }
 }
 
-// benchRedundancy is the gate behind the doc's claim that redrawEdges
-// rewrites the server's own output. It walks every interaction in the
-// application that swaps #workbench and, for each, compares the d
-// attributes in the response body against the d attributes on the page
-// once the re-apply pass has finished.
+// benchRedundancy is the gate behind the claim that routing afterSwap and
+// again afterSettle is redundant. It walks every interaction that swaps
+// #workbench and compares the authoritative client paths after both passes.
 //
 // It mutates the fixture — it adds, wires, unwires and deletes — so it
 // runs after every timing measurement is complete.
@@ -498,6 +539,9 @@ async function benchDrag(session) {
     await mouse('mouseMoved', target.x + i * 2, target.y + (i % 7), 1)
   }
   await mouse('mouseReleased', target.x + 80, target.y, 0)
+  await evaluate(session, `new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0)))
+  })`, true)
   const drag = await evaluate(session, 'window.__bench.readDrag()')
   // Put the block back in the slot it came from, in the page as well as
   // the database, so repeated drags neither walk it across the sheet nor
@@ -523,6 +567,20 @@ async function benchDrag(session) {
 async function installProbe(session) {
   await evaluate(session, `(() => {
     const bench = {}
+    bench._longTasks = []
+    if (typeof PerformanceObserver !== 'undefined' &&
+        PerformanceObserver.supportedEntryTypes.includes('longtask')) {
+      const observer = new PerformanceObserver((list) => {
+        list.getEntries().forEach((entry) => {
+          bench._longTasks.push({ start: entry.startTime, duration: entry.duration })
+        })
+      })
+      observer.observe({ type: 'longtask' })
+    }
+    bench.longTasksBetween = (start, end) => bench._longTasks.filter((entry) => {
+      return entry.start < end && entry.start + entry.duration > start
+    })
+
     const settle = (kick) => new Promise((resolve, reject) => {
       const t = {}
       const stamp = (key) => () => { if (t[key] === undefined) t[key] = performance.now() }
@@ -538,7 +596,7 @@ async function installProbe(session) {
       add('htmx:afterSettle', true, 'settleStart')
       const done = () => {
         t.settleEnd = performance.now()
-        requestAnimationFrame(() => requestAnimationFrame(() => {
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => {
           t.frame = performance.now()
           bind.forEach(([type, fn, capture]) => document.removeEventListener(type, fn, capture))
           document.removeEventListener('htmx:afterSettle', done, false)
@@ -550,9 +608,10 @@ async function installProbe(session) {
             settleWait: t.settleStart - t.swapEnd,
             settleReapply: t.settleEnd - t.settleStart,
             total: t.settleEnd - t.t0,
-            toFrame: t.frame - t.t0
+            toFrame: t.frame - t.t0,
+            longTasks: bench.longTasksBetween(t.t0, t.frame)
           })
-        }))
+        }, 0)))
       }
       document.addEventListener('htmx:afterSettle', done, false)
       bind.push(['htmx:afterSettle', done, false])
@@ -627,87 +686,74 @@ async function installProbe(session) {
       return { ms: performance.now() - t0, paths }
     }
 
-    // Does redrawEdges change what the server sent?
+    // Does the afterSettle routing pass change the paths produced by the
+    // afterSwap pass?
     //
-    // The only honest answer compares the server's bytes against the
-    // DOM after the re-apply pass has run — not the DOM against itself.
-    // htmx:beforeSwap carries the untouched response text in
-    // detail.serverResponse, so the server's d attributes are read from
-    // there, before any client code has seen the markup, and compared
-    // with what is on the page once the swap has settled.
-    //
-    // Both comparisons are reported. The raw one is the control: the
-    // server formats coordinates with %.1f and the client emits bare
-    // numbers, so if raw does not differ the probe never saw the
-    // server's own markup and the numeric result means nothing.
+    // The server now emits empty d attributes and the browser router is the
+    // route authority. Every application listener was registered before this
+    // probe, so these bubble listeners read the DOM after each application
+    // re-apply pass. Identical arrays prove the second pass was redundant.
     bench.redundancyCheck = (kickName) => new Promise((resolve, reject) => {
-      let served = null
-      const capture = (event) => {
-        if (served !== null) return
-        const html = event.detail && event.detail.serverResponse
-        if (typeof html !== 'string') return
-        const parsed = new DOMParser().parseFromString(html, 'text/html')
-        served = Array.from(parsed.querySelectorAll('[data-edge-source]'))
+      let firstPass = null
+      const readPaths = () => Array.from(document.querySelectorAll('[data-edge-source]'))
           .map((path) => path.getAttribute('d') || '')
+      const captureFirstPass = () => {
+        if (firstPass === null) firstPass = readPaths()
       }
-      document.addEventListener('htmx:beforeSwap', capture, true)
+      document.addEventListener('htmx:afterSwap', captureFirstPass, false)
 
       const finish = () => {
-        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSwap', captureFirstPass, false)
         document.removeEventListener('htmx:afterSettle', onSettle, false)
         clearTimeout(guard)
         const numbers = (value) => (value.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number)
-        const client = Array.from(document.querySelectorAll('[data-edge-source]'))
-          .map((path) => path.getAttribute('d') || '')
-        if (served === null) {
-          resolve({ kick: kickName, error: 'no serverResponse seen; the interaction did not swap' })
+        const settled = readPaths()
+        if (firstPass === null) {
+          resolve({ kick: kickName, error: 'no afterSwap paths seen; the interaction did not swap' })
           return
         }
-        if (served.length !== client.length) {
+        if (firstPass.length !== settled.length) {
           resolve({
-            kick: kickName, servedPaths: served.length, clientPaths: client.length,
-            error: 'path count differs between the response and the settled DOM'
+            kick: kickName, firstPassPaths: firstPass.length, settledPaths: settled.length,
+            error: 'path count differs between afterSwap and afterSettle'
           })
           return
         }
-        let rawDiffers = 0
+        let changed = 0
         let numericDiffers = 0
         let maxDelta = 0
         let firstNumeric = null
-        served.forEach((value, index) => {
-          if (value !== client[index]) rawDiffers += 1
+        firstPass.forEach((value, index) => {
+          if (value !== settled[index]) changed += 1
           const a = numbers(value)
-          const b = numbers(client[index])
+          const b = numbers(settled[index])
           if (a.length !== b.length) {
             numericDiffers += 1
-            if (!firstNumeric) firstNumeric = { served: value, client: client[index] }
+            maxDelta = Infinity
+            if (!firstNumeric) firstNumeric = { firstPass: value, settled: settled[index] }
             return
           }
-          // maxDelta is the evidence, not the count: the server rounds
-          // coordinates to one decimal with %.1f, so a difference of
-          // order 0.05 would be formatting and anything larger would be
-          // a genuinely different curve.
           const delta = a.reduce((worst, n, i) => Math.max(worst, Math.abs(n - b[i])), 0)
           if (delta > maxDelta) maxDelta = delta
           if (delta > 1e-6) {
             numericDiffers += 1
-            if (!firstNumeric) firstNumeric = { served: value, client: client[index], delta }
+            if (!firstNumeric) firstNumeric = { firstPass: value, settled: settled[index], delta }
           }
         })
         resolve({
           kick: kickName,
-          paths: served.length,
-          rawDiffers,
+          paths: firstPass.length,
+          changed,
           numericDiffers,
           maxDelta,
-          sample: served.length ? { served: served[0], client: client[0] } : null,
+          sample: firstPass.length ? { firstPass: firstPass[0], settled: settled[0] } : null,
           firstNumeric
         })
       }
       const onSettle = () => requestAnimationFrame(finish)
       document.addEventListener('htmx:afterSettle', onSettle, false)
       const guard = setTimeout(() => {
-        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSwap', captureFirstPass, false)
         document.removeEventListener('htmx:afterSettle', onSettle, false)
         reject(new Error(kickName + ' did not settle within 30s'))
       }, 30000)
@@ -715,7 +761,7 @@ async function installProbe(session) {
       try {
         bench.kicks[kickName]()
       } catch (error) {
-        document.removeEventListener('htmx:beforeSwap', capture, true)
+        document.removeEventListener('htmx:afterSwap', captureFirstPass, false)
         document.removeEventListener('htmx:afterSettle', onSettle, false)
         clearTimeout(guard)
         reject(error)
@@ -749,7 +795,7 @@ async function installProbe(session) {
         const target = document.querySelector('.block-card.block-sum')
         if (!target) throw new Error('no Sum block to accept a further wire')
         swapTo('POST', '/flows/' + root().dataset.flowId + '/connections',
-          { source_id: newestBlock(), target_id: target.dataset.blockId })
+          { source_id: newestBlock(), target_id: target.dataset.blockId, target_port: 2 })
       },
       disconnect: () => {
         const button = document.querySelector('.signal-list button[hx-delete]')
@@ -802,6 +848,7 @@ async function installProbe(session) {
       bench._drag = []
       bench._live = 0
       bench._mark = 0
+      bench._dragStarted = performance.now()
       document.addEventListener('pointermove', bench._before = () => { bench._mark = performance.now() }, true)
       document.addEventListener('pointermove', bench._after = () => {
         if (!bench._mark) return
@@ -814,7 +861,11 @@ async function installProbe(session) {
     bench.readDrag = () => {
       document.removeEventListener('pointermove', bench._before, true)
       document.removeEventListener('pointermove', bench._after, false)
-      return { samples: bench._drag, live: bench._live }
+      return {
+        samples: bench._drag,
+        live: bench._live,
+        longTasks: bench.longTasksBetween(bench._dragStarted, performance.now())
+      }
     }
 
     window.__bench = bench
@@ -942,6 +993,7 @@ const band = (stat) => (stat.n ? `${ms(stat.median)} (${ms(stat.p25)}–${ms(sta
 
 function report(results) {
   const out = []
+  out.push('', `Chrome CPU slowdown: ${results.cpuSlowdown}x`, '')
   out.push('', '### Server (loopback client, body fully drained)', '')
   out.push('| blocks | wires | fragment | gzipped | GET workbench | PUT block | PATCH position | floor |')
   out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
@@ -965,27 +1017,32 @@ function report(results) {
   }
 
   out.push('', '### Browser — parameter edit (PUT /blocks/{id}, full swap)', '')
-  out.push('| blocks | zoom | request | swap | afterSwap re-apply | htmx settle wait | settle re-apply | total | to first frame |')
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| blocks | zoom | request | swap | afterSwap re-apply | htmx settle wait | settle re-apply | total | to first frame | longest task |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     for (const zoom of [1, 0.25]) {
       const edits = size.browser[zoom].edits
       const pick = (key) => summarise(edits.map((e) => e[key]))
+      const longest = summarise(edits.map((edit) => {
+        return Math.max(0, ...(edit.longTasks ?? []).map((entry) => entry.duration))
+      }))
       out.push(`| ${size.blocks} | ${Math.round(zoom * 100)}% | ${band(pick('request'))} | ${band(pick('swap'))} | ` +
         `${band(pick('afterSwapReapply'))} | ${band(pick('settleWait'))} | ${band(pick('settleReapply'))} | ` +
-        `${band(pick('total'))} | ${band(pick('toFrame'))} |`)
+        `${band(pick('total'))} | ${band(pick('toFrame'))} | ${band(longest)} |`)
     }
   }
 
   out.push('', '### Browser — block move (PATCH /blocks/{id}/position, no swap)', '')
-  out.push('| blocks | zoom | round trip | drag frame handler | frames | live |')
-  out.push('| --- | --- | --- | --- | --- | --- |')
+  out.push('| blocks | zoom | round trip | drag frame handler | longest task | frames | live |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     for (const zoom of [1, 0.25]) {
       const cell = size.browser[zoom]
       const move = summarise(cell.moves.map((m) => m.total))
       const drag = summarise(cell.drag.samples ?? [])
-      out.push(`| ${size.blocks} | ${Math.round(zoom * 100)}% | ${band(move)} | ${band(drag)} | ${drag.n} | ${cell.drag.live ?? 0} |`)
+      const longest = Math.max(0, ...(cell.drag.longTasks ?? []).map((entry) => entry.duration))
+      out.push(`| ${size.blocks} | ${Math.round(zoom * 100)}% | ${band(move)} | ${band(drag)} | ` +
+        `${ms(longest)} | ${drag.n} | ${cell.drag.live ?? 0} |`)
     }
   }
 
@@ -1000,14 +1057,12 @@ function report(results) {
     }
   }
 
-  out.push('', '### Redundancy gate — does the re-apply change what the server sent?', '')
-  out.push('Response body against the settled DOM, per swap-producing interaction.')
-  out.push('`raw` must be 100% or the probe never saw the server\'s own markup')
-  out.push('(the server formats coordinates `%.1f`, the client emits bare numbers).')
-  out.push('`numeric` is the result: a non-zero there is a curve the re-apply had to fix.')
+  out.push('', '### Redundancy gate — does afterSettle change the afterSwap routes?', '')
+  out.push('Client-authored paths after the first and second re-apply pass, per swap-producing interaction.')
+  out.push('`numeric` must be zero for normal interactions: a non-zero value means the second pass was needed.')
   out.push('`negativeControl` displaces a card mid-swap and MUST be non-zero;')
   out.push('a zero there means the probe is broken and every other row is worthless.', '')
-  out.push('| blocks | interaction | paths | raw differs | numeric differs | max delta |')
+  out.push('| blocks | interaction | paths | strings changed | numeric differs | max delta |')
   out.push('| --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     for (const check of size.redundancy ?? []) {
@@ -1015,15 +1070,15 @@ function report(results) {
         out.push(`| ${size.blocks} | ${check.kick} | — | — | — | ${check.error} |`)
         continue
       }
-      const raw = check.paths ? `${check.rawDiffers}/${check.paths}` : '0/0'
-      out.push(`| ${size.blocks} | ${check.kick} | ${check.paths} | ${raw} | ` +
+      const changed = check.paths ? `${check.changed}/${check.paths}` : '0/0'
+      out.push(`| ${size.blocks} | ${check.kick} | ${check.paths} | ${changed} | ` +
         `**${check.numericDiffers}** | ${check.maxDelta.toExponential(1)} |`)
     }
   }
   const sample = results.sizes.flatMap((s) => s.redundancy ?? []).find((c) => c.sample && c.paths)
   if (sample) {
-    out.push('', 'One path, as the server sent it and as the client left it:', '', '```',
-      `server: ${sample.sample.served}`, `client: ${sample.sample.client}`, '```')
+    out.push('', 'One path after each client routing pass:', '', '```',
+      `afterSwap: ${sample.sample.firstPass}`, `afterSettle: ${sample.sample.settled}`, '```')
   }
 
   out.push('', '### Where the time goes (sampling profile, 100µs, taken separately from the timings above)', '')
@@ -1053,6 +1108,9 @@ function parseArgs(argv) {
     serverReps: 30,
     swapReps: 15,
     loadReps: 7,
+    cpuSlowdown: 1,
+    skipProfile: false,
+    skipRedundancy: false,
     chrome: DEFAULT_CHROME,
     out: null,
     keep: false
@@ -1068,11 +1126,18 @@ function parseArgs(argv) {
       case '--server-reps': parsed.serverReps = Number(value); i += 1; break
       case '--swap-reps': parsed.swapReps = Number(value); i += 1; break
       case '--load-reps': parsed.loadReps = Number(value); i += 1; break
+      case '--cpu-slowdown': parsed.cpuSlowdown = Number(value); i += 1; break
+      case '--skip-profile': parsed.skipProfile = true; break
+      case '--skip-redundancy': parsed.skipRedundancy = true; break
       case '--out': parsed.out = path.resolve(value); i += 1; break
       case '--keep': parsed.keep = true; break
       case '--help': case '-h': console.log(USAGE); process.exit(0); break
       default: console.error(`unknown option ${flag}\n\n${USAGE}`); process.exit(2)
     }
+  }
+  if (!Number.isFinite(parsed.cpuSlowdown) || parsed.cpuSlowdown < 1) {
+    console.error(`--cpu-slowdown must be a number greater than or equal to 1\n\n${USAGE}`)
+    process.exit(2)
   }
   return parsed
 }

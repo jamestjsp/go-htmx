@@ -5,6 +5,74 @@ rather than guessed. This is a decision document: it sets a block-count budget
 and it names the one piece of follow-up work the numbers justify. No
 application code was changed to produce it.
 
+## 2026-08-02 performance-refactor baseline
+
+The orthogonal-routing work changed the architecture after the original study:
+the server now emits empty SVG `d` attributes and
+`internal/web/static/js/orthogonal-routing.js` is the route authority. The old
+recommendation below to remove every post-swap redraw is therefore obsolete.
+One client route pass is required after initial render, a full swap, and history
+restore. The second pass was measured and is redundant.
+
+The benchmark fixture had also drifted behind the port-aware Sum contract. It
+now creates three Sum input ports, wires its two fixture signals to distinct
+ports, and leaves the third for the connect/disconnect interaction gate. The
+gate now compares client paths after `htmx:afterSwap` and
+`htmx:afterSettle`; every normal interaction produced identical paths, while
+the displaced-card negative control changed two.
+
+Focused current-main runs used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 50 --server-reps 5 --swap-reps 1 --load-reps 1
+node docs/swap-scaling-bench.mjs --sizes 150 --server-reps 2 --swap-reps 1 --load-reps 1 --skip-profile --skip-redundancy
+node docs/swap-scaling-bench.mjs --sizes 400 --server-reps 5 --swap-reps 1 --load-reps 1 --skip-profile --skip-redundancy
+```
+
+These are focused reproduction runs rather than final statistical samples, but
+the failure is several orders of magnitude larger than their sampling noise:
+
+| blocks | fragment | server PUT | page load | route pass | parameter edit | longest task |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | 118.7 KB / 10.3 KB gzip | 5.0 ms | 111–131 ms | 30–37 ms | 112–114 ms | below 50 ms |
+| 150 | 268.9 KB / 15.6 KB gzip | 10.8 ms | 571–600 ms | 229–289 ms | 576–587 ms | 298–307 ms |
+| 400 | 645.8 KB / 28.6 KB gzip | 25.8 ms | 3.94–4.03 s | 3.35–3.47 s | 6.86–7.00 s | not separately sampled |
+
+This reproduces the reported unresponsive page in normal, unthrottled headless
+Chrome. At 400 blocks, one parameter edit occupies the browser for about seven
+seconds even though the complete server request takes about 26 ms. At 150
+blocks, both parameter edits and drags already generate roughly 200–300 ms long
+tasks.
+
+The profile identifies `buildVisibilityGraph` and `segmentCrossesRect` as the
+dominant functions. The router builds a Cartesian product of every obstacle
+edge coordinate separately for every signal. The full swap then invokes that
+work after both swap lifecycle events.
+
+### Accepted budgets for this refactor
+
+On the same unthrottled host and benchmark fixture:
+
+- 400-block parameter edit median to first frame: at most 150 ms, with a
+  stretch target of 100 ms;
+- 400-block initial load: at most 500 ms;
+- 400-block authoritative full route pass: at most 150 ms;
+- 400-block drag: no routing long task above 50 ms and no dropped live drag
+  sequence in the harness;
+- 400-block dynamic HTML transfer with compression negotiated: at most 35 KiB;
+- every normal route-authority gate row stays unchanged and the negative
+  control remains non-zero.
+
+A 4× CPU-slowdown run is the constrained-device gate after the normal profile
+meets these budgets. It must remain operable, with a parameter edit under
+500 ms and no single routing task above 250 ms.
+
+The refactor will first reduce the lifecycle to one required route application,
+then replace the per-edge Cartesian visibility-graph hot path with a
+deterministic fast path and bounded fallback, and add negotiated compression.
+Partial workbench swaps and a JavaScript/TypeScript asset pipeline remain
+unjustified unless the post-fix profile still misses these budgets.
+
 Read this before proposing out-of-band swaps, per-card patching, canvas
 virtualisation, or any other change whose motivation is "the full swap must be
 too slow by now". It probably is not the thing that is slow.
