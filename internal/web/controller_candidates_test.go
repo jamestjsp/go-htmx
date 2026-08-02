@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jamestjsp/go-htmx/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/studio"
 )
 
 func TestControllerCandidateRegistryTransitionsAreAtomic(t *testing.T) {

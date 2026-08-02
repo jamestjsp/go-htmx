@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/jamestjsp/controlsys"
-	"github.com/jamestjsp/go-htmx/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/studio"
 )
 
 const maxPendingControllerCandidates = 32

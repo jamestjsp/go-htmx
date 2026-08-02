@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jamestjsp/go-htmx/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/studio"
 )
 
 // TestPageRendersTheRegister pins the projects home. `/` used to redirect into
@@ -34,6 +34,7 @@ func TestPageRendersTheRegister(t *testing.T) {
 	body := response.Body.String()
 	for _, expected := range []string{
 		"Process Lab",
+		"Simulation, design &amp; analysis",
 		"Drawing register",
 		"Process Lab project",
 		"Reactor temperature loop",
@@ -313,7 +314,8 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"Process Lab",
+		"<title>Process Lab · Simulation, design &amp; analysis</title>",
+		"Simulation, design &amp; analysis",
 		"Process Lab project",
 		"Reactor temperature loop",
 		"Feed setpoint",
@@ -325,6 +327,9 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("body does not contain %q", expected)
 		}
+	}
+	if strings.Contains(body, "HTMX control studio") {
+		t.Error("the product title still presents Process Lab as an HTMX technology demo")
 	}
 }
 

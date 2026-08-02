@@ -669,7 +669,7 @@ func (s *Studio) seed(ctx context.Context) error {
 			x, y int
 			p    Parameters
 		}
-		// Laid out on the sheet lattice so the demo flowsheet opens on-grid.
+		// Laid out on the sheet lattice so the starter flowsheet opens on-grid.
 		seeds := []seedBlock{
 			{BlockSource, "Feed setpoint", 60, 80, Parameters{Amplitude: 1}},
 			{BlockGain, "Valve gain", 300, 80, Parameters{Gain: 1.8}},
