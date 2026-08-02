@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/jamestjsp/go-htmx/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/studio"
 )
 
 const maxControlRoleRequestBytes = 1 << 20

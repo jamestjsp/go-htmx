@@ -1,8 +1,11 @@
 # Process Lab
 
-Process Lab is a runnable demonstration of a Go + HTMX + SQLite application with a frontend that behaves like a small engineering desktop tool. Users build a dynamic process flowsheet, connect signal blocks, tune parameters, drag blocks around the canvas, and simulate the result without a frontend framework or JSON API.
+Process Lab is a browser-based workspace for dynamic-system simulation, control
+design, and analysis. Build persistent process flowsheets, connect scalar and
+named MIMO signals, simulate continuous and discrete models, inspect responses
+and robustness, and design or tune controllers in one engineering workbench.
 
-The seeded example models two first-order paths feeding an energy balance:
+The seeded starter project models two first-order paths feeding an energy balance:
 
 - a setpoint through valve gain and reactor dynamics;
 - a disturbance through jacket dynamics and heat loss;
@@ -25,7 +28,7 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `proc
 To use another address or database:
 
 ```bash
-go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./demo.db
+go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./plant.db
 ```
 
 All CSS, application JavaScript, HTMX 2.0.10, and HTML templates are embedded
@@ -120,7 +123,7 @@ save command. Stop the server with `Ctrl+C`, then run it again with the same
 database path to reopen the workspace:
 
 ```bash
-go run ./cmd/processlab -db ./demo.db
+go run ./cmd/processlab -db ./plant.db
 ```
 
 Each sheet has a canonical URL that stays valid across restarts, for example

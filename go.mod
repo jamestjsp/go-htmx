@@ -1,4 +1,4 @@
-module github.com/jamestjsp/go-htmx
+module github.com/jamestjsp/process-lab
 
 go 1.26.3
 

@@ -3,7 +3,7 @@ package web
 import (
 	"testing"
 
-	"github.com/jamestjsp/go-htmx/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/studio"
 )
 
 func TestPortCenterOffsetDistributesPortsAlongTheBlockEdge(t *testing.T) {

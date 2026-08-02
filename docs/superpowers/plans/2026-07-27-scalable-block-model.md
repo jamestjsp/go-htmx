@@ -6,7 +6,7 @@ Each task below names its ergo ID. Close the ergo task when its work lands.
 
 ## Global Constraints
 
-- Go 1.26, module `github.com/jamestjsp/go-htmx`. Stack is Go + HTMX + SQLite,
+- Go 1.26, module `github.com/jamestjsp/process-lab`. Stack is Go + HTMX + SQLite,
   no frontend framework, no bundler, no TypeScript. Templates and static
   assets are `go:embed`-ed; a JS/CSS change needs `go build` before the
   server serves it.
@@ -402,4 +402,3 @@ _ergo: YWZAD7_
 ## Dependencies
 - depends on `KE3PPL`: Render and wire ports in the workbench
 - depends on `VJKI5N`: Compile wiring by port
-

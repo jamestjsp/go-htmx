@@ -12,8 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jamestjsp/go-htmx/internal/studio"
-	"github.com/jamestjsp/go-htmx/internal/web"
+	"github.com/jamestjsp/process-lab/internal/studio"
+	"github.com/jamestjsp/process-lab/internal/web"
 )
 
 func main() {
