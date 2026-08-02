@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "id": "r2026a-scalar-initial-conditions",
+  "release": "R2026a",
+  "mappings": [
+    {
+      "processLabBlock": "source",
+      "mathWorksBlock": "Step",
+      "supportedSubset": "Finite scalar step time, initial value, and final value.",
+      "intentionalDeviations": [
+        "Process Lab uses the run grid as the Step sample rate and does not expose vector parameters or zero-crossing options."
+      ]
+    },
+    {
+      "processLabBlock": "integrator",
+      "mathWorksBlock": "Integrator",
+      "supportedSubset": "Finite scalar internal initial condition without reset, limits, wrapping, or external state ports.",
+      "intentionalDeviations": [
+        "Process Lab uses controlsys LTI simulation and does not expose solver, reset, saturation, or external initial-condition ports."
+      ]
+    },
+    {
+      "processLabBlock": "unit_delay",
+      "mathWorksBlock": "Unit Delay",
+      "supportedSubset": "Finite scalar internal initial condition and one-sample delay.",
+      "intentionalDeviations": [
+        "This milestone retains Process Lab's explicit 0.1 second new-block sample-time default until inherited-rate analysis has a model-level base-step adapter."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "step-defaults",
+      "reference": {
+        "title": "Step",
+        "url": "https://www.mathworks.com/help/simulink/slref/step.html",
+        "section": "Parameters",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "The documented defaults produce 0 before 1 second and 1 at and after 1 second; these values are analytic and are not MATLAB output."
+      },
+      "defaults": {
+        "stepTime": 1,
+        "initialValue": 0,
+        "finalValue": 1
+      }
+    },
+    {
+      "id": "integrator-internal-initial-condition",
+      "reference": {
+        "title": "Integrator",
+        "url": "https://www.mathworks.com/help/simulink/slref/integrator.html",
+        "section": "Defining Initial Conditions",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "For constant input u and internal initial condition x0, y(t) = x0 + u*t; expected values are analytic and are not MATLAB output."
+      },
+      "scenario": {
+        "input": 2,
+        "initialCondition": 3,
+        "sampleTime": 0.1,
+        "duration": 1
+      }
+    },
+    {
+      "id": "unit-delay-internal-initial-condition",
+      "reference": {
+        "title": "Unit Delay",
+        "url": "https://www.mathworks.com/help/simulink/slref/unitdelay.html",
+        "section": "Initial condition",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "The first sample-period output is the internal initial condition and later outputs are the previous input sample; expected values are analytic and are not MATLAB output."
+      },
+      "scenario": {
+        "input": 2,
+        "initialCondition": -1,
+        "sampleTime": 0.1,
+        "duration": 1
+      }
+    }
+  ]
+}

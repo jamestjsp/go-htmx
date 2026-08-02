@@ -62,6 +62,28 @@ continuous delays align with the run sample time and discrete delays are integer
 sample counts. It does not add vector Transport Delay parameters, initial
 history, interpolation, new editor fields, or schema migrations.
 
+## Direct scalar state subset
+
+The next fixture group covers direct Step, Integrator, and Unit Delay block
+semantics that do not change block topology:
+
+- Step uses the documented scalar defaults: step time 1 second, initial value
+  0, and final value 1.
+- Integrator supports a finite scalar internal initial condition and otherwise
+  retains Process Lab's existing continuous LTI execution.
+- Unit Delay supports a finite scalar initial output for the first sample
+  period.
+
+This subset does not add reset, saturation, external initial-condition ports,
+state ports, vector state, or solver configuration. Unit Delay also retains
+Process Lab's explicit 0.1 second new-block sample-time default until analysis
+requests can resolve an inherited rate from an explicit model-level base step.
+
+Transfer Function remains a zero-initial-state block. This matches the
+MathWorks contract, which directs nonzero transfer-function initial conditions
+to a State-Space realization rather than assigning physical meaning to an
+arbitrary transfer-function state.
+
 ## Fixture layout
 
 Versioned fixtures live under
