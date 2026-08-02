@@ -339,6 +339,10 @@ func (s *Server) updateBlock(w http.ResponseWriter, r *http.Request) {
 		s.renderFailure(w, r, 0, blockID, err)
 		return
 	}
+	if r.Header.Get("HX-Request") == "true" {
+		s.renderBoundedBlockUpdate(w, r, snapshot, blockID)
+		return
+	}
 	s.renderWorkbench(w, r, snapshot, blockID, "")
 }
 
@@ -617,6 +621,26 @@ func (s *Server) renderWorkbench(
 	selected int64,
 	message string,
 ) {
+	s.renderWorkbenchResponse(w, r, snapshot, selected, message, false)
+}
+
+func (s *Server) renderBoundedBlockUpdate(
+	w http.ResponseWriter,
+	r *http.Request,
+	snapshot studio.Snapshot,
+	selected int64,
+) {
+	s.renderWorkbenchResponse(w, r, snapshot, selected, "", true)
+}
+
+func (s *Server) renderWorkbenchResponse(
+	w http.ResponseWriter,
+	r *http.Request,
+	snapshot studio.Snapshot,
+	selected int64,
+	message string,
+	boundedEdit bool,
+) {
 	workspace, err := s.studio.Workspace(
 		r.Context(), snapshot.Flow.ProjectID, snapshot.Flow.ID,
 	)
@@ -625,9 +649,15 @@ func (s *Server) renderWorkbench(
 		return
 	}
 	workspace.Snapshot = snapshot
+	view := s.newWorkbenchView(workspace, selected, message)
+	view.BoundedEdit = boundedEdit
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if boundedEdit {
+		w.Header().Set("HX-Reswap", "none")
+		w.Header().Set("X-Process-Lab-Block-Update", strconv.FormatInt(selected, 10))
+	}
 	if err := s.templates.ExecuteTemplate(
-		w, "workbench", s.newWorkbenchView(workspace, selected, message),
+		w, "workbench", view,
 	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}

@@ -14,7 +14,7 @@
 // it; it now lives in tabs.js, next to the rename, drag and reorder
 // gestures that share its geometry.
 // =====================================================================
-import { redrawEdges } from './geometry.js'
+import { redrawEdges, syncBlockRouteEndpoints } from './geometry.js'
 import { initViewport, reapplyViewport } from './viewport.js'
 import { applySelection } from './selection.js'
 import { applyShellState, initShell } from './shell.js'
@@ -24,9 +24,13 @@ import { onBeforeSwap, onReapply } from './reapply.js'
 import './contextmenu.js'
 import './input.js'
 
+let boundedBlockUpdate = ''
+
 // A wire in flight refers to a block element the swap is about to
 // destroy, so it is dropped before the markup goes rather than after.
-onBeforeSwap(() => {
+onBeforeSwap((event) => {
+  boundedBlockUpdate =
+    event?.detail?.xhr?.getResponseHeader('X-Process-Lab-Block-Update') || ''
   if (hasConnectionSource()) cancelConnection('Workbench updated')
 })
 document.addEventListener('htmx:historyRestore', () => {
@@ -40,7 +44,15 @@ document.addEventListener('htmx:historyRestore', () => {
 // left; then the shell around all of it.
 onReapply(reapplyViewport)
 onReapply(applySelection)
-onReapply(redrawEdges)
+onReapply(() => {
+  const blockID = boundedBlockUpdate
+  boundedBlockUpdate = ''
+  if (!blockID) {
+    redrawEdges()
+    return
+  }
+  if (syncBlockRouteEndpoints(blockID)) redrawEdges([blockID])
+})
 onReapply(applySeriesVisibility)
 onReapply(applyShellState)
 

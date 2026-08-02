@@ -114,6 +114,7 @@ type workbenchView struct {
 	BlockCount          int
 	ConnectionCount     int
 	SimulationLimits    string
+	BoundedEdit         bool
 }
 
 // flowTabView is one sheet in the tab strip, in the project's `position`

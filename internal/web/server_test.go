@@ -333,6 +333,93 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 	}
 }
 
+func TestHTMXBlockUpdateReturnsBoundedAuthoritativeRegions(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gain := findKindBlock(t, snapshot.Blocks, "gain")
+	values := url.Values{"name": {"Fast gain"}}
+	for _, field := range gain.EditorFields() {
+		values.Set(field.Name, field.Value)
+	}
+
+	response := requestHX(
+		t, server, http.MethodPut, "/blocks/"+strconv.FormatInt(gain.ID, 10), values,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("HX-Reswap"); got != "none" {
+		t.Fatalf("HX-Reswap = %q, want none", got)
+	}
+	if got, want := response.Header().Get("X-Process-Lab-Block-Update"),
+		strconv.FormatInt(gain.ID, 10); got != want {
+		t.Fatalf("X-Process-Lab-Block-Update = %q, want %q", got, want)
+	}
+	body := response.Body.String()
+	if got := strings.Count(body, `hx-swap-oob="outerHTML"`); got != 5 {
+		t.Fatalf("bounded response has %d out-of-band regions, want 5", got)
+	}
+	if got := strings.Count(body, `class="block-card `); got != 1 {
+		t.Fatalf("bounded response rendered %d block cards, want only the selected card", got)
+	}
+	if strings.Contains(body, `class="signal-line"`) {
+		t.Fatal("bounded response rendered unchanged signal paths")
+	}
+	for _, expected := range []string{
+		`id="project-facts"`,
+		fmt.Sprintf(`id="block-card-%d"`, gain.ID),
+		`id="simulation-results"`,
+		`id="inspector-rail"`,
+		`id="flow-tabs"`,
+		`value="Fast gain"`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("bounded response does not contain %q", expected)
+		}
+	}
+
+	updated, err := service.Snapshot(context.Background(), gain.FlowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := blockByID(updated.Blocks, gain.ID).Name; got != "Fast gain" {
+		t.Fatalf("persisted block name = %q, want Fast gain", got)
+	}
+}
+
+func TestHTMXBlockUpdateFailureRetainsFullWorkbenchError(t *testing.T) {
+	server, service := openTestServer(t)
+	snapshot, err := service.Current(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	gain := findKindBlock(t, snapshot.Blocks, "gain")
+	values := url.Values{"name": {gain.Name}}
+	for _, field := range gain.EditorFields() {
+		values.Set(field.Name, field.Value)
+	}
+	values.Set("gain", "not-a-number")
+
+	response := requestHX(
+		t, server, http.MethodPut, "/blocks/"+strconv.FormatInt(gain.ID, 10), values,
+	)
+	if got := response.Header().Get("HX-Reswap"); got != "" {
+		t.Fatalf("HX-Reswap = %q on failure, want the form's full swap", got)
+	}
+	body := response.Body.String()
+	if strings.Contains(body, `hx-swap-oob="outerHTML"`) {
+		t.Fatal("failure response incorrectly enabled bounded swaps")
+	}
+	for _, expected := range []string{`id="workbench"`, `class="error-banner"`, `Flowsheet needs attention`} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("failure response does not contain %q", expected)
+		}
+	}
+}
+
 // TestTopbarOffersTheRegisterAndTheProjectSwitcher pins the header's whole
 // job: say where you are, lead home, and open any other project. Everything
 // else it used to carry now belongs to a screen that does it better — the
