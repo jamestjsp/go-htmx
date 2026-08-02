@@ -139,6 +139,33 @@ clearance, blocked port stubs, occupancy choice, bounds, multichannel target
 centers, dense layouts, indexed-versus-exhaustive parity, cache invalidation,
 and cancelable frame-bounded completion.
 
+### Milestone 3: negotiated delivery
+
+Large HTML, CSS, JavaScript, JSON, and SVG responses now negotiate gzip.
+Responses below 1 KiB, HEAD and bodyless statuses, byte ranges, binary media,
+and already encoded bodies bypass compression without changing their status,
+length, or body semantics. Dynamic responses are `private, no-store` and vary
+on both `HX-Request` and `Accept-Encoding`; mutable application assets
+revalidate, while the versioned HTMX asset alone receives a one-year
+`immutable` policy.
+
+The 400-block acceptance run used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 400 --server-reps 5 --swap-reps 1 --load-reps 1 --skip-profile --skip-redundancy
+```
+
+The actual negotiated workbench transfer is **28.7 KiB gzip**, below the
+35 KiB budget and 22.5× smaller than the 645.8 KiB identity body. Compression
+adds about 2–3 ms of loopback server work: GET is 26.9–27.5 ms and PUT is
+28.2–28.6 ms. End-to-end edits remain 120–123 ms, load remains 195–203 ms,
+and completed drag routing still produces no long task.
+
+Protocol tests cover explicit and wildcard quality values, identity preference,
+body decompression integrity, content length, HEAD, 204, 206, pre-encoded,
+small and incompressible responses, `Vary` composition, HTMX representation
+separation, and cache policy. The package also passes its race suite.
+
 Read this before proposing out-of-band swaps, per-card patching, canvas
 virtualisation, or any other change whose motivation is "the full swap must be
 too slow by now". It probably is not the thing that is slow.

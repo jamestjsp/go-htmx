@@ -670,3 +670,9 @@
 {"type":"state","ts":"2026-08-02T16:14:51.015082Z","data":{"id":"SE6LWT","state":"done","ts":"2026-08-02T16:14:51.015082Z"}}
 {"type":"claim","ts":"2026-08-02T16:14:51.027201Z","data":{"id":"X3BW6M","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:14:51.027201Z"}}
 {"type":"state","ts":"2026-08-02T16:14:51.027201Z","data":{"id":"X3BW6M","state":"doing","ts":"2026-08-02T16:14:51.027201Z"}}
+{"type":"message","ts":"2026-08-02T16:33:54.695713Z","data":{"task_id":"X3BW6M","kind":"done","text":"01a7ae4: bounded indexed router; 400-edge pass 46-49 ms and drag completion has no long task.","ts":"2026-08-02T16:33:54.695713Z"}}
+{"type":"result","ts":"2026-08-02T16:33:54.695713Z","data":{"task_id":"X3BW6M","summary":"docs/swap-scaling.md","path":"docs/swap-scaling.md","sha256_at_attach":"7908a929901fb4fb56cdfa845eef386ecab808af9266e1c99c1f4f8a591f0775","mtime_at_attach":"2026-08-02T16:33:03.28838133Z","git_commit_at_attach":"01a7ae4bfd96b1e4f13e9b37c96fcddc63c1e4ee","ts":"2026-08-02T16:33:54.695713Z"}}
+{"type":"unclaim","ts":"2026-08-02T16:33:54.695713Z","data":{"id":"X3BW6M","ts":"2026-08-02T16:33:54.695713Z"}}
+{"type":"state","ts":"2026-08-02T16:33:54.695713Z","data":{"id":"X3BW6M","state":"done","ts":"2026-08-02T16:33:54.695713Z"}}
+{"type":"claim","ts":"2026-08-02T16:33:54.708281Z","data":{"id":"UL3WKS","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:33:54.708281Z"}}
+{"type":"state","ts":"2026-08-02T16:33:54.708281Z","data":{"id":"UL3WKS","state":"doing","ts":"2026-08-02T16:33:54.708281Z"}}
