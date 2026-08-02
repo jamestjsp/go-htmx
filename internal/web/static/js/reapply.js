@@ -11,11 +11,9 @@
 // listener, so the order the state is rebuilt in is written down in one
 // place (main.js) rather than emerging from script order.
 //
-// Both swap events are needed: at afterSwap the replacement node is not
-// yet the one querySelector returns, so styling there alone writes to a
-// node htmx is about to discard. afterSettle is what actually sticks.
-// Steps are told which one they are running for, because a step that
-// measures the new markup can only trust the settled pass.
+// afterSwap still exposes the outgoing node to querySelector, so rebuilding
+// there writes client state to markup htmx is about to discard. afterSettle
+// is the first event where every step can measure and update the live node.
 //
 // Back and Forward restore the page from htmx's history cache, which
 // fires neither swap event, so historyRestore runs the settled pass too.
@@ -32,11 +30,10 @@ export function onBeforeSwap(step) {
   beforeSwapSteps.push(step)
 }
 
-function reapply(settled) {
-  steps.forEach((step) => step({ settled }))
+function reapply() {
+  steps.forEach((step) => step())
 }
 
 document.addEventListener('htmx:beforeSwap', () => beforeSwapSteps.forEach((step) => step()))
-document.addEventListener('htmx:afterSwap', () => reapply(false))
-document.addEventListener('htmx:afterSettle', () => reapply(true))
-document.addEventListener('htmx:historyRestore', () => reapply(true))
+document.addEventListener('htmx:afterSettle', reapply)
+document.addEventListener('htmx:historyRestore', reapply)

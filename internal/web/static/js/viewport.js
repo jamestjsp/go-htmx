@@ -242,7 +242,7 @@ export function releaseSpace() {
 let openFlowID = workbench() ? workbench().dataset.flowId : ''
 let pendingFit = false
 
-function syncViewportToFlow(settled) {
+function syncViewportToFlow() {
   const root = workbench()
   if (!root) return
   const flowID = root.dataset.flowId || ''
@@ -251,17 +251,14 @@ function syncViewportToFlow(settled) {
     pendingFit = !loadViewport()
   }
   if (!pendingFit) return
-  // fitView() measures the canvas, which is only reliable once the new
-  // markup has settled, so the fit runs on both events and is only
-  // retired by the settled one.
   fitView()
-  if (settled) pendingFit = false
+  pendingFit = false
 }
 
 // A swap replaces #sheet, so the transform has to be re-stamped or the
 // view snaps back to the origin on every edit.
-export function reapplyViewport({ settled }) {
-  syncViewportToFlow(settled)
+export function reapplyViewport() {
+  syncViewportToFlow()
   applyViewport()
 }
 
