@@ -12,6 +12,8 @@
 //     --swap-reps 15       parameter-edit swaps per size per zoom
 //     --load-reps 7        page loads per size per zoom
 //     --cpu-slowdown 4      Chrome CPU throttling rate (default 1)
+//     --expected-edit-swap full|bounded
+//                          fail unless parameter edits use that DOM contract
 //     --skip-profile        omit the CDP sampling profile
 //     --skip-redundancy     omit the multi-interaction routing gate
 //     --out results.json   also write the raw samples as JSON
@@ -56,6 +58,8 @@ const USAGE = `Usage: node docs/swap-scaling-bench.mjs [options]
   --swap-reps 15       parameter-edit swaps per size per zoom
   --load-reps 7        page loads per size per zoom
   --cpu-slowdown 4     Chrome CPU throttling rate (default 1)
+  --expected-edit-swap full|bounded
+                       Fail unless parameter edits use that DOM contract
   --skip-profile       Omit the CDP sampling profile
   --skip-redundancy    Omit the multi-interaction routing gate
   --out results.json   also write the raw samples as JSON
@@ -422,7 +426,9 @@ async function benchBrowser(session, fixture, zoom) {
 
   const edits = []
   for (let i = 0; i < options.swapReps; i += 1) {
-    edits.push(await evaluate(session, 'window.__bench.parameterEdit()', true))
+    const edit = await evaluate(session, 'window.__bench.parameterEdit()', true)
+    validateEditSwap(edit)
+    edits.push(edit)
   }
 
   const moves = []
@@ -678,6 +684,14 @@ async function installProbe(session) {
 
     const settle = (kick) => new Promise((resolve, reject) => {
       const t = {}
+      const before = {
+        workbench: document.querySelector('#workbench'),
+        card: document.querySelector('.block-card.selected'),
+        inspector: document.querySelector('#inspector-rail'),
+        dock: document.querySelector('#simulation-results'),
+        tabs: document.querySelector('#flow-tabs'),
+        facts: document.querySelector('.project-facts')
+      }
       const stamp = (key) => () => { if (t[key] === undefined) t[key] = performance.now() }
       const bind = []
       const add = (type, capture, key) => {
@@ -704,6 +718,14 @@ async function installProbe(session) {
             settleReapply: t.settleEnd - t.settleStart,
             total: t.settleEnd - t.t0,
             toFrame: t.frame - t.t0,
+            replaced: {
+              workbench: before.workbench !== document.querySelector('#workbench'),
+              card: before.card !== document.querySelector('.block-card.selected'),
+              inspector: before.inspector !== document.querySelector('#inspector-rail'),
+              dock: before.dock !== document.querySelector('#simulation-results'),
+              tabs: before.tabs !== document.querySelector('#flow-tabs'),
+              facts: before.facts !== document.querySelector('.project-facts')
+            },
             longTasks: bench.longTasksBetween(t.t0, t.frame)
           })
         }, 0)))
@@ -956,6 +978,21 @@ async function installProbe(session) {
   })()`)
 }
 
+function validateEditSwap(edit) {
+  const replaced = edit.replaced ?? {}
+  if (options.expectedEditSwap === 'full') {
+    if (!replaced.workbench) {
+      throw new Error(`parameter edit did not replace #workbench: ${JSON.stringify(replaced)}`)
+    }
+    return
+  }
+  const missing = ['card', 'inspector', 'dock', 'tabs', 'facts'].filter((key) => !replaced[key])
+  if (replaced.workbench || missing.length !== 0) {
+    throw new Error(
+      `parameter edit violated the bounded swap contract: ${JSON.stringify(replaced)}`)
+  }
+}
+
 // ---- chrome + CDP ---------------------------------------------------
 
 async function startChrome(scratch) {
@@ -1101,7 +1138,7 @@ function report(results) {
     }
   }
 
-  out.push('', '### Browser — parameter edit (PUT /blocks/{id}, full swap)', '')
+  out.push('', `### Browser — parameter edit (PUT /blocks/{id}, ${options.expectedEditSwap} swap)`, '')
   out.push('| blocks | zoom | request | swap | afterSwap re-apply | htmx settle wait | settle re-apply | total | to first frame | longest task |')
   out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
@@ -1206,6 +1243,7 @@ function parseArgs(argv) {
     swapReps: 15,
     loadReps: 7,
     cpuSlowdown: 1,
+    expectedEditSwap: 'full',
     skipProfile: false,
     skipRedundancy: false,
     chrome: DEFAULT_CHROME,
@@ -1224,6 +1262,7 @@ function parseArgs(argv) {
       case '--swap-reps': parsed.swapReps = Number(value); i += 1; break
       case '--load-reps': parsed.loadReps = Number(value); i += 1; break
       case '--cpu-slowdown': parsed.cpuSlowdown = Number(value); i += 1; break
+      case '--expected-edit-swap': parsed.expectedEditSwap = value; i += 1; break
       case '--skip-profile': parsed.skipProfile = true; break
       case '--skip-redundancy': parsed.skipRedundancy = true; break
       case '--out': parsed.out = path.resolve(value); i += 1; break
@@ -1234,6 +1273,10 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(parsed.cpuSlowdown) || parsed.cpuSlowdown < 1) {
     console.error(`--cpu-slowdown must be a number greater than or equal to 1\n\n${USAGE}`)
+    process.exit(2)
+  }
+  if (!['full', 'bounded'].includes(parsed.expectedEditSwap)) {
+    console.error(`--expected-edit-swap must be full or bounded\n\n${USAGE}`)
     process.exit(2)
   }
   return parsed

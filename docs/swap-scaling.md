@@ -205,9 +205,45 @@ The measured stretch case is 640 blocks. Load remains 284–305 ms and the live
 drag handler 1.5–1.8 ms with no drag-routing long task, but edits rise to
 171–230 ms, their browser task to 124–136 ms, forced full routing to about
 102 ms, and transfer to 40.2 KiB gzip. These exceed the 400-block budgets and
-define the remaining limit. A future requirement for 640-block low-end-device
-editing would justify measuring a partial-swap design; the current 400-block
-requirement does not.
+define the remaining limit.
+
+## 2026-08-02 bounded-edit follow-up
+
+The `fast-web` deferred-strategy benchmark at commit `fae7790` resolves the
+McMaster-Carr-inspired delivery ideas with controlled Chrome evidence. It keeps
+bounded intent prefetch for predictable public navigation, and rejects critical
+CSS, a redundant LCP-image preload, and a service-worker performance cache. The
+positive result transfers as a design principle rather than as prefetch code:
+keep the stable HTMX shell and update only the response regions the interaction
+can invalidate. Prefetch cannot safely predict an editor mutation, and the
+three rejected delivery layers do not reduce DOM replacement work.
+
+A fresh control run used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 400,640 --server-reps 3 --swap-reps 3 --load-reps 1 --skip-profile --skip-redundancy --expected-edit-swap full
+```
+
+| blocks | zoom | request | swap | re-apply total | edit total | to frame | longest task |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 400 | 100% | 30.7 ms | 38.4 ms | 44.8 ms | 120.6 ms | 132.7 ms | 92 ms |
+| 400 | 25% | 32.1 ms | 34.8 ms | 43.5 ms | 117.2 ms | 130.6 ms | 87 ms |
+| 640 | 100% | 47.5 ms | 47.2 ms | 62.9 ms | 165.9 ms | 189.8 ms | 121 ms |
+| 640 | 25% | 51.7 ms | 47.3 ms | 62.9 ms | 168.9 ms | 193.2 ms | 119 ms |
+
+The candidate is a bounded successful parameter edit. It must keep
+`#workbench` alive while replacing the authoritative selected card,
+`#inspector-rail`, `#simulation-results`, `#flow-tabs`, and the saved project
+facts. Those regions cover the block's name, summary and port schema; activity;
+simulation and analysis freshness; the tab's needs-run state; and the saved
+timestamp. Validation errors retain the existing full-workbench response so
+the error banner is not lost.
+
+The harness now fails unless `--expected-edit-swap full` observes a replaced
+workbench or `--expected-edit-swap bounded` observes the inverse plus all five
+required bounded replacements. The candidate is retained only if its median
+improves by at least 10%, p95 does not materially regress, and normal 400/640
+plus 400-block 4× CPU correctness gates pass.
 
 The result also matches the fast-web research principles used for review:
 useful server-rendered HTML, a stable HTMX shell, pinned local dependencies,
