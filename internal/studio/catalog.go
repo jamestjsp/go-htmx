@@ -62,7 +62,7 @@ type fieldBound struct {
 	// derived from Label, since the two are independently user-visible
 	// strings that happen to coincide for most fields but not all.
 	label string
-	min   float64
+	min   *float64
 	max   *float64
 	value func(Parameters) float64
 }
@@ -110,13 +110,16 @@ func (field parameterDefinition) validateBound(parameters Parameters) error {
 	if field.active != nil && !field.active(parameters) {
 		return nil
 	}
+	if field.bound.min == nil && field.bound.max == nil {
+		return nil
+	}
 	if field.bound.max == nil {
-		if value < field.bound.min {
-			return invalid("%s must be at least %g", field.bound.label, field.bound.min)
+		if value < *field.bound.min {
+			return invalid("%s must be at least %g", field.bound.label, *field.bound.min)
 		}
 		return nil
 	}
-	return bounded(field.bound.label, value, field.bound.min, *field.bound.max)
+	return bounded(field.bound.label, value, *field.bound.min, *field.bound.max)
 }
 
 type blockDefinition struct {
@@ -174,6 +177,11 @@ type blockDefinition struct {
 	// step creates a per-sample evaluator for behavior that cannot remain in
 	// an LTI controlsys segment. Existing blocks are all LTI and leave it nil.
 	step func(Block, float64) (stepEvaluator, error)
+	// initialState returns this block's authored state values in the same
+	// order as its realization. The compiler concatenates these values in
+	// block order, matching ConnectByName's block-diagonal state order, and
+	// owns passing the resulting vector to every simulation driver.
+	initialState func(Parameters) []float64
 	// waveform evaluates a roleSource block's signal at time t. nil for
 	// every other role.
 	waveform func(Parameters, int, float64) float64
@@ -600,7 +608,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Kind: BlockSource, Label: "Step", Category: "Sources",
 			Description: "Initial-to-final step", Glyph: "↗", Tag: "SOURCE",
 		},
-		Defaults: Parameters{Amplitude: 1},
+		Defaults: Parameters{Amplitude: 1, StepTime: 1},
 		Parameters: []parameterDefinition{
 			numberField("amplitude", "Final value", "final value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
 			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
@@ -1122,6 +1130,13 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Kind: BlockIntegrator, Label: "Integrator", Category: "Continuous",
 			Description: "Continuous 1 / s", Glyph: "∫", Tag: "CONTINUOUS",
 		},
+		Defaults: Parameters{InitialCondition: 0},
+		Parameters: []parameterDefinition{
+			finiteNumberField(
+				"initial_condition", "Initial condition", "initial condition", "scalar",
+				func(parameters *Parameters) *float64 { return &parameters.InitialCondition },
+			),
+		},
 		realize: func(Block, []int) (*controlsys.System, error) {
 			return controlsys.New(
 				mat.NewDense(1, 1, []float64{0}),
@@ -1131,8 +1146,16 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				0,
 			)
 		},
+		initialState: func(parameters Parameters) []float64 {
+			return []float64{parameters.InitialCondition}
+		},
 		timeDomain: func(Parameters) blockTimeDomain { return continuousTimeDomain() },
-		summary:    func(Parameters) string { return "1 / s" },
+		summary: func(parameters Parameters) string {
+			if parameters.InitialCondition == 0 {
+				return "1 / s"
+			}
+			return fmt.Sprintf("1 / s · x₀ %.3g", parameters.InitialCondition)
+		},
 	},
 	BlockTransfer: {
 		BlockDefinition: BlockDefinition{
@@ -1622,9 +1645,15 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Description: "Exact one-sample memory", Glyph: "z⁻¹", Tag: "DISCRETE",
 		},
 		Defaults: Parameters{
-			SampleTime: 0.1, SampleTimeMode: string(sampleTimeExplicit),
+			InitialCondition: 0,
+			SampleTime:       0.1, SampleTimeMode: string(sampleTimeExplicit),
 		},
-		Parameters: sampleTimeFields(),
+		Parameters: append([]parameterDefinition{
+			finiteNumberField(
+				"initial_condition", "Initial condition", "initial condition", "scalar",
+				func(parameters *Parameters) *float64 { return &parameters.InitialCondition },
+			),
+		}, sampleTimeFields()...),
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.New(
 				mat.NewDense(1, 1, []float64{0}),
@@ -1633,6 +1662,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				mat.NewDense(1, 1, []float64{0}),
 				block.Parameters.SampleTime,
 			)
+		},
+		initialState: func(parameters Parameters) []float64 {
+			return []float64{parameters.InitialCondition}
 		},
 		timeDomain: func(parameters Parameters) blockTimeDomain {
 			return discreteTimeDomain(parameters)
@@ -1888,7 +1920,32 @@ func scalarNumberField(name, label, boundsLabel, step string, min float64, max *
 			return formatFloat(*field(&parameters))
 		},
 		bound: &fieldBound{
-			label: boundsLabel, min: min, max: max,
+			label: boundsLabel, min: &min, max: max,
+			value: func(parameters Parameters) float64 { return *field(&parameters) },
+		},
+	}
+}
+
+func finiteNumberField(
+	name, label, boundsLabel, unit string,
+	field func(*Parameters) *float64,
+) parameterDefinition {
+	return parameterDefinition{
+		Name: name, Label: label, Type: "number",
+		Step: "any", Unit: unit,
+		set: func(parameters *Parameters, raw string) error {
+			value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+			if err != nil {
+				return invalid("%s must be a number", strings.ReplaceAll(name, "_", " "))
+			}
+			*field(parameters) = value
+			return nil
+		},
+		text: func(parameters Parameters) string {
+			return formatFloat(*field(&parameters))
+		},
+		bound: &fieldBound{
+			label: boundsLabel,
 			value: func(parameters Parameters) float64 { return *field(&parameters) },
 		},
 	}

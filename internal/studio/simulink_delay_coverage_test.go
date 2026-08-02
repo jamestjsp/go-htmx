@@ -151,6 +151,13 @@ func TestR2026aDelayedFeedbackRunsWithInternalDelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := studio.UpdateBlock(ctx, sourceID, BlockUpdate{
+		Name: "Reference", Parameters: map[string]string{
+			"amplitude": "1", "initial_value": "0", "step_time": "0",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := studio.UpdateBlock(ctx, sumID, BlockUpdate{
 		Name: "Error", Parameters: map[string]string{"signs": "+-"},
 	}); err != nil {

@@ -233,6 +233,8 @@ func compileRequestedModel(
 	}
 
 	systems := make([]*controlsys.System, 0, len(blocks))
+	initialState := make([]float64, 0)
+	hasAuthoredInitialState := false
 	sourceSignals := make(map[int64][]compiledSignal, len(sources))
 	inputSignals := make(map[compiledPort][]compiledSignal, len(connections))
 	outputSignals := make(map[compiledPort][]compiledSignal, len(blocks))
@@ -243,6 +245,24 @@ func compileRequestedModel(
 			return nil, err
 		}
 		systems = append(systems, system)
+		states, _, _ := system.Dims()
+		blockInitialState := make([]float64, states)
+		if initial := blockDefinitions[block.Kind].initialState; initial != nil {
+			authored := initial(block.Parameters)
+			if len(authored) != states {
+				return nil, fmt.Errorf(
+					"%s initial state has %d values for %d realization states",
+					block.Name, len(authored), states,
+				)
+			}
+			copy(blockInitialState, authored)
+			for _, value := range authored {
+				if value != 0 {
+					hasAuthoredInitialState = true
+				}
+			}
+		}
+		initialState = append(initialState, blockInitialState...)
 
 		if block.Kind.isSource() {
 			port, _ := block.OutputPort(0)
@@ -397,6 +417,16 @@ func compileRequestedModel(
 			return nil, fmt.Errorf("attach exact transport delays: %w", err)
 		}
 	}
+	compiledStates, _, _ := system.Dims()
+	if compiledStates != len(initialState) {
+		return nil, fmt.Errorf(
+			"compiled model has %d states after interconnection, want %d authored block states",
+			compiledStates, len(initialState),
+		)
+	}
+	if !hasAuthoredInitialState {
+		initialState = nil
+	}
 
 	provenanceConnections := append([]Connection(nil), connections...)
 	sort.Slice(provenanceConnections, func(i, j int) bool {
@@ -420,10 +450,11 @@ func compileRequestedModel(
 		provenanceBlocks[i] = originalBlockByID[block.ID]
 	}
 	return &compiledModel{
-		system:  system,
-		inputs:  compiledInputs,
-		outputs: compiledOutputs,
-		signals: signals,
+		system:       system,
+		initialState: initialState,
+		inputs:       compiledInputs,
+		outputs:      compiledOutputs,
+		signals:      signals,
 		provenance: compiledModelProvenance{
 			Blocks:      provenanceBlocks,
 			Connections: provenanceConnections,

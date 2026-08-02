@@ -84,6 +84,11 @@ MathWorks contract, which directs nonzero transfer-function initial conditions
 to a State-Space realization rather than assigning physical meaning to an
 arbitrary transfer-function state.
 
+New parameter JSON carries a schema version so an authored zero remains
+distinct from an absent legacy field. Unversioned saved blocks continue to
+receive their historical defaults, including a zero-time Step, while newly
+created Step blocks receive the R2026a one-second default.
+
 ## Fixture layout
 
 Versioned fixtures live under

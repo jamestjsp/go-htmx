@@ -241,6 +241,7 @@ func ensureLegacyBlockParameters(ctx context.Context, db *sql.DB) error {
 			switch block.kind {
 			case BlockSource:
 				parameters.Amplitude = block.amplitude
+				parameters.StepTime = 0
 			case BlockGain:
 				parameters.Gain = block.gain
 			case BlockLag:
@@ -894,8 +895,16 @@ func blockByID(ctx context.Context, tx *sql.Tx, id int64) (Block, error) {
 	return block, nil
 }
 
+const parameterSchemaVersion = 1
+
 func encodeParameters(parameters Parameters) (string, error) {
-	encoded, err := json.Marshal(parameters)
+	encoded, err := json.Marshal(struct {
+		ParameterSchemaVersion int `json:"parameterSchemaVersion"`
+		Parameters
+	}{
+		ParameterSchemaVersion: parameterSchemaVersion,
+		Parameters:             parameters,
+	})
 	if err != nil {
 		return "", fmt.Errorf("encode block parameters: %w", err)
 	}
@@ -904,13 +913,35 @@ func encodeParameters(parameters Parameters) (string, error) {
 
 func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	if encoded == "" {
-		return defaultParameters(kind), nil
+		parameters := defaultParameters(kind)
+		if kind == BlockSource {
+			parameters.StepTime = 0
+		}
+		return parameters, nil
+	}
+	var metadata struct {
+		ParameterSchemaVersion int `json:"parameterSchemaVersion"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &metadata); err != nil {
+		return Parameters{}, err
+	}
+	legacy := metadata.ParameterSchemaVersion == 0
+	if !legacy && metadata.ParameterSchemaVersion != parameterSchemaVersion {
+		return Parameters{}, fmt.Errorf(
+			"unsupported block parameter schema version %d",
+			metadata.ParameterSchemaVersion,
+		)
+	}
+	base := Parameters{}
+	if legacy {
+		base = defaultParameters(kind)
 	}
 	stored := struct {
 		Parameters
-		DelayMode *string `json:"delayMode"`
+		DelayMode *string  `json:"delayMode"`
+		StepTime  *float64 `json:"stepTime"`
 	}{
-		Parameters: defaultParameters(kind),
+		Parameters: base,
 	}
 	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 		return Parameters{}, err
@@ -919,7 +950,12 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	if stored.DelayMode != nil {
 		parameters.DelayMode = *stored.DelayMode
 	}
-	if kind == BlockDelay {
+	if stored.StepTime != nil {
+		parameters.StepTime = *stored.StepTime
+	} else if kind == BlockSource && legacy {
+		parameters.StepTime = 0
+	}
+	if kind == BlockDelay && legacy {
 		if stored.DelayMode == nil {
 			parameters.DelayMode = delayModePade
 		}

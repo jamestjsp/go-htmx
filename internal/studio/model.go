@@ -77,6 +77,7 @@ func (k BlockKind) HasOutput() bool {
 type Parameters struct {
 	Amplitude            float64                 `json:"amplitude,omitempty"`
 	InitialValue         float64                 `json:"initialValue,omitempty"`
+	InitialCondition     float64                 `json:"initialCondition,omitempty"`
 	StepTime             float64                 `json:"stepTime,omitempty"`
 	Value                float64                 `json:"value,omitempty"`
 	Bias                 float64                 `json:"bias,omitempty"`

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -480,6 +481,9 @@ func TestOpenBackfillsBlockParametersFromLegacyColumns(t *testing.T) {
 	if got := blockNamed(t, snapshot.Blocks, "Feed").Parameters.Amplitude; got != 1.75 {
 		t.Fatalf("amplitude = %v, want 1.75", got)
 	}
+	if got := blockNamed(t, snapshot.Blocks, "Feed").Parameters.StepTime; got != 0 {
+		t.Fatalf("legacy Step time = %v, want historical zero default", got)
+	}
 	if got := blockNamed(t, snapshot.Blocks, "Valve").Parameters.Gain; got != 2.4 {
 		t.Fatalf("gain = %v, want 2.4", got)
 	}
@@ -535,6 +539,64 @@ func TestOpenBackfillsBlockParametersFromLegacyColumns(t *testing.T) {
 	}
 	if got := blockNamed(t, snapshotAfterReopen.Blocks, "Feed").Parameters.Amplitude; got != 9.5 {
 		t.Fatalf("amplitude after reopen = %v, want the edited 9.5, not the stale legacy 1.75", got)
+	}
+	if got := blockNamed(t, snapshotAfterReopen.Blocks, "Feed").Parameters.StepTime; got != 0 {
+		t.Fatalf("partial legacy Step time after reopen = %v, want historical zero default", got)
+	}
+}
+
+func TestVersionedBlockParametersPreserveAuthoredZeroValues(t *testing.T) {
+	tests := []struct {
+		name string
+		kind BlockKind
+		edit func(*Parameters)
+		got  func(Parameters) float64
+	}{
+		{
+			name: "Step time", kind: BlockSource,
+			edit: func(parameters *Parameters) { parameters.StepTime = 0 },
+			got:  func(parameters Parameters) float64 { return parameters.StepTime },
+		},
+		{
+			name: "Constant value", kind: BlockConstant,
+			edit: func(parameters *Parameters) { parameters.Value = 0 },
+			got:  func(parameters Parameters) float64 { return parameters.Value },
+		},
+		{
+			name: "Gain", kind: BlockGain,
+			edit: func(parameters *Parameters) { parameters.Gain = 0 },
+			got:  func(parameters Parameters) float64 { return parameters.Gain },
+		},
+		{
+			name: "PID proportional gain", kind: BlockPID,
+			edit: func(parameters *Parameters) { parameters.Proportional = 0 },
+			got:  func(parameters Parameters) float64 { return parameters.Proportional },
+		},
+		{
+			name: "Transport Delay", kind: BlockDelay,
+			edit: func(parameters *Parameters) { parameters.Delay = 0 },
+			got:  func(parameters Parameters) float64 { return parameters.Delay },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parameters := defaultParameters(test.kind)
+			test.edit(&parameters)
+			encoded, err := encodeParameters(parameters)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(encoded, `"parameterSchemaVersion":1`) {
+				t.Fatalf("encoded parameters have no schema version: %s", encoded)
+			}
+			decoded, err := decodeParameters(test.kind, encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := test.got(decoded); got != 0 {
+				t.Fatalf("decoded authored zero = %g, want 0", got)
+			}
+		})
 	}
 }
 
