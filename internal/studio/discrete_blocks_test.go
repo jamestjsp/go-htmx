@@ -11,23 +11,32 @@ import (
 
 func TestUnitDelayCarriesExactStateAtInheritedAndExplicitRates(t *testing.T) {
 	tests := []struct {
-		name       string
-		parameters Parameters
-		sampleTime float64
+		name            string
+		parameters      Parameters
+		duration        float64
+		sampleTime      float64
+		expectedSamples int
 	}{
 		{
 			name: "inherited",
 			parameters: Parameters{
 				SampleTimeMode: string(sampleTimeInherited),
 			},
-			sampleTime: 0.1,
+			duration: 1, sampleTime: 0.1, expectedSamples: 11,
 		},
 		{
-			name: "explicit",
+			name: "explicit five milliseconds",
 			parameters: Parameters{
-				SampleTime: 0.2, SampleTimeMode: string(sampleTimeExplicit),
+				SampleTime: 0.005, SampleTimeMode: string(sampleTimeExplicit),
 			},
-			sampleTime: 0.2,
+			duration: 1, sampleTime: 0.005, expectedSamples: 201,
+		},
+		{
+			name: "explicit one minute",
+			parameters: Parameters{
+				SampleTime: 60, SampleTimeMode: string(sampleTimeExplicit),
+			},
+			duration: 7200, sampleTime: 60, expectedSamples: 121,
 		},
 	}
 	for _, test := range tests {
@@ -39,9 +48,12 @@ func TestUnitDelayCarriesExactStateAtInheritedAndExplicitRates(t *testing.T) {
 			}, []Connection{
 				{SourceID: 1, TargetID: 2},
 				{SourceID: 2, TargetID: 3},
-			}, SimulationRequest{Duration: 1, SampleTime: test.sampleTime})
+			}, SimulationRequest{Duration: test.duration, SampleTime: test.sampleTime})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if got := len(run.Series[0].Values); got != test.expectedSamples {
+				t.Fatalf("samples = %d, want %d", got, test.expectedSamples)
 			}
 			for sample, got := range run.Series[0].Values {
 				want := 1.0

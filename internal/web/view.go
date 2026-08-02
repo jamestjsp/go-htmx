@@ -114,7 +114,8 @@ type workbenchView struct {
 	BlockCount            int
 	ConnectionCount       int
 	SimulationLimits      string
-	SimulationMaxDuration int
+	SimulationMinDuration float64
+	SimulationMinSample   float64
 	BoundedEdit           bool
 }
 
@@ -293,7 +294,8 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 		BlockCount:            len(snapshot.Blocks),
 		ConnectionCount:       len(snapshot.Connections),
 		SimulationLimits:      studio.SimulationLimitsText(),
-		SimulationMaxDuration: studio.MaxSimulationDuration,
+		SimulationMinDuration: studio.MinSimulationDuration,
+		SimulationMinSample:   studio.MinSimulationSampleTime,
 		Sheet: sheetGeometry{
 			Width:       studio.SheetWidth,
 			Height:      studio.SheetHeight,

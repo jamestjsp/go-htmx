@@ -156,6 +156,16 @@ func TestSimulationLimitsCountInclusiveSamplesAndResultChannels(t *testing.T) {
 		t.Fatalf("300-second tutorial run: %v", err)
 	}
 	if err := validateSimulationRequest(
+		SimulationRequest{Duration: 1, SampleTime: 0.005},
+	); err != nil {
+		t.Fatalf("5-millisecond discrete run: %v", err)
+	}
+	if err := validateSimulationRequest(
+		SimulationRequest{Duration: 7200, SampleTime: 60},
+	); err != nil {
+		t.Fatalf("two-hour slow-process run: %v", err)
+	}
+	if err := validateSimulationRequest(
 		SimulationRequest{Duration: 49.99, SampleTime: 0.01},
 	); err != nil {
 		t.Fatalf("exact 5,000-sample run: %v", err)
