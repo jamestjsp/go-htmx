@@ -377,6 +377,9 @@ func compileRequestedModel(
 	if err != nil {
 		return nil, err
 	}
+	if err := prepareBlockDelayRealizations(orderedBlocks, systems); err != nil {
+		return nil, err
+	}
 	system, err := controlsys.ConnectByName(systems, namedConnections, inputs, outputs)
 	if err != nil {
 		if errors.Is(err, controlsys.ErrAlgebraicLoop) {
@@ -587,6 +590,20 @@ func prepareStaticExactDelays(
 		systems[i].LFT = nil
 	}
 	return mat.NewDense(len(probes), len(sources), delayData), nil
+}
+
+func prepareBlockDelayRealizations(blocks []Block, systems []*controlsys.System) error {
+	for index, system := range systems {
+		if !system.HasDelay() {
+			continue
+		}
+		prepared, err := system.PullDelaysToLFT()
+		if err != nil {
+			return fmt.Errorf("prepare %s delay realization: %w", blocks[index].Name, err)
+		}
+		systems[index] = prepared
+	}
+	return nil
 }
 
 func exactPathDelays(

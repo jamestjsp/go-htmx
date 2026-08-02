@@ -240,11 +240,122 @@ func transferFunctionFromParameters(parameters Parameters) *controlsys.TransferF
 }
 
 func transferSystemFromParameters(parameters Parameters) (*controlsys.System, error) {
-	result, err := transferFunctionFromParameters(parameters).StateSpace(nil)
+	transfer := transferFunctionFromParameters(parameters)
+	if transfer.HasDelay() {
+		return delayedTransferSystem(transfer)
+	}
+	result, err := transfer.StateSpace(nil)
 	if err != nil {
 		return nil, err
 	}
 	return result.Sys, nil
+}
+
+func delayedTransferSystem(transfer *controlsys.TransferFunc) (*controlsys.System, error) {
+	outputs, inputs := transfer.Dims()
+	paths := make([]*controlsys.System, 0, outputs*inputs)
+	for output := range outputs {
+		for input := range inputs {
+			pathResult, err := (&controlsys.TransferFunc{
+				Num: [][][]float64{{append([]float64(nil), transfer.Num[output][input]...)}},
+				Den: [][]float64{append([]float64(nil), transfer.Den[output]...)},
+				Dt:  transfer.Dt,
+			}).StateSpace(nil)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"realize delayed transfer path %d,%d: %w",
+					output+1, input+1, err,
+				)
+			}
+			path := pathResult.Sys
+			delay := transfer.Delay[output][input]
+			if delay > 0 {
+				if err := path.SetInputDelay([]float64{delay}); err != nil {
+					return nil, fmt.Errorf(
+						"set delayed transfer path %d,%d: %w",
+						output+1, input+1, err,
+					)
+				}
+				path, err = path.PullDelaysToLFT()
+				if err != nil {
+					return nil, fmt.Errorf(
+						"prepare delayed transfer path %d,%d: %w",
+						output+1, input+1, err,
+					)
+				}
+			}
+			paths = append(paths, path)
+		}
+	}
+
+	augmented, err := controlsys.BlkDiag(paths...)
+	if err != nil {
+		return nil, fmt.Errorf("assemble delayed transfer paths: %w", err)
+	}
+	pathCount := outputs * inputs
+	inputMap := mat.NewDense(pathCount, inputs, nil)
+	outputMap := mat.NewDense(outputs, pathCount, nil)
+	for output := range outputs {
+		for input := range inputs {
+			path := output*inputs + input
+			inputMap.Set(path, input, 1)
+			outputMap.Set(output, path, 1)
+		}
+	}
+
+	states, _, _ := augmented.Dims()
+	dIntermediate := mat.NewDense(pathCount, inputs, nil)
+	dIntermediate.Mul(augmented.D, inputMap)
+	d := mat.NewDense(outputs, inputs, nil)
+	d.Mul(outputMap, dIntermediate)
+
+	var system *controlsys.System
+	if states == 0 {
+		system, err = controlsys.NewGain(d, transfer.Dt)
+	} else {
+		b := mat.NewDense(states, inputs, nil)
+		b.Mul(augmented.B, inputMap)
+		c := mat.NewDense(outputs, states, nil)
+		c.Mul(outputMap, augmented.C)
+		system, err = controlsys.New(
+			mat.DenseCopyOf(augmented.A), b, c, d, transfer.Dt,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("assemble delayed transfer realization: %w", err)
+	}
+	if states == 0 {
+		delayValues := make([]float64, 0, outputs*inputs)
+		for output := range outputs {
+			delayValues = append(delayValues, transfer.Delay[output]...)
+		}
+		if err := system.SetDelay(mat.NewDense(outputs, inputs, delayValues)); err != nil {
+			return nil, fmt.Errorf("attach delayed static transfer realization: %w", err)
+		}
+		system.InputName = append([]string(nil), transfer.InputName...)
+		system.OutputName = append([]string(nil), transfer.OutputName...)
+		return system, nil
+	}
+
+	if augmented.LFT != nil {
+		d12 := mat.NewDense(outputs, len(augmented.LFT.Tau), nil)
+		d12.Mul(outputMap, augmented.LFT.D12)
+		d21 := mat.NewDense(len(augmented.LFT.Tau), inputs, nil)
+		d21.Mul(augmented.LFT.D21, inputMap)
+		if err := system.SetInternalDelay(
+			augmented.LFT.Tau,
+			augmented.LFT.B2,
+			augmented.LFT.C2,
+			d12,
+			d21,
+			augmented.LFT.D22,
+		); err != nil {
+			return nil, fmt.Errorf("attach delayed transfer realization: %w", err)
+		}
+	}
+	system.InputName = append([]string(nil), transfer.InputName...)
+	system.OutputName = append([]string(nil), transfer.OutputName...)
+	return system, nil
 }
 
 func defaultZPKParameters() Parameters {

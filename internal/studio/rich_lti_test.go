@@ -160,12 +160,16 @@ func TestRichLTIBlocksCarryExplicitContinuousAndDiscreteMetadata(t *testing.T) {
 	if err := validateMIMOTransferParameters(transfer); err != nil {
 		t.Fatal(err)
 	}
+	function := transferFunctionFromParameters(transfer)
+	if function.Delay[0][0] != 1 || function.Delay[1][1] != 2 {
+		t.Fatalf("pairwise transfer-function delay = %v", function.Delay)
+	}
 	system, err := transferSystemFromParameters(transfer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if system.Delay.At(0, 0) != 1 || system.Delay.At(1, 1) != 2 {
-		t.Fatalf("pairwise delay = %v", mat.Formatted(system.Delay))
+	if !system.HasInternalDelay() {
+		t.Fatal("delayed MIMO transfer was not prepared for safe interconnection")
 	}
 }
 
