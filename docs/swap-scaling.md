@@ -245,6 +245,65 @@ required bounded replacements. The candidate is retained only if its median
 improves by at least 10%, p95 does not materially regress, and normal 400/640
 plus 400-block 4× CPU correctness gates pass.
 
+### Accepted bounded response
+
+Successful HTMX parameter edits now retain the canvas and workbench shell. The
+response replaces the selected card, inspector, simulation/analysis dock, tab
+strip, and saved facts out of band, and omits every unchanged card and signal
+path from its bytes. Invalid edits still return and replace the full workbench,
+so the top-level error banner remains authoritative.
+
+The selected card may change a variadic or vector port layout. After the
+bounded swap, the client synchronizes the existing signal elements' endpoint
+centres from that card and performs a partial reroute only when a centre
+changed. A scalar Gain edit therefore preserves all 800 or 1,280 populated
+paths unchanged. The final route-authority matrix also proves every other
+swap-producing interaction still follows the empty-server-path then
+client-routed contract, and its geometry-change negative control remains
+non-zero.
+
+The final normal-profile acceptance run used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 400,640 --server-reps 3 --swap-reps 5 --load-reps 1 --skip-profile --expected-edit-swap bounded
+```
+
+| blocks | zoom | full-swap control | bounded edit | improvement | to frame | longest task |
+| --- | --- | --- | --- | --- | --- | --- |
+| 400 | 100% | 120.6 ms | 59.9 ms | 50.3% | 65.3 ms | none |
+| 400 | 25% | 117.2 ms | 60.5 ms | 48.4% | 66.5 ms | none |
+| 640 | 100% | 165.9 ms | 87.6 ms | 47.2% | 96.7 ms | 68 ms |
+| 640 | 25% | 168.9 ms | 88.3 ms | 47.7% | 97.3 ms | 68 ms |
+
+The observed p95/max values also improve at every row: 135.4 to 64.5 ms and
+118.6 to 70.6 ms at 400 blocks, then 180.8 to 89.0 ms and 189.0 to 96.9 ms at
+640 blocks.
+
+At 400 blocks the bounded handler takes 12.8–13.0 ms and transfers 9.2 KiB
+gzip, compared with 29.4–29.9 ms for the canonical full response. At 640
+blocks it takes 19.7–20.0 ms and transfers 10.5 KiB gzip, compared with
+49.0–49.3 ms for the full response and 41.0 KiB gzip for the full fragment.
+The bounded response therefore scales with the affected interface regions
+rather than the number of unchanged canvas nodes.
+
+The constrained gate used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 400 --server-reps 3 --swap-reps 5 --load-reps 1 --cpu-slowdown 4 --skip-profile --skip-redundancy --expected-edit-swap bounded
+```
+
+At 4× CPU slowdown, edits are 242–270 ms total and 289–306 ms to the next
+frame, down from 431–461 ms and 509–561 ms respectively. The longest task is
+227–246 ms instead of 394–426 ms, inside the 250 ms routing-task budget at the
+median in both zoom profiles.
+
+Two measured follow-ons were not retained. Sending the full workbench with
+out-of-band markers improved the browser but kept 400/640 request time at
+about 30/47 ms; omitting unchanged canvas markup reduced it to about 14/21 ms.
+Skipping generic viewport and selection reapply steps did not improve the
+640-block distribution, so that conditional branch was removed. The resulting
+change is the smallest version that crossed every predeclared threshold.
+
 The result also matches the fast-web research principles used for review:
 useful server-rendered HTML, a stable HTMX shell, pinned local dependencies,
 explicit page modules, representation-aware private caching, immutable
