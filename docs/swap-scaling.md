@@ -1,9 +1,9 @@
 # Workbench swap scaling
 
 What the full-`#workbench` swap actually costs as a flowsheet grows, measured
-rather than guessed. This is a decision document: it sets a block-count budget
-and it names the one piece of follow-up work the numbers justify. No
-application code was changed to produce it.
+rather than guessed. This began as the decision document that set the
+block-count budget; it now records the baseline, each benchmark-driven
+milestone, and the final release evidence.
 
 ## 2026-08-02 performance-refactor baseline
 
@@ -166,6 +166,57 @@ body decompression integrity, content length, HEAD, 204, 206, pre-encoded,
 small and incompressible responses, `Vary` composition, HTMX representation
 separation, and cache policy. The package also passes its race suite.
 
+### Final scale and browser verification
+
+The release matrix runs the same application at 50, 150, 400, and 640 blocks,
+both supported zoom levels, a sampling profile, every swap-producing
+interaction, and the cache-invalidation falsification row:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 50,150,400,640 --server-reps 5 --swap-reps 3 --load-reps 2
+node docs/swap-scaling-bench.mjs --sizes 400 --server-reps 1 --swap-reps 2 --load-reps 1 --cpu-slowdown 4 --skip-profile --skip-redundancy
+```
+
+At the 400-block design target:
+
+| measure | baseline | final | improvement |
+| --- | --- | --- | --- |
+| initial load | 3.94–4.03 s | 198–204 ms | about 20× |
+| parameter edit | 6.86–7.00 s | 118–126 ms | about 55× |
+| authoritative route pass | 3.35–3.47 s | 50–54 ms | about 65× |
+| live drag handler | 200–300 ms tasks | 1.0–1.3 ms | frame-safe |
+| workbench transfer | 645.8 KiB identity | 28.7 KiB gzip | 22.5× smaller |
+
+Every route-authority row at every size has zero populated paths after the raw
+swap, all paths populated after the client pass, and a non-zero negative
+control. Reload restored all routes, HTMX tab navigation reached a sibling
+flow, Back restored the original flow and its routes, the project register
+rendered independently, and a real 390×844 Chrome viewport had zero document
+overflow.
+
+At 4× CPU slowdown, removing layout-forcing `offsetLeft`/`offsetTop` reads from
+route reconstruction brought the 400-block edit back inside the constrained
+budget: 431–461 ms total at both zooms. All 40 drag moves remain live; final
+routing is frame-chunked. The next frame arrives at 509–561 ms because the
+full 400-block DOM replacement still creates a 394–426 ms browser task on this
+artificially constrained profile.
+
+The measured stretch case is 640 blocks. Load remains 284–305 ms and the live
+drag handler 1.5–1.8 ms with no drag-routing long task, but edits rise to
+171–230 ms, their browser task to 124–136 ms, forced full routing to about
+102 ms, and transfer to 40.2 KiB gzip. These exceed the 400-block budgets and
+define the remaining limit. A future requirement for 640-block low-end-device
+editing would justify measuring a partial-swap design; the current 400-block
+requirement does not.
+
+The result also matches the fast-web research principles used for review:
+useful server-rendered HTML, a stable HTMX shell, pinned local dependencies,
+explicit page modules, representation-aware private caching, immutable
+versioned assets, and cold/warm/constrained measurement. Prefetch, service
+workers, critical CSS, a bundler, and a TypeScript migration remain deferred
+because this profile provides no evidence that they would improve the current
+limits.
+
 Read this before proposing out-of-band swaps, per-card patching, canvas
 virtualisation, or any other change whose motivation is "the full swap must be
 too slow by now". It probably is not the thing that is slow.
@@ -177,7 +228,7 @@ scratch database and its own Chrome profile, and removes all three on exit:
 node docs/swap-scaling-bench.mjs --sizes 50,150,400 --out results.json
 ```
 
-## The short version
+## Original study: the short version
 
 At 400 blocks and 400 signals, a parameter edit — the mutation that re-renders
 and swaps the entire workbench — takes **205 ms end to end**. The server

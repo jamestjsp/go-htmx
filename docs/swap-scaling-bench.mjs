@@ -165,6 +165,8 @@ async function main() {
         entry.redundancy = await benchRedundancy(session, entry)
       }
     }
+    log('browser smoke checks')
+    results.browserSmoke = await benchBrowserSmoke(session, results.sizes[0])
 
     report(results)
     if (options.out) {
@@ -566,6 +568,86 @@ async function benchDrag(session) {
     body: new URLSearchParams({ x: String(target.home.x), y: String(target.home.y) })
   })
   return { ...drag, blockID: target.id, home: target.home }
+}
+
+async function benchBrowserSmoke(session, fixture) {
+  await fetch(`${base}/flows/${fixture.flowID}/duplicate`, { method: 'POST' })
+  const url = `${base}/projects/${fixture.projectID}/flows/${fixture.flowID}`
+  await navigate(session, url)
+
+  const loaded = session.event('Page.loadEventFired')
+  await session.send('Page.reload')
+  await loaded
+  await waitFor(() => evaluate(session, `(() => {
+    const paths = [...document.querySelectorAll('.signal-line')]
+    return Boolean(window.htmx && document.querySelector('#flow-canvas') &&
+      paths.length && paths.every((path) => path.getAttribute('d')))
+  })()`), 'reload routes')
+  const reload = await evaluate(session, `({
+    flow: document.querySelector('#workbench').dataset.flowId,
+    paths: document.querySelectorAll('.signal-line[d]:not([d=""])').length
+  })`)
+
+  const originalFlow = String(fixture.flowID)
+  await evaluate(session, `document.querySelector('.flow-tab:not([aria-current="page"])').click()`)
+  await waitFor(() => evaluate(session,
+    `document.querySelector('#workbench')?.dataset.flowId !== ${JSON.stringify(originalFlow)}`),
+  'tab switch')
+  const switchedFlow = await evaluate(session, `document.querySelector('#workbench').dataset.flowId`)
+  await evaluate(session, 'history.back()')
+  await waitFor(() => evaluate(session, `(() => {
+    const root = document.querySelector('#workbench')
+    const paths = [...document.querySelectorAll('.signal-line')]
+    return root?.dataset.flowId === ${JSON.stringify(originalFlow)} &&
+      paths.length && paths.every((path) => path.getAttribute('d'))
+  })()`), 'history restore')
+  const history = await evaluate(session, `({
+    flow: document.querySelector('#workbench').dataset.flowId,
+    paths: document.querySelectorAll('.signal-line[d]:not([d=""])').length
+  })`)
+
+  const registerLoaded = session.event('Page.loadEventFired')
+  await session.send('Page.navigate', { url: `${base}/` })
+  await registerLoaded
+  const register = await evaluate(session, `({
+    title: document.querySelector('#register-title')?.textContent.trim(),
+    projects: document.querySelectorAll('.register-row').length,
+    hasWorkbench: Boolean(document.querySelector('#workbench')),
+    fits: document.documentElement.scrollWidth <= window.innerWidth + 1
+  })`)
+  if (register.title !== 'Drawing register' || !register.projects ||
+      register.hasWorkbench || !register.fits) {
+    throw new Error(`register smoke failed: ${JSON.stringify(register)}`)
+  }
+
+  await session.send('Emulation.setDeviceMetricsOverride', {
+    width: 390,
+    height: 844,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+  let responsive
+  try {
+    await navigate(session, url)
+    responsive = await evaluate(session, `(() => {
+      const canvas = document.querySelector('#flow-canvas').getBoundingClientRect()
+      const topbar = document.querySelector('.topbar').getBoundingClientRect()
+      return {
+        width: window.innerWidth,
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        canvasWidth: canvas.width,
+        topbarWidth: topbar.width,
+        paths: document.querySelectorAll('.signal-line[d]:not([d=""])').length
+      }
+    })()`)
+    if (responsive.overflow > 1 || responsive.canvasWidth <= 0 ||
+        responsive.topbarWidth > responsive.width + 1 || !responsive.paths) {
+      throw new Error(`responsive smoke failed: ${JSON.stringify(responsive)}`)
+    }
+  } finally {
+    await session.send('Emulation.clearDeviceMetricsOverride')
+  }
+  return { reload, switchedFlow, history, register, responsive }
 }
 
 // installProbe adds listeners only. Every application listener was
@@ -1083,6 +1165,17 @@ function report(results) {
   if (sample) {
     out.push('', 'One path after each client routing pass:', '', '```',
       `afterSwap: ${sample.sample.afterSwap}`, `afterSettle: ${sample.sample.afterSettle}`, '```')
+  }
+
+  if (results.browserSmoke) {
+    const smoke = results.browserSmoke
+    out.push('', '### Real-browser smoke checks', '')
+    out.push(`- Reload restored ${smoke.reload.paths} routes on flow ${smoke.reload.flow}.`)
+    out.push(`- Tab navigation reached flow ${smoke.switchedFlow}; Back restored flow ` +
+      `${smoke.history.flow} with ${smoke.history.paths} routes.`)
+    out.push(`- Register rendered ${smoke.register.projects} project rows without a workbench or horizontal overflow.`)
+    out.push(`- 390×844 viewport rendered ${smoke.responsive.paths} routes with ` +
+      `${smoke.responsive.overflow}px document overflow.`)
   }
 
   out.push('', '### Where the time goes (sampling profile, 100µs, taken separately from the timings above)', '')

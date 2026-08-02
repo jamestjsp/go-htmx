@@ -38,11 +38,13 @@ function routingContext(root) {
   const obstaclesByBlock = new Map()
   const blockRecords = [...root.querySelectorAll('.block-card')].map((block) => {
     const blockID = String(block.dataset.blockId)
+    const left = Number.parseFloat(block.style.left) || 0
+    const top = Number.parseFloat(block.style.top) || 0
     const obstacle = {
-      left: block.offsetLeft,
-      top: block.offsetTop,
-      right: block.offsetLeft + blockWidth,
-      bottom: block.offsetTop + blockHeight
+      left,
+      top,
+      right: left + blockWidth,
+      bottom: top + blockHeight
     }
     blocksByID.set(blockID, block)
     obstaclesByBlock.set(blockID, obstacle)
@@ -85,9 +87,11 @@ function routingContext(root) {
 
 function endpoint(block, center, output, context) {
   const offset = Number(center) || context.blockHeight / 2
+  const left = Number.parseFloat(block.style.left) || 0
+  const top = Number.parseFloat(block.style.top) || 0
   return {
-    x: block.offsetLeft + (output ? context.blockWidth : 0),
-    y: block.offsetTop + offset
+    x: left + (output ? context.blockWidth : 0),
+    y: top + offset
   }
 }
 
