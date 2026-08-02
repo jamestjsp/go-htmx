@@ -70,6 +70,40 @@ test('routes around an intervening block with clearance', () => {
   }
 })
 
+test('keeps a clear multi-bend route through a dense layout', () => {
+  const source = block(40, 58)
+  const target = block(828, 458)
+  const barriers = [
+    block(300, -1, 100, 361),
+    block(500, 180, 100, 421),
+    block(700, -1, 100, 361)
+  ]
+  const fillers = []
+  for (let column = 0; column < 5 && fillers.length < 23; column += 1) {
+    for (let row = 0; row < 5 && fillers.length < 23; row += 1) {
+      fillers.push(block(1060 + column * 200, row * 100))
+    }
+  }
+  const obstacles = [source, target, ...barriers, ...fillers]
+  assert.equal(obstacles.length, 28)
+
+  const points = routeOrthogonal({
+    start: { x: source.right, y: 100 },
+    end: { x: target.left, y: 500 },
+    obstacles,
+    bounds: { left: 0, top: 0, right: 2100, bottom: 600 },
+    clearance: 0
+  })
+
+  assertOrthogonal(points)
+  assert.ok(points.length >= 8, routePath(points))
+  for (const rect of [...barriers, ...fillers]) {
+    for (const { a, b } of routeSegments(points)) {
+      assert.equal(segmentEntersRect(a, b, rect), false, JSON.stringify({ a, b, rect }))
+    }
+  }
+})
+
 test('routes right-to-left feedback outside both endpoint blocks', () => {
   const source = block(800, 200)
   const target = block(320, 420)
