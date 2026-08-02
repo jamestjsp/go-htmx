@@ -173,7 +173,7 @@ func TestPerSampleControlsysDriverMatchesBatchSimulation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stepped, err := simulateSystemByStep(discrete, input)
+	stepped, err := simulateSystemByStep(discrete, input, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

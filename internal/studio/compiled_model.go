@@ -75,12 +75,23 @@ type compiledModelProvenance struct {
 }
 
 type compiledModel struct {
-	system     *controlsys.System
-	inputs     []compiledInput
-	outputs    []compiledOutput
-	signals    []compiledSignal
-	provenance compiledModelProvenance
-	execution  executionPartition
+	system       *controlsys.System
+	initialState []float64
+	inputs       []compiledInput
+	outputs      []compiledOutput
+	signals      []compiledSignal
+	provenance   compiledModelProvenance
+	execution    executionPartition
+}
+
+func (m *compiledModel) initialStateVector() *mat.VecDense {
+	if len(m.initialState) == 0 {
+		return nil
+	}
+	return mat.NewVecDense(
+		len(m.initialState),
+		append([]float64(nil), m.initialState...),
+	)
 }
 
 func (m *compiledModel) dimensions() compiledModelDimensions {
@@ -168,12 +179,13 @@ func (m *compiledModel) selectOutputs(probes []modelProbe) (*compiledModel, erro
 		return nil, fmt.Errorf("select compiled outputs: %w", err)
 	}
 	return &compiledModel{
-		system:     system,
-		inputs:     m.inputs,
-		outputs:    outputs,
-		signals:    m.signals,
-		provenance: m.provenance,
-		execution:  m.execution,
+		system:       system,
+		initialState: append([]float64(nil), m.initialState...),
+		inputs:       m.inputs,
+		outputs:      outputs,
+		signals:      m.signals,
+		provenance:   m.provenance,
+		execution:    m.execution,
 	}, nil
 }
 
@@ -406,7 +418,7 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		}
 		response, err := discrete.Simulate(
 			mat.NewDense(len(m.inputs), steps, inputData),
-			nil,
+			m.initialStateVector(),
 			nil,
 		)
 		if err != nil {
@@ -431,6 +443,7 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		response, err := simulateDiscreteSystem(
 			m.system,
 			mat.NewDense(len(m.inputs), steps, inputData),
+			m.initialStateVector(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("step discrete flowsheet: %w", err)
@@ -451,25 +464,33 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		}
 	}
 	input := mat.NewDense(steps, len(m.inputs), inputData)
-	response, err := controlsys.Lsim(m.system, input, times, nil)
+	response, err := controlsys.Lsim(m.system, input, times, m.initialStateVector())
 	if err != nil {
 		return nil, fmt.Errorf("simulate flowsheet: %w", err)
 	}
 	return response, nil
 }
 
-func simulateDiscreteSystem(system *controlsys.System, input *mat.Dense) (*mat.Dense, error) {
+func simulateDiscreteSystem(
+	system *controlsys.System,
+	input *mat.Dense,
+	initialState *mat.VecDense,
+) (*mat.Dense, error) {
 	if system.HasDelay() {
-		response, err := system.Simulate(input, nil, nil)
+		response, err := system.Simulate(input, initialState, nil)
 		if err != nil {
 			return nil, err
 		}
 		return response.Y, nil
 	}
-	return simulateSystemByStep(system, input)
+	return simulateSystemByStep(system, input, initialState)
 }
 
-func simulateSystemByStep(system *controlsys.System, input *mat.Dense) (*mat.Dense, error) {
+func simulateSystemByStep(
+	system *controlsys.System,
+	input *mat.Dense,
+	initialState *mat.VecDense,
+) (*mat.Dense, error) {
 	inputs, steps := input.Dims()
 	_, systemInputs, outputs := system.Dims()
 	if inputs != systemInputs {
@@ -479,7 +500,7 @@ func simulateSystemByStep(system *controlsys.System, input *mat.Dense) (*mat.Den
 		)
 	}
 	values := mat.NewDense(outputs, steps, nil)
-	var state *mat.VecDense
+	state := initialState
 	for sample := range steps {
 		column := mat.NewDense(inputs, 1, nil)
 		for inputIndex := range inputs {
