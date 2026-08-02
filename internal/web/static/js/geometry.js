@@ -4,6 +4,7 @@
 // on without inheriting a dependency on anything mutable.
 // =====================================================================
 import { canvas } from './dom.js'
+import { routeOrthogonal, routePath, routeSegments } from './orthogonal-routing.js'
 
 const DEFAULT_GEOMETRY = { width: 6000, height: 4000, grid: 20, blockWidth: 172, blockHeight: 84 }
 
@@ -22,30 +23,65 @@ export function geometry() {
   }
 }
 
-// The twin of edgePath() in view.go. The server draws every wire on load
-// and this redraws them during a drag, so the two curves have to be the
-// same curve; changing the bend here alone would make a wire jump the
-// moment it is touched.
-function edgePath(source, sourceCenter, target, targetCenter) {
+function routingContext(root) {
+  const { width, height, blockWidth, blockHeight } = geometry()
+  const obstacles = [...root.querySelectorAll('.block-card')].map((block) => ({
+    left: block.offsetLeft,
+    top: block.offsetTop,
+    right: block.offsetLeft + blockWidth,
+    bottom: block.offsetTop + blockHeight
+  }))
+  return {
+    obstacles,
+    bounds: { left: 0, top: 0, right: width, bottom: height }
+  }
+}
+
+function endpoint(block, center, output) {
   const { blockWidth, blockHeight } = geometry()
-  const sourceOffset = Number(sourceCenter) || blockHeight / 2
-  const targetOffset = Number(targetCenter) || blockHeight / 2
-  const startX = source.offsetLeft + blockWidth
-  const startY = source.offsetTop + sourceOffset
-  const endX = target.offsetLeft
-  const endY = target.offsetTop + targetOffset
-  const bend = Math.max(54, Math.abs(endX - startX) * 0.45)
-  return `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`
+  const offset = Number(center) || blockHeight / 2
+  return {
+    x: block.offsetLeft + (output ? blockWidth : 0),
+    y: block.offsetTop + offset
+  }
+}
+
+function computeRoute(start, end, occupied, context) {
+  const points = routeOrthogonal({
+    start,
+    end,
+    occupied,
+    obstacles: context.obstacles,
+    bounds: context.bounds
+  })
+  return { path: routePath(points), segments: routeSegments(points) }
+}
+
+export function signalPath(start, end) {
+  const root = canvas()
+  if (!root) return ''
+  return computeRoute(start, end, [], routingContext(root)).path
+}
+
+function setConnectionPath(root, edge, path) {
+  root.querySelectorAll(`[data-edge-id="${edge.dataset.edgeId}"]`).forEach((element) => {
+    element.setAttribute('d', path)
+  })
 }
 
 export function redrawEdges() {
   const root = canvas()
   if (!root) return
-  root.querySelectorAll('[data-edge-source]').forEach((path) => {
-    const source = root.querySelector(`[data-block-id="${path.dataset.edgeSource}"]`)
-    const target = root.querySelector(`[data-block-id="${path.dataset.edgeTarget}"]`)
-    if (source && target) {
-      path.setAttribute('d', edgePath(source, path.dataset.edgeSourceCenter, target, path.dataset.edgeTargetCenter))
-    }
+  const context = routingContext(root)
+  const occupied = []
+  root.querySelectorAll('.signal-line[data-edge-source]').forEach((edge) => {
+    const source = root.querySelector(`[data-block-id="${edge.dataset.edgeSource}"]`)
+    const target = root.querySelector(`[data-block-id="${edge.dataset.edgeTarget}"]`)
+    if (!source || !target) return
+    const start = endpoint(source, edge.dataset.edgeSourceCenter, true)
+    const end = endpoint(target, edge.dataset.edgeTargetCenter, false)
+    const route = computeRoute(start, end, occupied, context)
+    setConnectionPath(root, edge, route.path)
+    occupied.push(...route.segments)
   })
 }

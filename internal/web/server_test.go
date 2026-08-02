@@ -901,9 +901,11 @@ func TestConnectPersistsAndRendersANonzeroTargetPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	var found bool
+	var connectionID int64
 	for _, connection := range snapshot.Connections {
 		if connection.SourceID == sourceID && connection.TargetID == sumID {
 			found = true
+			connectionID = connection.ID
 			if connection.SourcePort != 0 || connection.TargetPort != 1 {
 				t.Fatalf("persisted ports = %d -> %d, want 0 -> 1", connection.SourcePort, connection.TargetPort)
 			}
@@ -921,6 +923,10 @@ func TestConnectPersistsAndRendersANonzeroTargetPort(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("workbench does not contain %q", expected)
 		}
+	}
+	if edgeID := fmt.Sprintf(`data-edge-id="%d" d=""`, connectionID); strings.Count(body, edgeID) != 2 {
+		t.Errorf("workbench contains %d matching signal paths for %q, want shadow and line",
+			strings.Count(body, edgeID), edgeID)
 	}
 
 	if _, err := service.Connect(ctx, flowID, studio.Wire{
@@ -1108,6 +1114,7 @@ func TestCanvasModulesAreEmbedded(t *testing.T) {
 	server, _ := openTestServer(t)
 	for _, path := range []string{
 		"/assets/js/main.js", "/assets/js/dom.js", "/assets/js/geometry.js",
+		"/assets/js/orthogonal-routing.js",
 		"/assets/js/viewport.js", "/assets/js/selection.js", "/assets/js/dragging.js",
 		"/assets/js/wiring.js", "/assets/js/shell.js", "/assets/js/shortcuts.js",
 		"/assets/js/contextmenu.js", "/assets/js/input.js", "/assets/js/reapply.js",
