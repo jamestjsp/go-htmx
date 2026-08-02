@@ -664,3 +664,9 @@
 {"type":"state","ts":"2026-08-02T16:05:17.56433Z","data":{"id":"BI5B4A","state":"done","ts":"2026-08-02T16:05:17.56433Z"}}
 {"type":"claim","ts":"2026-08-02T16:05:29.749087Z","data":{"id":"SE6LWT","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:05:29.749087Z"}}
 {"type":"state","ts":"2026-08-02T16:05:29.749087Z","data":{"id":"SE6LWT","state":"doing","ts":"2026-08-02T16:05:29.749087Z"}}
+{"type":"message","ts":"2026-08-02T16:14:51.015082Z","data":{"task_id":"SE6LWT","kind":"done","text":"583a5b9: one settled reapply and signed route reuse; 400-block edits now 108-112 ms.","ts":"2026-08-02T16:14:51.015082Z"}}
+{"type":"result","ts":"2026-08-02T16:14:51.015082Z","data":{"task_id":"SE6LWT","summary":"docs/swap-scaling.md","path":"docs/swap-scaling.md","sha256_at_attach":"d60627a0798fefc7d5b17dd00fd3fa1f0cfa2378ddc3790bd3b25fb073ad6256","mtime_at_attach":"2026-08-02T16:14:13.736655269Z","git_commit_at_attach":"583a5b91f055276c0374a98fe33a3f69619dba46","ts":"2026-08-02T16:14:51.015082Z"}}
+{"type":"unclaim","ts":"2026-08-02T16:14:51.015082Z","data":{"id":"SE6LWT","ts":"2026-08-02T16:14:51.015082Z"}}
+{"type":"state","ts":"2026-08-02T16:14:51.015082Z","data":{"id":"SE6LWT","state":"done","ts":"2026-08-02T16:14:51.015082Z"}}
+{"type":"claim","ts":"2026-08-02T16:14:51.027201Z","data":{"id":"X3BW6M","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:14:51.027201Z"}}
+{"type":"state","ts":"2026-08-02T16:14:51.027201Z","data":{"id":"X3BW6M","state":"doing","ts":"2026-08-02T16:14:51.027201Z"}}

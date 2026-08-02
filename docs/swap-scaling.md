@@ -101,6 +101,44 @@ at drag release still produced 1.5–2.3 second long tasks. Both results isolate
 the next milestone: replace the Cartesian visibility graph. They also show
 why caching alone is not a complete responsiveness fix.
 
+### Milestone 2: bounded Manhattan routing
+
+The Cartesian visibility graph and A* search have been removed. The router now
+tries a fixed set of direct Manhattan lanes, consults at most 12 ranked
+obstacle-boundary lanes only when the direct set is blocked, and uses spatial
+indexes for both block collisions and existing-route crossing/overlap costs.
+The indexes are built once per redraw rather than once per edge.
+
+Live drag still reroutes only connected or obstructed paths in one animation
+frame. The final authoritative build is split into 8 ms animation-frame chunks,
+is canceled if newer geometry arrives, and emits
+`processlab:routesSettled` when complete. The benchmark waits for that event,
+so its drag result includes all final routing work rather than stopping early.
+
+The full validation run used:
+
+```text
+node docs/swap-scaling-bench.mjs --sizes 50,150,400 --server-reps 5 --swap-reps 3 --load-reps 2 --skip-redundancy
+node docs/swap-scaling-bench.mjs --sizes 150 --server-reps 2 --swap-reps 2 --load-reps 1 --cpu-slowdown 4 --skip-profile --skip-redundancy
+```
+
+| blocks | load | parameter edit | to frame | forced route pass | drag handler | drag long task |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | 85–102 ms | 31–34 ms | 34–38 ms | 1–6 ms | 0.3–0.5 ms | none |
+| 150 | 110–113 ms | 55–56 ms | 62–64 ms | 3–14 ms | 0.5–0.7 ms | none |
+| 400 | 187–193 ms | 111–126 ms | 124–150 ms | 46–52 ms | 1.0–1.2 ms | none |
+
+At 4× CPU slowdown, the prescribed 150-block edit is 215–238 ms and its
+drag completes with every one of 40 live moves and no long task. A stricter
+single-sample 400-block run remained below the 500 ms edit budget at
+428–496 ms; its route build was about 250 ms before the final 128 px index
+tuning.
+
+Persistent tests cover deterministic forward and feedback paths, obstacle
+clearance, blocked port stubs, occupancy choice, bounds, multichannel target
+centers, dense layouts, indexed-versus-exhaustive parity, cache invalidation,
+and cancelable frame-bounded completion.
+
 Read this before proposing out-of-band swaps, per-card patching, canvas
 virtualisation, or any other change whose motivation is "the full swap must be
 too slow by now". It probably is not the thing that is slow.

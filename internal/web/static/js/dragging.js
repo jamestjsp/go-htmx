@@ -7,6 +7,7 @@ import {
   flushRedrawEdges,
   geometry,
   redrawEdges,
+  scheduleAuthoritativeRedraw,
   scheduleRedrawEdges
 } from './geometry.js'
 import { currentZoom } from './viewport.js'
@@ -208,7 +209,8 @@ export function nudgeSelection(stepX, stepY) {
     member.node.style.left = `${Math.max(0, Math.min(width - blockWidth, member.left + stepX))}px`
     member.node.style.top = `${Math.max(0, Math.min(height - blockHeight, member.top + stepY))}px`
   })
-  redrawEdges()
+  redrawEdges(nodes.map((node) => node.dataset.blockId))
+  scheduleAuthoritativeRedraw()
   savePositions(group)
 }
 
