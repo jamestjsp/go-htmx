@@ -4,7 +4,12 @@ const DEFAULT_BEND_PENALTY = 36
 const DEFAULT_CROSSING_PENALTY = 120
 const DEFAULT_OVERLAP_PENALTY = 8
 const MAX_OBSTACLE_LANES = 12
+const MAX_EXHAUSTIVE_VISIBILITY_OBSTACLES = 32
 const EPSILON = 1e-6
+
+function pointKey(point) {
+  return `${point.x},${point.y}`
+}
 
 function samePoint(a, b) {
   return Math.abs(a.x - b.x) < EPSILON && Math.abs(a.y - b.y) < EPSILON
@@ -109,6 +114,13 @@ function withinBounds(point, bounds) {
     point.x <= bounds.right + EPSILON &&
     point.y >= bounds.top - EPSILON &&
     point.y <= bounds.bottom + EPSILON
+}
+
+function insideRect(point, rect) {
+  return point.x > rect.left + EPSILON &&
+    point.x < rect.right - EPSILON &&
+    point.y > rect.top + EPSILON &&
+    point.y < rect.bottom - EPSILON
 }
 
 function segmentCrossesRect(a, b, rect) {
@@ -220,6 +232,110 @@ function occupancyCost(a, b, occupied, overlapPenalty, crossingPenalty) {
   return cost
 }
 
+class MinHeap {
+  constructor() {
+    this.items = []
+    this.sequence = 0
+  }
+
+  push(item) {
+    item.sequence = this.sequence
+    this.sequence += 1
+    this.items.push(item)
+    let index = this.items.length - 1
+    while (index > 0) {
+      const parent = Math.floor((index - 1) / 2)
+      if (this.compare(this.items[parent], this.items[index]) <= 0) break
+      ;[this.items[parent], this.items[index]] = [this.items[index], this.items[parent]]
+      index = parent
+    }
+  }
+
+  pop() {
+    if (!this.items.length) return null
+    const first = this.items[0]
+    const last = this.items.pop()
+    if (this.items.length) {
+      this.items[0] = last
+      let index = 0
+      while (true) {
+        const left = index * 2 + 1
+        const right = left + 1
+        let smallest = index
+        if (left < this.items.length && this.compare(this.items[left], this.items[smallest]) < 0) {
+          smallest = left
+        }
+        if (right < this.items.length && this.compare(this.items[right], this.items[smallest]) < 0) {
+          smallest = right
+        }
+        if (smallest === index) break
+        ;[this.items[index], this.items[smallest]] = [this.items[smallest], this.items[index]]
+        index = smallest
+      }
+    }
+    return first
+  }
+
+  compare(a, b) {
+    return a.priority - b.priority || a.sequence - b.sequence
+  }
+}
+
+function stateKey(node, incoming) {
+  return `${node}:${incoming}`
+}
+
+function shortestRoute(graph, occupied, options) {
+  if (graph.start === undefined || graph.end === undefined) return null
+  const heap = new MinHeap()
+  const initial = stateKey(graph.start, '')
+  const distance = new Map([[initial, 0]])
+  const previous = new Map()
+  heap.push({ key: initial, node: graph.start, incoming: '', priority: 0 })
+
+  while (heap.items.length) {
+    const current = heap.pop()
+    const currentDistance = distance.get(current.key)
+    const heuristic = segmentLength(graph.points[current.node], graph.points[graph.end])
+    if (current.priority > currentDistance + heuristic + EPSILON) continue
+    if (current.node === graph.end) {
+      const route = []
+      let key = current.key
+      while (key) {
+        const [node] = key.split(':')
+        route.push(graph.points[Number(node)])
+        key = previous.get(key)
+      }
+      return route.reverse()
+    }
+
+    const here = graph.points[current.node]
+    for (const neighbor of graph.adjacency[current.node]) {
+      const there = graph.points[neighbor]
+      const incoming = direction(here, there)
+      const bend = current.incoming && current.incoming !== incoming ? options.bendPenalty : 0
+      const nextDistance = currentDistance + segmentLength(here, there) + bend + occupancyCost(
+        here,
+        there,
+        occupied,
+        options.overlapPenalty,
+        options.crossingPenalty
+      )
+      const key = stateKey(neighbor, incoming)
+      if (nextDistance >= (distance.get(key) ?? Infinity) - EPSILON) continue
+      distance.set(key, nextDistance)
+      previous.set(key, current.key)
+      heap.push({
+        key,
+        node: neighbor,
+        incoming,
+        priority: nextDistance + segmentLength(there, graph.points[graph.end])
+      })
+    }
+  }
+  return null
+}
+
 export function simplifyRoute(points) {
   const simplified = []
   for (const point of points) {
@@ -251,6 +367,91 @@ function boundedObstacleLanes(values, anchors, bounds) {
     unique.at(-1),
     ...ranked.slice(0, MAX_OBSTACLE_LANES - 2)
   ])
+}
+
+function visibilityObstacleLanes(values, anchors, bounds, obstacleCount) {
+  if (obstacleCount > MAX_EXHAUSTIVE_VISIBILITY_OBSTACLES) {
+    return boundedObstacleLanes(values, anchors, bounds)
+  }
+  return uniqueSorted(values).filter((value) => {
+    return !bounds || value >= bounds[0] - EPSILON && value <= bounds[1] + EPSILON
+  })
+}
+
+function addNeighbor(adjacency, from, to) {
+  if (from === to || adjacency[from].includes(to)) return
+  adjacency[from].push(to)
+  adjacency[to].push(from)
+}
+
+function buildBoundedVisibilityGraph(start, end, obstacles, bounds, isClear) {
+  const xs = uniqueSorted([
+    start.x,
+    end.x,
+    ...(bounds ? [bounds.left, bounds.right] : []),
+    ...visibilityObstacleLanes(
+      obstacles.flatMap((rect) => [rect.left, rect.right]),
+      [start.x, end.x],
+      bounds && [bounds.left, bounds.right],
+      obstacles.length
+    )
+  ])
+  const ys = uniqueSorted([
+    start.y,
+    end.y,
+    ...(bounds ? [bounds.top, bounds.bottom] : []),
+    ...visibilityObstacleLanes(
+      obstacles.flatMap((rect) => [rect.top, rect.bottom]),
+      [start.y, end.y],
+      bounds && [bounds.top, bounds.bottom],
+      obstacles.length
+    )
+  ])
+  const points = []
+  const indexByPoint = new Map()
+  const rows = new Map()
+  const columns = new Map()
+
+  for (const y of ys) {
+    for (const x of xs) {
+      const point = { x, y }
+      if (!withinBounds(point, bounds) || obstacles.some((rect) => insideRect(point, rect))) {
+        continue
+      }
+      const index = points.length
+      points.push(point)
+      indexByPoint.set(pointKey(point), index)
+      if (!rows.has(y)) rows.set(y, [])
+      if (!columns.has(x)) columns.set(x, [])
+      rows.get(y).push(index)
+      columns.get(x).push(index)
+    }
+  }
+
+  const adjacency = points.map(() => [])
+  for (const row of rows.values()) {
+    row.sort((a, b) => points[a].x - points[b].x)
+    for (let index = 1; index < row.length; index += 1) {
+      const from = row[index - 1]
+      const to = row[index]
+      if (isClear(points[from], points[to])) addNeighbor(adjacency, from, to)
+    }
+  }
+  for (const column of columns.values()) {
+    column.sort((a, b) => points[a].y - points[b].y)
+    for (let index = 1; index < column.length; index += 1) {
+      const from = column[index - 1]
+      const to = column[index]
+      if (isClear(points[from], points[to])) addNeighbor(adjacency, from, to)
+    }
+  }
+
+  return {
+    points,
+    adjacency,
+    start: indexByPoint.get(pointKey(start)),
+    end: indexByPoint.get(pointKey(end))
+  }
 }
 
 function manhattanCandidates(sourceExit, targetEntry, obstacles, bounds, includeObstacleLanes) {
@@ -401,10 +602,20 @@ function chooseCandidate(
     false
   )
   if (direct) return direct
-  return rank(
+  const obstacleLane = rank(
     manhattanCandidates(sourceExit, targetEntry, obstacles, bounds, true),
     false
   )
+  if (obstacleLane) return obstacleLane
+  const graph = buildBoundedVisibilityGraph(
+    sourceExit,
+    targetEntry,
+    obstacles,
+    bounds,
+    isClear
+  )
+  const main = shortestRoute(graph, occupied, options)
+  return main ? simplifyRoute([source, ...main, target]) : null
 }
 
 function fallbackRoute(start, end, obstacles, bounds, options) {
