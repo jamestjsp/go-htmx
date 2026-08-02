@@ -5,6 +5,8 @@
 // =====================================================================
 import { canvas } from './dom.js'
 import {
+  createObstacleIndex,
+  createSegmentIndex,
   routeIntersectsRect,
   routeOrthogonal,
   routePath,
@@ -54,8 +56,10 @@ function routingContext(root) {
     if (elements) elements.push(element)
     else edgeElementsByID.set(edgeID, [element])
   })
+  const obstacles = blockRecords.map(({ obstacle }) => obstacle)
   return {
-    obstacles: blockRecords.map(({ obstacle }) => obstacle),
+    obstacles,
+    obstacleIndex: createObstacleIndex(obstacles),
     obstaclesByBlock,
     blocksByID,
     edgeElementsByID,
@@ -93,6 +97,7 @@ function computeRoute(start, end, occupied, context) {
     end,
     occupied,
     obstacles: context.obstacles,
+    obstacleIndex: context.obstacleIndex,
     bounds: context.bounds
   })
   return { path: routePath(points), segments: routeSegments(points) }
@@ -124,9 +129,9 @@ export function routeCacheReusable(previous, current, liveEdgeIDs, cachedRoutes)
   return liveEdgeIDs.every((edgeID) => cachedRoutes.has(edgeID))
 }
 
-export function redrawEdges(blockIDs = null) {
+function prepareRedraw(blockIDs) {
   const root = canvas()
-  if (!root) return
+  if (!root) return null
   const context = routingContext(root)
   const edges = [...root.querySelectorAll('.signal-line[data-edge-source]')]
   const edgeRecords = edges.map((edge) => ({
@@ -154,35 +159,99 @@ export function redrawEdges(blockIDs = null) {
     : [...movedBlockIDs].map((id) => context.obstaclesByBlock.get(id)).filter(Boolean)
   const reuseFullCache = movedBlockIDs === null &&
     routeCacheReusable(cachedSignature, signature, liveEdgeIDs, routeCache)
-  const occupied = []
-  edgeRecords.forEach(({ edge, edgeID }) => {
-    const source = context.blocksByID.get(String(edge.dataset.edgeSource))
-    const target = context.blocksByID.get(String(edge.dataset.edgeTarget))
-    if (!source || !target) return
-    const cached = routeCache.get(edgeID)
-    const affected = !reuseFullCache && (movedBlockIDs === null ||
-      routeAffectedByBlocks(cached, movedBlockIDs, movedRects)
-    )
-    let route = cached
-    if (affected) {
-      const start = endpoint(source, edge.dataset.edgeSourceCenter, true, context)
-      const end = endpoint(target, edge.dataset.edgeTargetCenter, false, context)
-      route = {
-        ...computeRoute(start, end, occupied, context),
-        sourceID: edge.dataset.edgeSource,
-        targetID: edge.dataset.edgeTarget
-      }
-      routeCache.set(edgeID, route)
-    }
-    setConnectionPath(context, edgeID, route.path)
-    occupied.push(...route.segments)
-  })
-  if (movedBlockIDs === null) {
-    for (const edgeID of routeCache.keys()) {
-      if (!liveEdgeSet.has(edgeID)) routeCache.delete(edgeID)
-    }
-    cachedSignature = signature
+  return {
+    context,
+    edgeRecords,
+    signature,
+    liveEdgeSet,
+    movedBlockIDs,
+    movedRects,
+    reuseFullCache,
+    occupied: createSegmentIndex()
   }
+}
+
+function processEdge(state, { edge, edgeID }) {
+  const source = state.context.blocksByID.get(String(edge.dataset.edgeSource))
+  const target = state.context.blocksByID.get(String(edge.dataset.edgeTarget))
+  if (!source || !target) return
+  const cached = routeCache.get(edgeID)
+  const affected = !state.reuseFullCache && (state.movedBlockIDs === null ||
+    routeAffectedByBlocks(cached, state.movedBlockIDs, state.movedRects)
+  )
+  let route = cached
+  if (affected) {
+    const start = endpoint(source, edge.dataset.edgeSourceCenter, true, state.context)
+    const end = endpoint(target, edge.dataset.edgeTargetCenter, false, state.context)
+    route = {
+      ...computeRoute(start, end, state.occupied, state.context),
+      sourceID: edge.dataset.edgeSource,
+      targetID: edge.dataset.edgeTarget
+    }
+    routeCache.set(edgeID, route)
+  }
+  setConnectionPath(state.context, edgeID, route.path)
+  state.occupied.addAll(route.segments)
+}
+
+function finishRedraw(state) {
+  if (state.movedBlockIDs !== null) return
+  for (const edgeID of routeCache.keys()) {
+    if (!state.liveEdgeSet.has(edgeID)) routeCache.delete(edgeID)
+  }
+  cachedSignature = state.signature
+}
+
+export function createFrameChunker(requestFrame, now) {
+  let generation = 0
+  return {
+    run(items, process, finish, frameBudget = 8) {
+      const token = ++generation
+      let index = 0
+      const runChunk = () => {
+        if (token !== generation) return
+        const deadline = now() + frameBudget
+        do {
+          process(items[index])
+          index += 1
+        } while (index < items.length && now() < deadline)
+        if (index < items.length) requestFrame(runChunk)
+        else finish()
+      }
+      if (items.length) requestFrame(runChunk)
+      else finish()
+    },
+    cancel() {
+      generation += 1
+    }
+  }
+}
+
+const authoritativeChunks = createFrameChunker(
+  (callback) => window.requestAnimationFrame(callback),
+  () => performance.now()
+)
+
+export function redrawEdges(blockIDs = null) {
+  authoritativeChunks.cancel()
+  const state = prepareRedraw(blockIDs)
+  if (!state) return
+  state.edgeRecords.forEach((edge) => processEdge(state, edge))
+  finishRedraw(state)
+}
+
+export function scheduleAuthoritativeRedraw(frameBudget = 8) {
+  const state = prepareRedraw(null)
+  if (!state) return
+  authoritativeChunks.run(
+    state.edgeRecords,
+    (edge) => processEdge(state, edge),
+    () => {
+      finishRedraw(state)
+      document.dispatchEvent(new Event('processlab:routesSettled'))
+    },
+    frameBudget
+  )
 }
 
 export function createRedrawScheduler(redraw, requestFrame, cancelFrame) {
@@ -227,4 +296,7 @@ const redrawScheduler = createRedrawScheduler(
 )
 
 export const scheduleRedrawEdges = (blockIDs) => redrawScheduler.schedule(blockIDs)
-export const flushRedrawEdges = () => redrawScheduler.flush(true)
+export const flushRedrawEdges = () => {
+  redrawScheduler.flush(false)
+  scheduleAuthoritativeRedraw()
+}

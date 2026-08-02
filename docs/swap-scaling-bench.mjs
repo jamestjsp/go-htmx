@@ -531,6 +531,7 @@ async function benchDrag(session) {
   if (!target) return { samples: [], live: 0, note: 'no block card offered a draggable point inside the canvas at this zoom' }
 
   await evaluate(session, 'window.__bench.armDrag()')
+  const routeRevision = await evaluate(session, 'window.__bench.routesSettled')
   const mouse = (type, x, y, buttons) => session.send('Input.dispatchMouseEvent', {
     type, x: Math.round(x), y: Math.round(y), button: 'left', buttons, clickCount: 1
   })
@@ -539,9 +540,11 @@ async function benchDrag(session) {
     await mouse('mouseMoved', target.x + i * 2, target.y + (i % 7), 1)
   }
   await mouse('mouseReleased', target.x + 80, target.y, 0)
-  await evaluate(session, `new Promise((resolve) => {
-    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 0)))
-  })`, true)
+  await waitFor(
+    () => evaluate(session, `window.__bench.routesSettled > ${routeRevision}`),
+    'authoritative drag routes',
+    5000
+  )
   const drag = await evaluate(session, 'window.__bench.readDrag()')
   // Put the block back in the slot it came from, in the page as well as
   // the database, so repeated drags neither walk it across the sheet nor
@@ -567,6 +570,10 @@ async function benchDrag(session) {
 async function installProbe(session) {
   await evaluate(session, `(() => {
     const bench = {}
+    bench.routesSettled = 0
+    document.addEventListener('processlab:routesSettled', () => {
+      bench.routesSettled += 1
+    })
     bench._longTasks = []
     if (typeof PerformanceObserver !== 'undefined' &&
         PerformanceObserver.supportedEntryTypes.includes('longtask')) {

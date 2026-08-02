@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  createObstacleIndex,
+  createSegmentIndex,
   routeOrthogonal,
   routePath,
   routeSegments
@@ -103,9 +105,13 @@ test('uses occupancy cost to avoid an available shared segment', () => {
   }
   const first = routeOrthogonal(request)
   const second = routeOrthogonal({ ...request, occupied: routeSegments(first) })
+  const occupied = createSegmentIndex()
+  occupied.addAll(routeSegments(first))
+  const indexed = routeOrthogonal({ ...request, occupied })
 
   assertOrthogonal(second)
   assert.notEqual(routePath(second), routePath(first))
+  assert.deepEqual(indexed, second)
 })
 
 test('is deterministic and retains an orthogonal fallback for blocked geometry', () => {
@@ -140,4 +146,63 @@ test('shortens a blocked input stub instead of crossing an adjacent block', () =
   for (const { a, b } of routeSegments(points)) {
     assert.equal(segmentEntersRect(a, b, adjacent), false, JSON.stringify({ a, b, adjacent }))
   }
+})
+
+test('spatial obstacle index preserves dense-layout routing exactly', () => {
+  const source = block(40, 360)
+  const target = block(1600, 680)
+  const intervening = []
+  for (let left = 340; left <= 1440; left += 220) {
+    for (let top = 40; top <= 740; top += 140) {
+      intervening.push(block(left, top))
+    }
+  }
+  const obstacles = [source, target, ...intervening]
+  const request = {
+    start: { x: source.right, y: 402 },
+    end: { x: target.left, y: 722 },
+    obstacles,
+    bounds: { left: 0, top: 0, right: 2000, bottom: 1000 }
+  }
+  const exhaustive = routeOrthogonal(request)
+  const indexed = routeOrthogonal({
+    ...request,
+    obstacleIndex: createObstacleIndex(obstacles)
+  })
+
+  assert.deepEqual(indexed, exhaustive)
+  assertOrthogonal(indexed)
+  indexed.forEach((point) => {
+    assert.ok(point.x >= 0 && point.x <= 2000)
+    assert.ok(point.y >= 0 && point.y <= 1000)
+  })
+  for (const rect of intervening) {
+    const inflated = {
+      left: rect.left - 16,
+      top: rect.top - 16,
+      right: rect.right + 16,
+      bottom: rect.bottom + 16
+    }
+    for (const { a, b } of routeSegments(indexed)) {
+      assert.equal(segmentEntersRect(a, b, inflated), false, JSON.stringify({ a, b, inflated }))
+    }
+  }
+})
+
+test('keeps multichannel target centers distinct', () => {
+  const source = block(100, 200)
+  const target = block(620, 180)
+  const request = {
+    start: { x: source.right, y: 242 },
+    obstacles: [source, target],
+    bounds: { left: 0, top: 0, right: 1200, bottom: 900 }
+  }
+  const upper = routeOrthogonal({ ...request, end: { x: target.left, y: 210 } })
+  const lower = routeOrthogonal({ ...request, end: { x: target.left, y: 246 } })
+
+  assertOrthogonal(upper)
+  assertOrthogonal(lower)
+  assert.deepEqual(upper.at(-1), { x: target.left, y: 210 })
+  assert.deepEqual(lower.at(-1), { x: target.left, y: 246 })
+  assert.notEqual(routePath(upper), routePath(lower))
 })

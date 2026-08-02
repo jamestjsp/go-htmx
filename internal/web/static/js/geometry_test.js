@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  createFrameChunker,
   createRedrawScheduler,
   routeAffectedByBlocks,
   routeCacheReusable
@@ -80,4 +81,25 @@ test('full redraw cache requires matching layout, topology, and every live edge'
   assert.equal(routeCacheReusable(signature, { ...signature, layout: 'flow:2' }, ['8'], routes), false)
   assert.equal(routeCacheReusable(signature, { ...signature, topology: '10:1:2' }, ['8'], routes), false)
   assert.equal(routeCacheReusable(signature, { ...signature }, ['8', '10'], routes), false)
+})
+
+test('authoritative redraw work is frame-bounded and cancelable', () => {
+  const frames = []
+  const processed = []
+  let clock = 0
+  const chunker = createFrameChunker(
+    (callback) => frames.push(callback),
+    () => {
+      clock += 3
+      return clock
+    }
+  )
+
+  chunker.run([1, 2, 3, 4, 5], (item) => processed.push(item), () => processed.push('done'), 5)
+  frames.shift()()
+  assert.deepEqual(processed, [1, 2])
+  assert.equal(frames.length, 1)
+  chunker.cancel()
+  frames.shift()()
+  assert.deepEqual(processed, [1, 2])
 })
