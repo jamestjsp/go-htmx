@@ -676,3 +676,9 @@
 {"type":"state","ts":"2026-08-02T16:33:54.695713Z","data":{"id":"X3BW6M","state":"done","ts":"2026-08-02T16:33:54.695713Z"}}
 {"type":"claim","ts":"2026-08-02T16:33:54.708281Z","data":{"id":"UL3WKS","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:33:54.708281Z"}}
 {"type":"state","ts":"2026-08-02T16:33:54.708281Z","data":{"id":"UL3WKS","state":"doing","ts":"2026-08-02T16:33:54.708281Z"}}
+{"type":"message","ts":"2026-08-02T16:39:30.768639Z","data":{"task_id":"UL3WKS","kind":"done","text":"0b3861a: negotiated 400-block workbench is 28.7 KiB gzip; race and protocol tests pass.","ts":"2026-08-02T16:39:30.768639Z"}}
+{"type":"result","ts":"2026-08-02T16:39:30.768639Z","data":{"task_id":"UL3WKS","summary":"docs/swap-scaling.md","path":"docs/swap-scaling.md","sha256_at_attach":"dedaeb75464045c4d4a1255fe1ae1b2ab1ab3c1fa266dff7f9e0e6362e8d37c0","mtime_at_attach":"2026-08-02T16:39:10.616958773Z","git_commit_at_attach":"0b3861aeea275d986775c8c77c4653d6bd55b47f","ts":"2026-08-02T16:39:30.768639Z"}}
+{"type":"unclaim","ts":"2026-08-02T16:39:30.768639Z","data":{"id":"UL3WKS","ts":"2026-08-02T16:39:30.768639Z"}}
+{"type":"state","ts":"2026-08-02T16:39:30.768639Z","data":{"id":"UL3WKS","state":"done","ts":"2026-08-02T16:39:30.768639Z"}}
+{"type":"claim","ts":"2026-08-02T16:39:30.781973Z","data":{"id":"MCVM7A","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:39:30.781973Z"}}
+{"type":"state","ts":"2026-08-02T16:39:30.781973Z","data":{"id":"MCVM7A","state":"doing","ts":"2026-08-02T16:39:30.781973Z"}}
