@@ -682,7 +682,9 @@ func newControllerCandidateView(
 			analysisMetricView{Label: "Kp", Value: formatAnalysisNumber(gains.Proportional)},
 			analysisMetricView{Label: "Ki", Value: formatAnalysisNumber(gains.Integral)},
 			analysisMetricView{Label: "Kd", Value: formatAnalysisNumber(gains.Derivative)},
-			analysisMetricView{Label: "Tf", Value: formatAnalysisNumber(gains.FilterTime)},
+			analysisMetricView{
+				Label: "N", Value: formatAnalysisNumber(gains.FilterCoefficient),
+			},
 		)
 		if pending.PID.TwoDegreeOfFreedom {
 			view.Details = append(view.Details,

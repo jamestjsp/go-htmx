@@ -16,9 +16,10 @@ SISO plant and one authored PID or PID2 controller block. The supported
 controller choices are P, I, PI, PD, PID, and PIDF.
 
 Candidate generation is read-only. The result retains the exact source model
-revision, tuned parallel gains, derivative filter, sample time, achieved
-classical margins, and current-versus-candidate loop responses on common
-frequency and time grids. Applying the result is a separate atomic operation:
+revision, tuned parallel gains, derivative filter coefficient `N`, sample
+time, achieved classical margins, and current-versus-candidate loop responses
+on common frequency and time grids. Applying the result is a separate atomic
+operation:
 
 ```go
 snapshot, err := studio.ApplyPIDDesignCandidate(ctx, candidate)
@@ -32,7 +33,10 @@ current.
 The PID2 block has separate named `reference` and `measurement` inputs and a
 named `control` output. Its setpoint weights implement
 
-`u = Kp(b r - y) + Ki/s(r - y) + Kd s/(Tf s + 1)(c r - y)`.
+`u = P(b r - y) + I/s(r - y) + D N s/(s + N)(c r - y)`.
+
+The controlsys tuning result uses the equivalent filter time internally.
+Process Lab converts it at the block boundary with `N = 1/Tf`.
 
 Controller roles therefore assign the reference input separately from the
 measurement input. Process Lab retains the full `(r,y) -> u` controller for

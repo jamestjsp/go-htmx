@@ -245,7 +245,7 @@ representative fixtures—is in
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
 | Continuous | Transfer Function | Proper continuous SISO numerator/denominator model | Exactly one |
-| Continuous | PID Controller | Parallel PID with a required derivative filter time | Exactly one |
+| Continuous | PID Controller | Parallel PID with Simulink-style derivative filter coefficient N | Exactly one |
 | Continuous | Transport Delay | Exact delay metadata by default, or explicit Padé/Thiran approximation | Exactly one |
 | Models | State-Space | Named continuous or discrete MIMO `A,B,C,D` realization | One named vector input |
 | Models | MIMO Transfer Function | Output-row denominators, per-channel numerators and delays | One named vector input |

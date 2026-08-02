@@ -945,8 +945,10 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	}
 	stored := struct {
 		Parameters
-		DelayMode *string  `json:"delayMode"`
-		StepTime  *float64 `json:"stepTime"`
+		DelayMode         *string  `json:"delayMode"`
+		StepTime          *float64 `json:"stepTime"`
+		FilterCoefficient *float64 `json:"filterCoefficient"`
+		FilterTime        *float64 `json:"filterTime"`
 	}{
 		Parameters: base,
 	}
@@ -961,6 +963,17 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 		parameters.StepTime = *stored.StepTime
 	} else if kind == BlockSource && legacy {
 		parameters.StepTime = 0
+	}
+	if kind == BlockPID || kind == BlockPID2 {
+		switch {
+		case stored.FilterCoefficient != nil:
+			parameters.FilterCoefficient = *stored.FilterCoefficient
+		case stored.FilterTime != nil && *stored.FilterTime > 0:
+			parameters.FilterCoefficient = 1 / *stored.FilterTime
+		default:
+			parameters.FilterCoefficient = defaultPIDFilterCoefficient
+		}
+		parameters.FilterTime = 0
 	}
 	if kind == BlockDelay && legacy {
 		if stored.DelayMode == nil {

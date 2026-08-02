@@ -23,10 +23,13 @@ type PIDDesignRequest struct {
 }
 
 type PIDDesignGains struct {
-	Proportional     float64 `json:"proportional"`
-	Integral         float64 `json:"integral"`
-	Derivative       float64 `json:"derivative"`
-	FilterTime       float64 `json:"filterTime"`
+	Proportional      float64 `json:"proportional"`
+	Integral          float64 `json:"integral"`
+	Derivative        float64 `json:"derivative"`
+	FilterCoefficient float64 `json:"filterCoefficient"`
+	// FilterTime preserves source compatibility for Go callers while the
+	// serialized candidate and editor expose the Simulink-style N value.
+	FilterTime       float64 `json:"-"`
 	SetpointWeight   float64 `json:"setpointWeight,omitempty"`
 	DerivativeWeight float64 `json:"derivativeWeight,omitempty"`
 	SampleTime       float64 `json:"sampleTime,omitempty"`
@@ -139,7 +142,7 @@ func (s *Studio) DesignPIDController(
 	}
 	designed := tuned.Copy()
 	if designed.Kd == 0 && designed.Tf == 0 {
-		designed.Tf = block.Parameters.FilterTime
+		designed.Tf = pidFilterTime(block.Parameters)
 	}
 	controller, err := designed.System()
 	if err != nil {
@@ -223,6 +226,9 @@ func (s *Studio) DesignPIDController(
 		Goals:              pidControllerDesignGoals(request.CrossoverFrequency, targetPM),
 		Gains: PIDDesignGains{
 			Proportional: designed.Kp, Integral: designed.Ki, Derivative: designed.Kd,
+			FilterCoefficient: filterCoefficientFromTime(
+				designed.Tf, pidFilterCoefficient(block.Parameters),
+			),
 			FilterTime: designed.Tf, SetpointWeight: b, DerivativeWeight: c,
 			SampleTime: designed.Dt,
 		},
@@ -478,7 +484,10 @@ func pidCandidateChanges(
 		{TunableProportional, pid.Kp},
 		{TunableIntegral, pid.Ki},
 		{TunableDerivative, pid.Kd},
-		{TunableFilterTime, pid.Tf},
+		{
+			TunableFilterCoefficient,
+			filterCoefficientFromTime(pid.Tf, pidFilterCoefficient(block.Parameters)),
+		},
 	}
 	if block.Kind == BlockPID2 {
 		values = append(values,
