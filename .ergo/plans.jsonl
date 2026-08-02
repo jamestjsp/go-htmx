@@ -721,3 +721,9 @@
 {"type":"link","ts":"2026-08-02T22:24:36.705913Z","data":{"from_id":"NW7TKX","to_id":"SZVHMU","type":"depends"}}
 {"type":"claim","ts":"2026-08-02T22:24:44.974533Z","data":{"id":"6KFLMC","agent_id":"gpt-5.6-sol@local","ts":"2026-08-02T22:24:44.974533Z"}}
 {"type":"state","ts":"2026-08-02T22:24:44.974533Z","data":{"id":"6KFLMC","state":"doing","ts":"2026-08-02T22:24:44.974533Z"}}
+{"type":"message","ts":"2026-08-02T22:27:57.955954Z","data":{"task_id":"6KFLMC","kind":"done","text":"Added the R2026a authority, traceable fixture schema, primary MIMO IODelay fixture, and provenance validation; focused test passes.","ts":"2026-08-02T22:27:57.955954Z"}}
+{"type":"result","ts":"2026-08-02T22:27:57.955954Z","data":{"task_id":"6KFLMC","summary":"docs/simulink-r2026a-compatibility.md","path":"docs/simulink-r2026a-compatibility.md","sha256_at_attach":"4cfb8b2859814f3318610465f0c20a4dabec2f5a4f68fd3f9e40ad3603010e49","mtime_at_attach":"2026-08-02T22:26:47.432801892Z","ts":"2026-08-02T22:27:57.955954Z"}}
+{"type":"unclaim","ts":"2026-08-02T22:27:57.955954Z","data":{"id":"6KFLMC","ts":"2026-08-02T22:27:57.955954Z"}}
+{"type":"state","ts":"2026-08-02T22:27:57.955954Z","data":{"id":"6KFLMC","state":"done","ts":"2026-08-02T22:27:57.955954Z"}}
+{"type":"claim","ts":"2026-08-02T22:27:57.969433Z","data":{"id":"LWGIRB","agent_id":"gpt-5.6-sol@local","ts":"2026-08-02T22:27:57.969433Z"}}
+{"type":"state","ts":"2026-08-02T22:27:57.969433Z","data":{"id":"LWGIRB","state":"doing","ts":"2026-08-02T22:27:57.969433Z"}}

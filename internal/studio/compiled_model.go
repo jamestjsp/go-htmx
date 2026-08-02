@@ -385,7 +385,7 @@ func (m *compiledModel) response(request SimulationRequest) (*controlsys.TimeRes
 		times[i] = float64(i) * request.SampleTime
 	}
 
-	if m.hasExactDelay() {
+	if m.requiresDelayAwareDiscretization() {
 		if err := m.validateExactDelaySampling(request.SampleTime); err != nil {
 			return nil, err
 		}
@@ -486,15 +486,8 @@ func simulateSystemByStep(system *controlsys.System, input *mat.Dense) (*mat.Den
 	return values, nil
 }
 
-func (m *compiledModel) hasExactDelay() bool {
-	for _, block := range m.provenance.Blocks {
-		if block.Kind == BlockDelay &&
-			normalizedDelayMode(block.Parameters) == delayModeExact &&
-			block.Parameters.Delay > 0 {
-			return true
-		}
-	}
-	return false
+func (m *compiledModel) requiresDelayAwareDiscretization() bool {
+	return m.system.IsContinuous() && m.system.HasDelay()
 }
 
 func (m *compiledModel) validateExactDelaySampling(sampleTime float64) error {
@@ -580,7 +573,7 @@ func (m *compiledModel) fidelity(baseStep float64) (Fidelity, error) {
 	if m.system.IsDiscrete() {
 		fidelity.ModelDomain = string(timeDomainDiscrete)
 	}
-	if m.hasExactDelay() {
+	if m.requiresDelayAwareDiscretization() {
 		fidelity.Driver = "delay-aware-simulate"
 		fidelity.ExactDelayAligned = true
 	} else if m.system.IsDiscrete() {
