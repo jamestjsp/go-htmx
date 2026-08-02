@@ -87,7 +87,7 @@ func New(studioService *studio.Studio) (*Server, error) {
 		server.undoControllerCandidate,
 	)
 	mux.HandleFunc("GET /flows/{flowID}/results.json", server.exportResults)
-	server.handler = securityHeaders(mux)
+	server.handler = securityHeaders(deliveryHeaders(compressResponses(mux)))
 	return server, nil
 }
 

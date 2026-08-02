@@ -326,6 +326,8 @@ async function benchServer(fixture) {
 
   const timings = {}
   const bytes = {}
+  const wireBytes = {}
+  const encodings = {}
   for (const [name, call] of Object.entries(cases)) {
     for (let i = 0; i < 5; i += 1) await call().then((r) => r.arrayBuffer())
     const samples = []
@@ -336,6 +338,8 @@ async function benchServer(fixture) {
       samples.push(performance.now() - start)
       if (!response.ok && response.status !== 204) throw new Error(`${name}: ${response.status}`)
       bytes[name] = body.byteLength
+      wireBytes[name] = Number(response.headers.get('content-length')) || body.byteLength
+      encodings[name] = response.headers.get('content-encoding') || 'identity'
     }
     timings[name] = summarise(samples)
   }
@@ -344,6 +348,8 @@ async function benchServer(fixture) {
   return {
     timings,
     bytes,
+    wireBytes,
+    encodings,
     fragmentBytes: fragment.byteLength,
     fragmentGzipBytes: gzipSync(fragment).byteLength
   }
@@ -991,11 +997,12 @@ function report(results) {
   const out = []
   out.push('', `Chrome CPU slowdown: ${results.cpuSlowdown}x`, '')
   out.push('', '### Server (loopback client, body fully drained)', '')
-  out.push('| blocks | wires | fragment | gzipped | GET workbench | PUT block | PATCH position | floor |')
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| blocks | wires | fragment | gzip estimate | negotiated wire | GET workbench | PUT block | PATCH position | floor |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     const t = size.server.timings
     out.push(`| ${size.blocks} | ${size.connections} | ${kb(size.server.fragmentBytes)} | ${kb(size.server.fragmentGzipBytes)} | ` +
+      `${kb(size.server.wireBytes.getFragment)} ${size.server.encodings.getFragment} | ` +
       `${band(t.getFragment)} | ${band(t.putBlock)} | ${band(t.patchPosition)} | ${band(t.floor)} |`)
   }
 
