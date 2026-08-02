@@ -934,7 +934,14 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	}
 	base := Parameters{}
 	if legacy {
-		base = defaultParameters(kind)
+		switch kind {
+		case BlockStateSpace:
+			base = legacyStateSpaceParameters()
+		case BlockDiscreteStateSpace:
+			base = legacyDiscreteStateSpaceParameters()
+		default:
+			base = defaultParameters(kind)
+		}
 	}
 	stored := struct {
 		Parameters

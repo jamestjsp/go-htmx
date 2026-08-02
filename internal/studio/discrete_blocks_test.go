@@ -98,6 +98,15 @@ func TestDiscreteStateSpaceMatchesMIMODifferenceEquation(t *testing.T) {
 	values, _ := NewVectorValue([]float64{1, 2})
 	source.Vector = &values
 	stateSpace := defaultParameters(BlockDiscreteStateSpace)
+	a, _ := NewMatrixValue(2, 2, []float64{0.8, 0, 0, 0.5})
+	b, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
+	c, _ := NewMatrixValue(2, 2, []float64{1, 0, 0, 1})
+	d, _ := NewMatrixValue(2, 2, []float64{0, 0, 0, 0})
+	inputs, _ := NewChannelNames([]string{"u1", "u2"})
+	outputs, _ := NewChannelNames([]string{"y1", "y2"})
+	states, _ := NewChannelNames([]string{"x1", "x2"})
+	stateSpace.A, stateSpace.B, stateSpace.C, stateSpace.D = &a, &b, &c, &d
+	stateSpace.InputNames, stateSpace.OutputNames, stateSpace.StateNames = &inputs, &outputs, &states
 	scope := defaultParameters(BlockVectorScope)
 
 	run, err := simulate([]Block{

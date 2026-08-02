@@ -96,6 +96,12 @@ func defaultStateSpaceParameters() Parameters {
 	return parameters
 }
 
+func legacyStateSpaceParameters() Parameters {
+	parameters := legacyDiscreteStateSpaceParameters()
+	parameters.TimeDomain = modelDomainContinuous
+	return parameters
+}
+
 func validateStateSpaceParameters(parameters Parameters) error {
 	if err := validateRepresentationTime(parameters); err != nil {
 		return err
@@ -118,6 +124,9 @@ func validateStateSpaceParameters(parameters Parameters) error {
 		parameters.OutputNames.Len() != outputs ||
 		parameters.StateNames.Len() != states {
 		return invalid("state-space channel-name counts must match input, output, and state dimensions")
+	}
+	if err := validateStateSpaceInitialState(parameters, states); err != nil {
+		return err
 	}
 	_, err := stateSpaceFromParameters(parameters)
 	if err != nil {

@@ -78,6 +78,7 @@ type Parameters struct {
 	Amplitude            float64                 `json:"amplitude,omitempty"`
 	InitialValue         float64                 `json:"initialValue,omitempty"`
 	InitialCondition     float64                 `json:"initialCondition,omitempty"`
+	InitialOutput        float64                 `json:"initialOutput,omitempty"`
 	StepTime             float64                 `json:"stepTime,omitempty"`
 	Value                float64                 `json:"value,omitempty"`
 	Bias                 float64                 `json:"bias,omitempty"`
@@ -110,6 +111,7 @@ type Parameters struct {
 	InputNames           *ChannelNames           `json:"inputNames,omitempty"`
 	OutputNames          *ChannelNames           `json:"outputNames,omitempty"`
 	StateNames           *ChannelNames           `json:"stateNames,omitempty"`
+	InitialState         *VectorValue            `json:"initialState,omitempty"`
 	Vector               *VectorValue            `json:"vector,omitempty"`
 	TransferNumerators   *PolynomialMatrixValue  `json:"transferNumerators,omitempty"`
 	TransferDenominators *PolynomialMatrixValue  `json:"transferDenominators,omitempty"`

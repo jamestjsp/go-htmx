@@ -80,10 +80,13 @@ func TestStoredDelayWithModeKeepsExplicitRepresentation(t *testing.T) {
 func TestTransportDelayEditorOffersExplicitRepresentations(t *testing.T) {
 	block := Block{Kind: BlockDelay, Parameters: defaultParameters(BlockDelay)}
 	fields := block.EditorFields()
-	if len(fields) != 5 {
-		t.Fatalf("delay fields = %d, want 5", len(fields))
+	if len(fields) != 6 {
+		t.Fatalf("delay fields = %d, want 6", len(fields))
 	}
-	mode := fields[1]
+	if initial := fields[1]; initial.Name != "initial_output" || initial.Value != "0" {
+		t.Fatalf("initial output field = %#v", initial)
+	}
+	mode := fields[2]
 	if mode.Name != "delay_mode" || len(mode.Options) != 3 {
 		t.Fatalf("mode field = %#v", mode)
 	}

@@ -71,7 +71,7 @@
         "d": [[0], [0]],
         "initialState": [2, -1],
         "sampleTime": 0.1,
-        "duration": 0.5
+        "duration": 1
       }
     },
     {
@@ -93,7 +93,7 @@
         "d": [[0], [0]],
         "initialState": [4, -2],
         "sampleTime": 0.1,
-        "duration": 0.5
+        "duration": 1
       }
     },
     {
@@ -113,7 +113,7 @@
         "delay": 0.3,
         "initialOutput": -2,
         "sampleTime": 0.1,
-        "duration": 0.6
+        "duration": 1
       }
     }
   ]
