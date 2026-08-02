@@ -767,3 +767,9 @@
 {"type":"result","ts":"2026-08-02T23:36:34.397948Z","data":{"task_id":"R2CI22","summary":"docs/simulink-r2026a-compatibility.md","path":"docs/simulink-r2026a-compatibility.md","sha256_at_attach":"dc9baf759fa4b554303108dc606adbad7c4a7b8eac9771fc62dc791881f5e3e7","mtime_at_attach":"2026-08-02T23:32:36.598411602Z","ts":"2026-08-02T23:36:34.397948Z"}}
 {"type":"unclaim","ts":"2026-08-02T23:36:34.397948Z","data":{"id":"R2CI22","ts":"2026-08-02T23:36:34.397948Z"}}
 {"type":"state","ts":"2026-08-02T23:36:34.397948Z","data":{"id":"R2CI22","state":"done","ts":"2026-08-02T23:36:34.397948Z"}}
+{"type":"claim","ts":"2026-08-02T23:40:21.457978Z","data":{"id":"VGT3IB","agent_id":"gpt-5.6-sol@codex","ts":"2026-08-02T23:40:21.457978Z"}}
+{"type":"state","ts":"2026-08-02T23:40:21.457978Z","data":{"id":"VGT3IB","state":"doing","ts":"2026-08-02T23:40:21.457978Z"}}
+{"type":"message","ts":"2026-08-02T23:52:38.217171Z","data":{"task_id":"VGT3IB","kind":"done","text":"Aligned PID and PID2 to the R2026a parallel-form subset, exposed N with Tf=1/N adapter and legacy migration, and verified public continuous, discrete Forward Euler, controller-type, and 2DOF behavior.","ts":"2026-08-02T23:52:38.217171Z"}}
+{"type":"result","ts":"2026-08-02T23:52:38.217171Z","data":{"task_id":"VGT3IB","summary":"internal/studio/testdata/simulink/r2026a/pid_parallel_form.json","path":"internal/studio/testdata/simulink/r2026a/pid_parallel_form.json","sha256_at_attach":"d2fa90f5fe13765c29e3fe29f134a200d21f98405e8efaa8a86a9b4bdea6f322","mtime_at_attach":"2026-08-02T23:46:55.85594548Z","ts":"2026-08-02T23:52:38.217171Z"}}
+{"type":"unclaim","ts":"2026-08-02T23:52:38.217171Z","data":{"id":"VGT3IB","ts":"2026-08-02T23:52:38.217171Z"}}
+{"type":"state","ts":"2026-08-02T23:52:38.217171Z","data":{"id":"VGT3IB","state":"done","ts":"2026-08-02T23:52:38.217171Z"}}
