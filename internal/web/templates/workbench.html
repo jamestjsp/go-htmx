@@ -146,8 +146,8 @@
                 </marker>
               </defs>
               {{range .Connections}}
-              <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" d="{{.Path}}"></path>
-              <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" d="{{.Path}}"></path>
+              <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" data-edge-id="{{.ID}}" d=""></path>
+              <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" data-edge-id="{{.ID}}" d=""></path>
               {{end}}
               <path id="draft-edge" class="draft-edge" d=""></path>
             </svg>

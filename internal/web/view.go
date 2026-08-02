@@ -171,7 +171,6 @@ type portView struct {
 
 type connectionView struct {
 	studio.Connection
-	Path         string
 	SourceName   string
 	TargetName   string
 	SourceCenter int
@@ -343,7 +342,6 @@ func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage
 		target := blockByID(snapshot.Blocks, connection.TargetID)
 		view.Connections = append(view.Connections, connectionView{
 			Connection:   connection,
-			Path:         edgePath(source, connection.SourcePort, target, connection.TargetPort),
 			SourceName:   blockNames[connection.SourceID],
 			TargetName:   blockNames[connection.TargetID],
 			SourceCenter: portCenterOffset(source.OutputPortCount(), connection.SourcePort),
@@ -939,17 +937,6 @@ func portTop(center, size int) int {
 		return center - 8
 	}
 	return center - size/2
-}
-
-func edgePath(source studio.Block, sourcePort int, target studio.Block, targetPort int) string {
-	startX := float64(source.Position.X + studio.BlockWidth)
-	startY := float64(source.Position.Y + portCenterOffset(source.OutputPortCount(), sourcePort))
-	endX := float64(target.Position.X)
-	endY := float64(target.Position.Y + portCenterOffset(target.InputPortCount(), targetPort))
-	distance := math.Abs(endX - startX)
-	bend := math.Max(54, distance*0.45)
-	return fmt.Sprintf("M %.1f %.1f C %.1f %.1f, %.1f %.1f, %.1f %.1f",
-		startX, startY, startX+bend, startY, endX-bend, endY, endX, endY)
 }
 
 func newChartView(run *studio.Simulation) chartView {

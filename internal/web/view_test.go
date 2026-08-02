@@ -55,24 +55,6 @@ func TestPortViewsPreserveTheSinglePortPositionAndBoundDenseHitAreas(t *testing.
 	}
 }
 
-func TestEdgePathUsesTheConnectedPortOffsets(t *testing.T) {
-	source := studio.Block{
-		Kind:     studio.BlockConstant,
-		Position: studio.Point{X: 100, Y: 200},
-	}
-	target := studio.Block{
-		Kind:       studio.BlockSum,
-		Position:   studio.Point{X: 400, Y: 500},
-		Parameters: studio.Parameters{Signs: "+-"},
-	}
-
-	got := edgePath(source, 0, target, 1)
-	want := "M 272.0 242.0 C 329.6 242.0, 342.4 556.0, 400.0 556.0"
-	if got != want {
-		t.Fatalf("edgePath() = %q, want %q", got, want)
-	}
-}
-
 func TestFidelityViewNamesExactAndApproximateExecutionChoices(t *testing.T) {
 	view := newFidelityView(studio.Fidelity{
 		BaseStep:     0.1,

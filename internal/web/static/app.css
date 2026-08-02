@@ -1166,6 +1166,8 @@ body.is-resizing-dock .studio-grid {
 .signal-line,
 .draft-edge {
   fill: none;
+  stroke-linecap: square;
+  stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
 

@@ -4,7 +4,7 @@
 // click an output and then click an input.
 // =====================================================================
 import { canvas, setHint, setStatus, workbench } from './dom.js'
-import { geometry } from './geometry.js'
+import { geometry, signalPath } from './geometry.js'
 import { screenToSheet } from './viewport.js'
 
 let connectionSource = null
@@ -132,6 +132,8 @@ export function drawDraft(event) {
     endX = target.offsetLeft
     endY = target.offsetTop + Number(targetPort.dataset.portCenter)
   }
-  const bend = Math.max(54, Math.abs(endX - startX) * 0.45)
-  draft.setAttribute('d', `M ${startX} ${startY} C ${startX + bend} ${startY}, ${endX - bend} ${endY}, ${endX} ${endY}`)
+  draft.setAttribute('d', signalPath(
+    { x: startX, y: startY },
+    { x: endX, y: endY }
+  ))
 }
