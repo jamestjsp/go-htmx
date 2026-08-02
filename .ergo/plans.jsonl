@@ -682,3 +682,7 @@
 {"type":"state","ts":"2026-08-02T16:39:30.768639Z","data":{"id":"UL3WKS","state":"done","ts":"2026-08-02T16:39:30.768639Z"}}
 {"type":"claim","ts":"2026-08-02T16:39:30.781973Z","data":{"id":"MCVM7A","agent_id":"gpt-5.6@local","ts":"2026-08-02T16:39:30.781973Z"}}
 {"type":"state","ts":"2026-08-02T16:39:30.781973Z","data":{"id":"MCVM7A","state":"doing","ts":"2026-08-02T16:39:30.781973Z"}}
+{"type":"message","ts":"2026-08-02T16:48:09.324162Z","data":{"task_id":"MCVM7A","kind":"done","text":"ff2dbfa: full 50/150/400/640 matrix, 400-block 4x gate, Chrome smoke, and all release gates pass.","ts":"2026-08-02T16:48:09.324162Z"}}
+{"type":"result","ts":"2026-08-02T16:48:09.324162Z","data":{"task_id":"MCVM7A","summary":"docs/swap-scaling.md","path":"docs/swap-scaling.md","sha256_at_attach":"1ec36fce3ce820ddb3653b81e14e73c569ea74d4add8b55dae253e6d36505d93","mtime_at_attach":"2026-08-02T16:47:10.948276723Z","git_commit_at_attach":"ff2dbfa0f0ce2141bc7c0f9bce272519efb7672b","ts":"2026-08-02T16:48:09.324162Z"}}
+{"type":"unclaim","ts":"2026-08-02T16:48:09.324162Z","data":{"id":"MCVM7A","ts":"2026-08-02T16:48:09.324162Z"}}
+{"type":"state","ts":"2026-08-02T16:48:09.324162Z","data":{"id":"MCVM7A","state":"done","ts":"2026-08-02T16:48:09.324162Z"}}
