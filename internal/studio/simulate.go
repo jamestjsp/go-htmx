@@ -17,6 +17,7 @@ import (
 )
 
 const (
+	MaxSimulationDuration       = 3600
 	maxSimulationSamples        = 5000
 	maxSimulationResultChannels = 16
 	maxSimulationSamplesLabel   = "5,000"
@@ -72,8 +73,11 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 }
 
 func validateSimulationRequest(request SimulationRequest) error {
-	if request.Duration < 1 || request.Duration > 120 {
-		return invalid("duration must be between 1 and 120 seconds")
+	if request.Duration < 1 || request.Duration > MaxSimulationDuration {
+		return invalid(
+			"duration must be between 1 and %d seconds",
+			MaxSimulationDuration,
+		)
 	}
 	if request.SampleTime < 0.01 || request.SampleTime > 2 {
 		return invalid("sample time must be between 0.01 and 2 seconds")

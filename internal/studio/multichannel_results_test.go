@@ -151,6 +151,11 @@ func TestMultichannelResultIdentityPersistsThroughSimulationJSONStore(t *testing
 
 func TestSimulationLimitsCountInclusiveSamplesAndResultChannels(t *testing.T) {
 	if err := validateSimulationRequest(
+		SimulationRequest{Duration: 300, SampleTime: 0.1},
+	); err != nil {
+		t.Fatalf("300-second tutorial run: %v", err)
+	}
+	if err := validateSimulationRequest(
 		SimulationRequest{Duration: 49.99, SampleTime: 0.01},
 	); err != nil {
 		t.Fatalf("exact 5,000-sample run: %v", err)

@@ -3,9 +3,11 @@ package studio
 import (
 	"context"
 	"database/sql"
+	"math"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -28,6 +30,82 @@ func TestBlockLibraryDefinitionsOwnDefaultsAndEditors(t *testing.T) {
 		}
 		if block.Summary() == "" {
 			t.Fatalf("%s has no summary", definition.Kind)
+		}
+	}
+}
+
+func TestCatalogNumericDefaultsSatisfyBrowserStepRules(t *testing.T) {
+	for _, kind := range blockOrder {
+		block := Block{Kind: kind, Parameters: defaultParameters(kind)}
+		for _, field := range block.EditorFields() {
+			if field.Type != "number" || field.Step == "" || field.Step == "any" {
+				continue
+			}
+			value, valueErr := strconv.ParseFloat(field.Value, 64)
+			minimum, minimumErr := strconv.ParseFloat(field.Min, 64)
+			step, stepErr := strconv.ParseFloat(field.Step, 64)
+			if valueErr != nil || minimumErr != nil || stepErr != nil {
+				t.Fatalf("%s.%s has invalid numeric metadata %#v", kind, field.Name, field)
+			}
+			steps := (value - minimum) / step
+			if math.Abs(steps-math.Round(steps)) > 1e-9 {
+				t.Fatalf(
+					"%s.%s default %s is invalid for min %s and step %s",
+					kind, field.Name, field.Value, field.Min, field.Step,
+				)
+			}
+		}
+	}
+}
+
+func TestTrainTutorialValuesRemainEditable(t *testing.T) {
+	step := Block{Kind: BlockSource, Name: "Command", Parameters: defaultParameters(BlockSource)}
+	updatedStep, err := validateBlockUpdate(step, BlockUpdate{
+		Name: "Command",
+		Parameters: map[string]string{
+			"amplitude":     "1",
+			"initial_value": "0",
+			"step_time":     "150",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedStep.Parameters.StepTime != 150 {
+		t.Fatalf("step time = %g, want 150", updatedStep.Parameters.StepTime)
+	}
+
+	pid := Block{Kind: BlockPID, Name: "PI controller", Parameters: defaultParameters(BlockPID)}
+	pidFields := make(map[string]ParameterField)
+	pidValues := make(map[string]string)
+	for _, field := range pid.EditorFields() {
+		pidFields[field.Name] = field
+		pidValues[field.Name] = field.Value
+	}
+	pidValues["proportional"] = "0.05"
+	pidValues["integral"] = "0.0075"
+	pidValues["derivative"] = "0"
+	updatedPID, err := validateBlockUpdate(pid, BlockUpdate{
+		Name: "PI controller", Parameters: pidValues,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedPID.Parameters.Integral != 0.0075 {
+		t.Fatalf("integral gain = %g, want 0.0075", updatedPID.Parameters.Integral)
+	}
+	for _, name := range []string{"proportional", "integral", "derivative"} {
+		if pidFields[name].Step != "any" {
+			t.Fatalf("%s browser step = %q, want any", name, pidFields[name].Step)
+		}
+	}
+
+	stateSpace := Block{
+		Kind: BlockStateSpace, Parameters: defaultParameters(BlockStateSpace),
+	}
+	for _, field := range stateSpace.EditorFields() {
+		if field.Name == "sample_time" && field.Step != "0.001" {
+			t.Fatalf("state-space sample-time step = %q, want 0.001", field.Step)
 		}
 	}
 }

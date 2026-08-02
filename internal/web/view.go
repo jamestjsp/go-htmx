@@ -97,24 +97,25 @@ func plural(count int, one, many string) string {
 }
 
 type workbenchView struct {
-	Workspace           studio.Workspace
-	Snapshot            studio.Snapshot
-	Blocks              []blockView
-	Connections         []connectionView
-	Selected            *blockView
-	SelectedLinks       []inspectorLink
-	Palette             []paletteItem
-	Sheet               sheetGeometry
-	Tabs                []flowTabView
-	Chart               chartView
-	Analysis            analysisView
-	ControllerCandidate *controllerCandidateView
-	Error               string
-	Updated             string
-	BlockCount          int
-	ConnectionCount     int
-	SimulationLimits    string
-	BoundedEdit         bool
+	Workspace             studio.Workspace
+	Snapshot              studio.Snapshot
+	Blocks                []blockView
+	Connections           []connectionView
+	Selected              *blockView
+	SelectedLinks         []inspectorLink
+	Palette               []paletteItem
+	Sheet                 sheetGeometry
+	Tabs                  []flowTabView
+	Chart                 chartView
+	Analysis              analysisView
+	ControllerCandidate   *controllerCandidateView
+	Error                 string
+	Updated               string
+	BlockCount            int
+	ConnectionCount       int
+	SimulationLimits      string
+	SimulationMaxDuration int
+	BoundedEdit           bool
 }
 
 // flowTabView is one sheet in the tab strip, in the project's `position`
@@ -285,13 +286,14 @@ type analysisMarkerView struct {
 func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
 	snapshot := workspace.Snapshot
 	view := workbenchView{
-		Workspace:        workspace,
-		Snapshot:         snapshot,
-		Error:            errorMessage,
-		Updated:          relativeTime(snapshot.Flow.UpdatedAt),
-		BlockCount:       len(snapshot.Blocks),
-		ConnectionCount:  len(snapshot.Connections),
-		SimulationLimits: studio.SimulationLimitsText(),
+		Workspace:             workspace,
+		Snapshot:              snapshot,
+		Error:                 errorMessage,
+		Updated:               relativeTime(snapshot.Flow.UpdatedAt),
+		BlockCount:            len(snapshot.Blocks),
+		ConnectionCount:       len(snapshot.Connections),
+		SimulationLimits:      studio.SimulationLimitsText(),
+		SimulationMaxDuration: studio.MaxSimulationDuration,
 		Sheet: sheetGeometry{
 			Width:       studio.SheetWidth,
 			Height:      studio.SheetHeight,

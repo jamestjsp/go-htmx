@@ -597,7 +597,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		Parameters: []parameterDefinition{
 			numberField("amplitude", "Final value", "final value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Amplitude }),
 			numberField("initial_value", "Initial value", "initial value", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.InitialValue }),
-			numberField("step_time", "Step time", "step time", "0.05", 0, 120, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
+			numberField("step_time", "Step time", "step time", "0.05", 0, MaxSimulationDuration, "sec", func(p *Parameters) *float64 { return &p.StepTime }),
 		},
 		role: roleSource,
 		waveform: func(parameters Parameters, _ int, t float64) float64 {
@@ -1093,7 +1093,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{TimeConstant: 1},
 		Parameters: []parameterDefinition{
-			numberField("time_constant", "Time constant", "time constant", "0.05", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
+			numberField("time_constant", "Time constant", "time constant", "0.001", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.TimeConstant }),
 		},
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			tau := block.Parameters.TimeConstant
@@ -1177,10 +1177,10 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
 		},
 		Parameters: append([]parameterDefinition{
-			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
-			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
-			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
-			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("proportional", "Proportional Kp", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.001", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
 		}, representationTimeFields()...),
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
 			return controlsys.NewPID(
@@ -1225,12 +1225,12 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			TimeDomain: modelDomainContinuous, SampleTime: 0.1,
 		},
 		Parameters: append([]parameterDefinition{
-			numberField("proportional", "Proportional Kp", "proportional gain", "0.05", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
-			numberField("integral", "Integral Ki", "integral gain", "0.05", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
-			numberField("derivative", "Derivative Kd", "derivative gain", "0.05", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
-			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.01", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
-			numberField("setpoint_weight", "Setpoint weight b", "setpoint weight", "0.05", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.SetpointWeight }),
-			numberField("derivative_weight", "Derivative weight c", "derivative weight", "0.05", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.DerivativeWeight }),
+			numberField("proportional", "Proportional Kp", "proportional gain", "any", -10000, 10000, "scalar", func(p *Parameters) *float64 { return &p.Proportional }),
+			numberField("integral", "Integral Ki", "integral gain", "any", -10000, 10000, "1/sec", func(p *Parameters) *float64 { return &p.Integral }),
+			numberField("derivative", "Derivative Kd", "derivative gain", "any", -10000, 10000, "sec", func(p *Parameters) *float64 { return &p.Derivative }),
+			numberField("filter_time", "Derivative filter Tf", "derivative filter", "0.001", 0.001, 1000, "sec", func(p *Parameters) *float64 { return &p.FilterTime }),
+			numberField("setpoint_weight", "Setpoint weight b", "setpoint weight", "any", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.SetpointWeight }),
+			numberField("derivative_weight", "Derivative weight c", "derivative weight", "any", -10, 10, "scalar", func(p *Parameters) *float64 { return &p.DerivativeWeight }),
 		}, representationTimeFields()...),
 		variadic:   true,
 		inputPorts: func(Parameters) int { return 2 },
@@ -1344,7 +1344,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			},
 			conditionalNumberField(
 				"sample_time", "Approximation sample time", "sample time",
-				"0.01", 0.001, 10, "sec",
+				"0.001", 0.001, 10, "sec",
 				func(p *Parameters) *float64 { return &p.SampleTime },
 				func(parameters Parameters) bool {
 					return normalizedDelayMode(parameters) == delayModeThiran &&
@@ -1907,7 +1907,7 @@ func sampleTimeFields() []parameterDefinition {
 		},
 		conditionalNumberField(
 			"sample_time", "Sample time", "sample time",
-			"0.01", 0.001, 10, "sec",
+			"0.001", 0.001, 10, "sec",
 			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
 			func(parameters Parameters) bool {
 				return normalizedSampleTimeMode(parameters) == sampleTimeExplicit
