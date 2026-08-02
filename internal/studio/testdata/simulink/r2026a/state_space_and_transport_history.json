@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "id": "r2026a-state-space-and-transport-history",
+  "release": "R2026a",
+  "mappings": [
+    {
+      "processLabBlock": "state_space",
+      "mathWorksBlock": "State-Space",
+      "supportedSubset": "Real finite A, B, C, and D matrices with finite scalar-or-vector internal initial conditions.",
+      "intentionalDeviations": [
+        "Process Lab retains named input, output, and state channels.",
+        "Sparse matrices, tunable parameters, state attributes, and external initial-condition ports are outside this subset."
+      ]
+    },
+    {
+      "processLabBlock": "discrete_state_space",
+      "mathWorksBlock": "Discrete State-Space",
+      "supportedSubset": "Real finite A, B, C, and D matrices with finite scalar-or-vector internal initial conditions.",
+      "intentionalDeviations": [
+        "Process Lab retains an explicit 0.1 second new-block sample time until inherited-rate analysis is available.",
+        "Data-type, fixed-point, reset, enable, and state-attribute features are outside this subset."
+      ]
+    },
+    {
+      "processLabBlock": "delay",
+      "mathWorksBlock": "Transport Delay",
+      "supportedSubset": "Finite scalar initial output for an exact scalar transport delay on the existing aligned simulation grid.",
+      "intentionalDeviations": [
+        "Vector and matrix initial outputs are deferred to the vector compatibility milestone.",
+        "Process Lab retains its exact grid-alignment requirement and does not expose buffer sizing, interpolation, or linearization settings."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "state-space-direct-defaults",
+      "reference": {
+        "title": "State-Space",
+        "url": "https://www.mathworks.com/help/simulink/slref/statespace.html",
+        "section": "Parameters",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Defaults are transcribed from the documented parameter table; these are not MATLAB or Simulink output."
+      },
+      "defaults": {
+        "a": [[1]],
+        "b": [[1]],
+        "c": [[1]],
+        "d": [[1]],
+        "initialState": [0]
+      }
+    },
+    {
+      "id": "continuous-state-space-initial-vector",
+      "reference": {
+        "title": "State-Space",
+        "url": "https://www.mathworks.com/help/simulink/slref/statespace.html",
+        "section": "Description and Initial conditions",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected outputs use x(t)=exp(A*t)*x0 for zero input and y=C*x; these are analytic values, not MATLAB or Simulink output."
+      },
+      "scenario": {
+        "a": [[-1, 0], [0, -2]],
+        "b": [[0], [0]],
+        "c": [[1, 0], [0, 1]],
+        "d": [[0], [0]],
+        "initialState": [2, -1],
+        "sampleTime": 0.1,
+        "duration": 0.5
+      }
+    },
+    {
+      "id": "discrete-state-space-initial-vector",
+      "reference": {
+        "title": "Discrete State-Space",
+        "url": "https://www.mathworks.com/help/simulink/slref/discretestatespace.html",
+        "section": "Description and Initial conditions",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected outputs use x[k+1]=A*x[k] and y[k]=C*x[k] for zero input; these are analytic values, not MATLAB or Simulink output."
+      },
+      "scenario": {
+        "a": [[0.5, 0], [0, 0.25]],
+        "b": [[0], [0]],
+        "c": [[1, 0], [0, 1]],
+        "d": [[0], [0]],
+        "initialState": [4, -2],
+        "sampleTime": 0.1,
+        "duration": 0.5
+      }
+    },
+    {
+      "id": "transport-delay-initial-output",
+      "reference": {
+        "title": "Transport Delay",
+        "url": "https://www.mathworks.com/help/simulink/slref/transportdelay.html",
+        "section": "Description and Initial output",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected values apply the documented initial-output history followed by the delayed constant input on Process Lab's aligned grid; these are analytic values, not MATLAB or Simulink output."
+      },
+      "scenario": {
+        "input": 3,
+        "delay": 0.3,
+        "initialOutput": -2,
+        "sampleTime": 0.1,
+        "duration": 0.6
+      }
+    }
+  ]
+}
