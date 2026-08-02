@@ -4,7 +4,8 @@
   id="flow-tabs"
   aria-label="Flowsheets"
   data-overflow="false"
-  data-project-id="{{.Workspace.Project.ID}}">
+  data-project-id="{{.Workspace.Project.ID}}"
+  {{if .BoundedEdit}}hx-swap-oob="outerHTML"{{end}}>
   <button
     type="button"
     class="tab-scroll tab-scroll-back"

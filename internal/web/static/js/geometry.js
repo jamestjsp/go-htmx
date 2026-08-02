@@ -119,6 +119,34 @@ export function routeAffectedByBlocks(route, movedBlockIDs, movedRects) {
   return movedRects.some((rect) => routeIntersectsRect(route.segments, rect, ROUTE_CLEARANCE))
 }
 
+export function syncBlockRouteEndpoints(blockID, root = canvas()) {
+  if (!root) return false
+  const id = String(blockID)
+  const block = [...root.querySelectorAll('.block-card')]
+    .find((node) => String(node.dataset.blockId) === id)
+  if (!block) return false
+  const ports = {
+    source: new Map([...block.querySelectorAll('[data-output-port]')]
+      .map((node) => [String(node.dataset.outputPort), String(node.dataset.portCenter)])),
+    target: new Map([...block.querySelectorAll('[data-input-port]')]
+      .map((node) => [String(node.dataset.inputPort), String(node.dataset.portCenter)]))
+  }
+  let changed = false
+  root.querySelectorAll('[data-edge-id]').forEach((edge) => {
+    for (const role of ['source', 'target']) {
+      if (String(edge.dataset[`edge${role[0].toUpperCase()}${role.slice(1)}`]) !== id) continue
+      const port = String(edge.dataset[`edge${role[0].toUpperCase()}${role.slice(1)}Port`])
+      const center = ports[role].get(port)
+      const centerKey = `edge${role[0].toUpperCase()}${role.slice(1)}Center`
+      if (center !== undefined && edge.dataset[centerKey] !== center) {
+        edge.dataset[centerKey] = center
+        changed = true
+      }
+    }
+  })
+  return changed
+}
+
 function setConnectionPath(context, edgeID, path) {
   const elements = context.edgeElementsByID.get(edgeID) || []
   elements.forEach((element) => {

@@ -30,10 +30,10 @@ export function onBeforeSwap(step) {
   beforeSwapSteps.push(step)
 }
 
-function reapply() {
-  steps.forEach((step) => step())
+function reapply(event) {
+  steps.forEach((step) => step(event))
 }
 
-document.addEventListener('htmx:beforeSwap', () => beforeSwapSteps.forEach((step) => step()))
+document.addEventListener('htmx:beforeSwap', (event) => beforeSwapSteps.forEach((step) => step(event)))
 document.addEventListener('htmx:afterSettle', reapply)
 document.addEventListener('htmx:historyRestore', reapply)

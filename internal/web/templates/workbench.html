@@ -54,7 +54,7 @@
         <span class="shell-toggle-label">Inspector</span>
       </button>
     </div>
-    <div class="project-facts">
+    <div class="project-facts" id="project-facts"{{if .BoundedEdit}} hx-swap-oob="outerHTML"{{end}}>
       <span><b>{{.BlockCount}}</b> blocks</span>
       <span><b>{{.ConnectionCount}}</b> signals</span>
       <span class="saved-state"><i></i> saved {{.Updated}}</span>
@@ -145,16 +145,17 @@
                   <path d="M0,0 L8,3 L0,6 Z"></path>
                 </marker>
               </defs>
-              {{range .Connections}}
+              {{if not .BoundedEdit}}{{range .Connections}}
               <path class="signal-shadow" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" data-edge-id="{{.ID}}" d=""></path>
               <path class="signal-line" data-edge-source="{{.SourceID}}" data-edge-source-port="{{.SourcePort}}" data-edge-source-center="{{.SourceCenter}}" data-edge-target="{{.TargetID}}" data-edge-target-port="{{.TargetPort}}" data-edge-target-center="{{.TargetCenter}}" data-edge-id="{{.ID}}" d=""></path>
-              {{end}}
+              {{end}}{{end}}
               <path id="draft-edge" class="draft-edge" d=""></path>
             </svg>
 
             {{range .Blocks}}
+            {{if or (not $.BoundedEdit) .Selected}}
             {{$block := .}}
-            <article class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px">
+            <article id="block-card-{{.ID}}" class="block-card block-{{.Kind}}{{if .Selected}} selected{{end}}" data-block-id="{{.ID}}" style="left:{{.Position.X}}px;top:{{.Position.Y}}px"{{if and $.BoundedEdit .Selected}} hx-swap-oob="outerHTML"{{end}}>
               {{range .InputPorts}}
               <button type="button" class="port port-input" data-input-block="{{$block.ID}}" data-input-port="{{.Index}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect to {{$block.Name}} {{.Name}}">{{if .Label}}<span class="port-label" aria-hidden="true">{{.Label}}</span>{{end}}</button>
               {{end}}
@@ -169,6 +170,7 @@
               <button type="button" class="port port-output" data-output-block="{{$block.ID}}" data-output-port="{{.Index}}" data-output-name="{{$block.Name}}" data-port-center="{{.Center}}" style="top:{{.Top}}px;--port-hit-height:{{.HitHeight}}px;--port-size:{{.Size}}px" aria-label="Connect from {{$block.Name}} {{.Name}}">{{if .Label}}<span class="port-label" aria-hidden="true">{{.Label}}</span>{{end}}</button>
               {{end}}
             </article>
+            {{end}}
             {{end}}
           </div>
 
@@ -190,7 +192,7 @@
         aria-valuenow="50"
         tabindex="0"><i aria-hidden="true"></i></div>
 
-      <section class="results-card sim-dock{{if .Chart.Present}} has-results{{end}}" id="simulation-results">
+      <section class="results-card sim-dock{{if .Chart.Present}} has-results{{end}}" id="simulation-results"{{if .BoundedEdit}} hx-swap-oob="outerHTML"{{end}}>
         <header class="results-header dock-header">
           <div class="dock-title">
             <button type="button" class="dock-toggle" data-dock-toggle aria-controls="simulation-results" aria-expanded="true" title="Collapse the simulation dock">
@@ -437,7 +439,7 @@
       </section>
     </section>
 
-    <aside class="inspector-panel" id="inspector-rail">
+    <aside class="inspector-panel" id="inspector-rail"{{if .BoundedEdit}} hx-swap-oob="outerHTML"{{end}}>
       <div class="rail-head">
         <button type="button" class="rail-toggle" data-rail-toggle="right" aria-controls="inspector-rail" aria-expanded="true" title="Collapse the inspector">
           <span class="rail-chevron" aria-hidden="true">»</span>

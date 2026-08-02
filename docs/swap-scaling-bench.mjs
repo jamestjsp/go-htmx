@@ -323,6 +323,16 @@ async function benchServer(fixture) {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: editBody()
     }),
+    putBlockHX: () => fetch(`${base}/blocks/${probe}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'HX-Request': 'true',
+        'HX-Target': 'workbench',
+        'Accept-Encoding': 'gzip'
+      },
+      body: editBody()
+    }),
     patchPosition: () => fetch(`${base}/blocks/${probe}/position`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -343,6 +353,9 @@ async function benchServer(fixture) {
       const body = await response.arrayBuffer()
       samples.push(performance.now() - start)
       if (!response.ok && response.status !== 204) throw new Error(`${name}: ${response.status}`)
+      if (name === 'putBlockHX' && response.headers.get('hx-reswap') !== 'none') {
+        throw new Error('bounded PUT did not return HX-Reswap: none')
+      }
       bytes[name] = body.byteLength
       wireBytes[name] = Number(response.headers.get('content-length')) || body.byteLength
       encodings[name] = response.headers.get('content-encoding') || 'identity'
@@ -1116,13 +1129,15 @@ function report(results) {
   const out = []
   out.push('', `Chrome CPU slowdown: ${results.cpuSlowdown}x`, '')
   out.push('', '### Server (loopback client, body fully drained)', '')
-  out.push('| blocks | wires | fragment | gzip estimate | negotiated wire | GET workbench | PUT block | PATCH position | floor |')
-  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- |')
+  out.push('| blocks | wires | fragment | gzip estimate | negotiated wire | GET workbench | PUT full | PUT bounded / wire | PATCH position | floor |')
+  out.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |')
   for (const size of results.sizes) {
     const t = size.server.timings
     out.push(`| ${size.blocks} | ${size.connections} | ${kb(size.server.fragmentBytes)} | ${kb(size.server.fragmentGzipBytes)} | ` +
       `${kb(size.server.wireBytes.getFragment)} ${size.server.encodings.getFragment} | ` +
-      `${band(t.getFragment)} | ${band(t.putBlock)} | ${band(t.patchPosition)} | ${band(t.floor)} |`)
+      `${band(t.getFragment)} | ${band(t.putBlock)} | ${band(t.putBlockHX)} / ` +
+      `${kb(size.server.wireBytes.putBlockHX)} ${size.server.encodings.putBlockHX} | ` +
+      `${band(t.patchPosition)} | ${band(t.floor)} |`)
   }
 
   out.push('', '### Browser — initial page load', '')

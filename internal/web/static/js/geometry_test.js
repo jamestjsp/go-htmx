@@ -5,7 +5,8 @@ import {
   createFrameChunker,
   createRedrawScheduler,
   routeAffectedByBlocks,
-  routeCacheReusable
+  routeCacheReusable,
+  syncBlockRouteEndpoints
 } from './geometry.js'
 
 test('coalesces drag redraws into one animation frame', () => {
@@ -81,6 +82,43 @@ test('full redraw cache requires matching layout, topology, and every live edge'
   assert.equal(routeCacheReusable(signature, { ...signature, layout: 'flow:2' }, ['8'], routes), false)
   assert.equal(routeCacheReusable(signature, { ...signature, topology: '10:1:2' }, ['8'], routes), false)
   assert.equal(routeCacheReusable(signature, { ...signature }, ['8', '10'], routes), false)
+})
+
+test('synchronizes only changed route centers after a bounded card update', () => {
+  const input = { dataset: { inputPort: '1', portCenter: '62' } }
+  const output = { dataset: { outputPort: '0', portCenter: '42' } }
+  const block = {
+    dataset: { blockId: '12' },
+    querySelectorAll(selector) {
+      if (selector === '[data-output-port]') return [output]
+      if (selector === '[data-input-port]') return [input]
+      return []
+    }
+  }
+  const sourceEdge = {
+    dataset: {
+      edgeId: '7', edgeSource: '12', edgeSourcePort: '0', edgeSourceCenter: '41',
+      edgeTarget: '20', edgeTargetPort: '0', edgeTargetCenter: '42'
+    }
+  }
+  const targetEdge = {
+    dataset: {
+      edgeId: '8', edgeSource: '20', edgeSourcePort: '0', edgeSourceCenter: '42',
+      edgeTarget: '12', edgeTargetPort: '1', edgeTargetCenter: '61'
+    }
+  }
+  const root = {
+    querySelectorAll(selector) {
+      if (selector === '.block-card') return [block]
+      if (selector === '[data-edge-id]') return [sourceEdge, targetEdge]
+      return []
+    }
+  }
+
+  assert.equal(syncBlockRouteEndpoints('12', root), true)
+  assert.equal(sourceEdge.dataset.edgeSourceCenter, '42')
+  assert.equal(targetEdge.dataset.edgeTargetCenter, '62')
+  assert.equal(syncBlockRouteEndpoints('12', root), false)
 })
 
 test('authoritative redraw work is frame-bounded and cancelable', () => {
