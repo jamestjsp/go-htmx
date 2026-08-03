@@ -32,4 +32,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
     CMD wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
 
 ENTRYPOINT ["/usr/local/bin/processlab"]
-CMD ["-addr", "0.0.0.0:8080", "-db", "/data/processlab.db"]
+CMD ["serve", "--addr", "0.0.0.0:8080", "--db", "/data/processlab.db"]

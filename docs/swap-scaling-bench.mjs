@@ -118,7 +118,7 @@ async function main() {
     if (await portAnswers()) {
       throw new Error(`something is already listening on ${base}; choose another --port`)
     }
-    const server = spawn(binary, ['-addr', `127.0.0.1:${options.port}`, '-db', path.join(scratch, 'bench.db')], {
+    const server = spawn(binary, ['serve', '--addr', `127.0.0.1:${options.port}`, '--db', path.join(scratch, 'bench.db')], {
       cwd: scratch,
       stdio: ['ignore', 'pipe', 'pipe']
     })
