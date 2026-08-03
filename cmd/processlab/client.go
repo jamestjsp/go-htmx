@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const maxAPIResponseBytes = 8 << 20
@@ -133,12 +135,12 @@ func (client *apiClient) requestAt(
 	if response.StatusCode >= http.StatusBadRequest {
 		var envelope apiErrorBody
 		if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Error.Message == "" {
-			message := strings.TrimSpace(string(responseBody))
-			if message == "" {
-				message = fmt.Sprintf("Process Lab returned HTTP %d", response.StatusCode)
+			message := fmt.Sprintf("Process Lab returned HTTP %d", response.StatusCode)
+			if body := plainTextResponseBody(response, responseBody); body != "" {
+				message += ": " + body
 			}
 			return &clientError{
-				kind:    "usage",
+				kind:    "internal",
 				code:    1,
 				message: message,
 			}
@@ -156,6 +158,23 @@ func (client *apiClient) requestAt(
 		return fmt.Errorf("decode API response: %w", err)
 	}
 	return nil
+}
+
+func plainTextResponseBody(response *http.Response, body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" || len(trimmed) > 4<<10 || !utf8.ValidString(trimmed) {
+		return ""
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if contentType != "" && !strings.HasPrefix(contentType, "text/") {
+		return ""
+	}
+	for _, character := range trimmed {
+		if unicode.IsControl(character) && character != '\n' && character != '\r' && character != '\t' {
+			return ""
+		}
+	}
+	return trimmed
 }
 
 func clientErrorKind(err error) string {

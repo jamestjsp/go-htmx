@@ -34,6 +34,23 @@ func apiConflict(message string) error {
 	return &apiConflictError{message: message}
 }
 
+type apiRouteNotFoundError struct {
+	method string
+	path   string
+}
+
+func apiRouteNotFound(r *http.Request) error {
+	return &apiRouteNotFoundError{method: r.Method, path: "/api/v1" + r.URL.Path}
+}
+
+func (e *apiRouteNotFoundError) Error() string {
+	return fmt.Sprintf("API route %s %s was not found", e.method, e.path)
+}
+
+func (e *apiRouteNotFoundError) Unwrap() error {
+	return studio.ErrNotFound
+}
+
 type apiErrorResponse struct {
 	Error apiErrorDetail `json:"error"`
 }
@@ -69,11 +86,17 @@ func (s *Server) writeAPIError(w http.ResponseWriter, r *http.Request, err error
 func apiErrorDetailFor(err error) (int, apiErrorDetail) {
 	var validation *studio.ValidationError
 	var conflict *apiConflictError
+	var route *apiRouteNotFoundError
 	switch {
 	case errors.As(err, &validation):
 		return http.StatusBadRequest, apiErrorDetail{
 			Kind:    "usage",
 			Message: validation.Message,
+		}
+	case errors.As(err, &route):
+		return http.StatusNotFound, apiErrorDetail{
+			Kind:    "not_found",
+			Message: route.Error(),
 		}
 	case errors.Is(err, studio.ErrNotFound):
 		return http.StatusNotFound, apiErrorDetail{
