@@ -84,6 +84,7 @@ type command struct {
 	summary   string
 	flags     []commandFlag
 	arguments []commandArgument
+	freeform  bool
 	children  []*command
 	run       func(context.Context, globalOptions, []string, io.Writer, io.Writer) error
 }
@@ -120,12 +121,14 @@ func (c *command) execute(
 		}
 		return usagef("processlab %s: %v", c.name, err)
 	}
-	if set.NArg() > len(c.arguments) {
-		return usagef("processlab %s: unexpected argument %q", c.name, set.Arg(len(c.arguments)))
-	}
-	for index, argument := range c.arguments[:set.NArg()] {
-		if argument.required && set.Arg(index) == "" {
-			return usagef("processlab %s: argument %q is required", c.name, argument.name)
+	if !c.freeform {
+		if set.NArg() > len(c.arguments) {
+			return usagef("processlab %s: unexpected argument %q", c.name, set.Arg(len(c.arguments)))
+		}
+		for index, argument := range c.arguments[:set.NArg()] {
+			if argument.required && set.Arg(index) == "" {
+				return usagef("processlab %s: argument %q is required", c.name, argument.name)
+			}
 		}
 	}
 	return c.run(ctx, options, set.Args(), stdout, stderr)
@@ -179,6 +182,7 @@ func commandTree() *command {
 			},
 		},
 		newServeCommand(),
+		newBlockCommand(),
 	}
 	return root
 }
@@ -288,7 +292,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	var exit *exitError
+	var exit interface{ ExitCode() int }
 	if errors.As(err, &exit) {
 		fmt.Fprintln(stderr, err)
 		return exit.ExitCode()
