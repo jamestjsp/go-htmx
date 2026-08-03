@@ -78,7 +78,21 @@ func TestCLIDocumentationExamplesAndGeneratedReference(t *testing.T) {
 	if result := harness.Run("--server", harness.URL(), "nonlinear", "linearize", "--definition", "docs/decay@1", "--operating-point", operatingPointPath); result.code != 0 || result.stderr != "" {
 		t.Fatalf("documentation nonlinear linearize example = %s", result)
 	}
-	if result := harness.RunInput("time\tu\ty\n0\t1\t0.1\n", "--server", harness.URL(), "nonlinear", "ekf", "--definition", "docs/decay@1"); result.code != 0 || result.stderr != "" {
+	estimatorPath := filepath.Join(t.TempDir(), "estimator.json")
+	estimatorJSON, err := json.Marshal(map[string]any{
+		"name":              "documentation EKF",
+		"initialState":      []float64{0},
+		"processNoise":      map[string]any{"rows": 1, "columns": 1, "values": []float64{0.01}},
+		"measurementNoise":  map[string]any{"rows": 1, "columns": 1, "values": []float64{0.1}},
+		"initialCovariance": map[string]any{"rows": 1, "columns": 1, "values": []float64{1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(estimatorPath, estimatorJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if result := harness.RunInput("time\tu\ty\n0\t1\t0.1\n", "--server", harness.URL(), "nonlinear", "ekf", "--definition", "docs/decay@1", "--estimator", estimatorPath); result.code != 0 || result.stderr != "" {
 		t.Fatalf("documentation nonlinear EKF example = %s", result)
 	}
 
