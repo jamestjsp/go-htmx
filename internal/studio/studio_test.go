@@ -335,6 +335,97 @@ func TestAddBlockFillsTheLatticeWithoutOverlapping(t *testing.T) {
 	}
 }
 
+func TestDuplicateBlocksPlacesAtTheOffsetBeforeUsingTheLattice(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	initial, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, sourceID, err := studio.AddBlock(ctx, initial.Flow.ID, BlockGain, Point{X: 4000, Y: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findBlock(t, initial.Blocks, sourceID)
+
+	duplicated, err := studio.DuplicateBlocks(ctx, initial.Flow.ID, []int64{sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := findBlockByName(t, duplicated.Blocks, source.Name+" copy")
+	want := clampPosition(Point{X: source.Position.X + GridPitch, Y: source.Position.Y + GridPitch})
+	if copy.Position != want {
+		t.Fatalf("duplicate position = %#v, want source offset %#v", copy.Position, want)
+	}
+}
+
+func TestDuplicateBlocksFallbackNeverOverlapsTheSource(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	initial, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, sourceID, err := studio.AddBlock(ctx, initial.Flow.ID, BlockGain, Point{X: 4000, Y: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := findBlock(t, initial.Blocks, sourceID)
+	initial, blockerID, err := studio.AddBlock(ctx, initial.Flow.ID, BlockGain, Point{X: 1000, Y: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := clampPosition(Point{X: source.Position.X + GridPitch, Y: source.Position.Y + GridPitch})
+	if err := studio.MoveBlock(ctx, blockerID, desired); err != nil {
+		t.Fatal(err)
+	}
+	duplicated, err := studio.DuplicateBlocks(ctx, initial.Flow.ID, []int64{sourceID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy := findBlockByName(t, duplicated.Blocks, source.Name+" copy")
+	if copy.Position == desired {
+		t.Fatalf("duplicate used occupied desired position %#v", desired)
+	}
+	assertBlockDoesNotOverlap(t, copy, duplicated.Blocks)
+}
+
+func TestDuplicateBlocksFullSelectionDoesNotOverlap(t *testing.T) {
+	ctx := context.Background()
+	studio := openTestStudio(t, ":memory:")
+	initial, err := studio.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockIDs := make([]int64, len(initial.Blocks))
+	for index, block := range initial.Blocks {
+		blockIDs[index] = block.ID
+	}
+	duplicated, err := studio.DuplicateBlocks(ctx, initial.Flow.ID, blockIDs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, block := range duplicated.Blocks {
+		for _, other := range duplicated.Blocks[index+1:] {
+			if abs(block.Position.X-other.Position.X) < BlockWidth && abs(block.Position.Y-other.Position.Y) < BlockHeight {
+				t.Fatalf("blocks %d and %d overlap at %#v and %#v", block.ID, other.ID, block.Position, other.Position)
+			}
+		}
+	}
+}
+
+func assertBlockDoesNotOverlap(t *testing.T, block Block, blocks []Block) {
+	t.Helper()
+	for _, other := range blocks {
+		if block.ID == other.ID {
+			continue
+		}
+		if abs(block.Position.X-other.Position.X) < BlockWidth && abs(block.Position.Y-other.Position.Y) < BlockHeight {
+			t.Fatalf("blocks %d and %d overlap at %#v and %#v", block.ID, other.ID, block.Position, other.Position)
+		}
+	}
+}
+
 func openTestStudio(t *testing.T, path string) *Studio {
 	t.Helper()
 	studio, err := Open(context.Background(), path)
@@ -364,5 +455,16 @@ func findBlock(t *testing.T, blocks []Block, id int64) Block {
 		}
 	}
 	t.Fatalf("no block with id %d", id)
+	return Block{}
+}
+
+func findBlockByName(t *testing.T, blocks []Block, name string) Block {
+	t.Helper()
+	for _, block := range blocks {
+		if block.Name == name {
+			return block
+		}
+	}
+	t.Fatalf("block %q not found", name)
 	return Block{}
 }
