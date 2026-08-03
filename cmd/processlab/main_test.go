@@ -163,18 +163,16 @@ func TestRunLeafHelp(t *testing.T) {
 	var visit func(*command, []string)
 	visit = func(current *command, path []string) {
 		if current.freeform {
-			if strings.Join(path, " ") == "processlab block set" {
-				args := append(append([]string{}, path[1:]...), "--help")
-				var stdout, stderr bytes.Buffer
-				if code := run(args, &stdout, &stderr); code != 0 {
-					t.Errorf("%s --help exit code = %d: %s", strings.Join(path, " "), code, stderr.String())
-				}
-				if stderr.Len() != 0 {
-					t.Errorf("%s --help wrote diagnostics: %s", strings.Join(path, " "), stderr.String())
-				}
-				if stdout.Len() == 0 {
-					t.Errorf("%s --help wrote no output", strings.Join(path, " "))
-				}
+			args := append(append([]string{}, path[1:]...), "--help")
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Errorf("%s --help exit code = %d: %s", strings.Join(path, " "), code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("%s --help wrote diagnostics: %s", strings.Join(path, " "), stderr.String())
+			}
+			if stdout.Len() == 0 {
+				t.Errorf("%s --help wrote no output", strings.Join(path, " "))
 			}
 			return
 		}
