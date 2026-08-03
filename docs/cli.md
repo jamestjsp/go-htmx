@@ -84,6 +84,14 @@ processlab nonlinear ekf --definition models/decay@1 < samples.tsv
 See [`nonlinear-workflows.md`](nonlinear-workflows.md) for expression,
 linearization, and EKF semantics.
 
+## Declarative flowsheet documents
+
+`flow dump` includes block and wire ids for reference. `flow apply` ignores
+those ids and matches blocks by name. A rename edited into a document is an
+add plus a remove, so use `flow rename` or `block set` when renaming a block.
+An apply with no changes prints only `No changes.`; non-empty change sections
+and wire counts are printed only when they contain changes.
+
 <!-- generated:cli:start -->
 ## Generated command and block reference
 

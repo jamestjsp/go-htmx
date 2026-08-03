@@ -67,6 +67,9 @@ func runFlowApply(ctx context.Context, client *apiClient, options globalOptions,
 
 func printFlowApplyResult(w io.Writer, result flowApplyResultClient) {
 	printChanges := func(label string, names []string) {
+		if len(names) == 0 {
+			return
+		}
 		fmt.Fprintf(w, "%s:\n", label)
 		for _, name := range names {
 			fmt.Fprintf(w, "  %s\n", name)
@@ -75,7 +78,9 @@ func printFlowApplyResult(w io.Writer, result flowApplyResultClient) {
 	printChanges("Added", result.Added)
 	printChanges("Updated", result.Updated)
 	printChanges("Removed", result.Removed)
-	fmt.Fprintf(w, "Wires: +%d -%d\n", result.WiresAdded, result.WiresRemoved)
+	if result.WiresAdded != 0 || result.WiresRemoved != 0 {
+		fmt.Fprintf(w, "Wires: +%d -%d\n", result.WiresAdded, result.WiresRemoved)
+	}
 	if !result.Changed {
 		fmt.Fprintln(w, "No changes.")
 	}

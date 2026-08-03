@@ -160,6 +160,7 @@ type command struct {
 	name      string
 	path      string
 	summary   string
+	details   string
 	flags     []commandFlag
 	arguments []commandArgument
 	freeform  bool
@@ -563,6 +564,10 @@ func printCommandHelp(w io.Writer, c *command) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c.summary)
+	if c.details != "" {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, c.details)
+	}
 	if len(c.children) > 0 {
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, "Commands:")

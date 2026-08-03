@@ -35,6 +35,25 @@ func TestFlowDocumentRoundTripIsANoop(t *testing.T) {
 	}
 }
 
+func TestApplyFlowRejectsDuplicateDocumentNames(t *testing.T) {
+	service := openTestStudio(t, ":memory:")
+	ctx := context.Background()
+	snapshot, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = service.ApplyFlow(ctx, snapshot.Flow.ID, FlowDocument{
+		Version: 1,
+		Blocks: []DocumentBlock{
+			{Name: "duplicate", Kind: BlockConstant, Position: DocumentPosition{X: 100, Y: 100}, Parameters: map[string]string{"value": "1"}},
+			{Name: "duplicate", Kind: BlockGain, Position: DocumentPosition{X: 400, Y: 100}, Parameters: map[string]string{"gain": "1"}},
+		},
+	}, false)
+	if err == nil || !strings.Contains(err.Error(), `flowsheet document contains duplicate block name "duplicate"`) {
+		t.Fatalf("duplicate document error = %v", err)
+	}
+}
+
 func TestApplyFlowReconcilesGraphDryRunsAndRejectsAtomically(t *testing.T) {
 	service := openTestStudio(t, filepath.Join(t.TempDir(), "document-apply.db"))
 	ctx := context.Background()
