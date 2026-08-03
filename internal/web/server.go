@@ -79,6 +79,7 @@ func New(studioService *studio.Studio) (*Server, error) {
 	server.apiMux.Handle("POST /flows/{flowID}/controller-candidates/{candidateID}/undo", server.api(server.controllerCandidateUndoAPI))
 	server.apiMux.Handle("GET /flows/{flowID}/analyses", server.api(server.analysisShowAPI))
 	server.apiMux.Handle("POST /flows/{flowID}/analyses", server.api(server.analysisRunAPI))
+	server.apiMux.Handle("GET /flows/{flowID}/events", server.api(server.eventsAPI))
 	server.apiMux.Handle("GET /projects", server.api(server.projectListAPI))
 	server.apiMux.Handle("GET /projects/{projectID}", server.api(server.projectDetailAPI))
 	server.apiMux.Handle("POST /projects", server.api(server.projectCreateAPI))

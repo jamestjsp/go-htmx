@@ -193,6 +193,8 @@ func commandTree() *command {
 		newControllerCommand(),
 		newIdentCommand(),
 		newStudyCommand(),
+		newExportCommand(),
+		newLogCommand(),
 	}
 	return root
 }
