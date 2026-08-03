@@ -113,13 +113,13 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 
 	blockHelp := harness.Run("--server", harness.URL(), "block", "add", "pid", "--help")
 	if blockHelp.code != 0 || !strings.Contains(blockHelp.stdout, "--proportional") ||
-		!strings.Contains(blockHelp.stdout, "applies when --sample-time-mode is explicit") || blockHelp.stderr != "" {
+		!strings.Contains(blockHelp.stdout, "applies when --time-domain is discrete") || blockHelp.stderr != "" {
 		t.Fatalf("block help result = %s", blockHelp)
 	}
 
 	catalogHelp := harness.Run("--server", harness.URL(), "block", "help", "pid")
 	if catalogHelp.code != 0 ||
-		!strings.Contains(catalogHelp.stdout, "applies when --sample-time-mode is explicit") || catalogHelp.stderr != "" {
+		!strings.Contains(catalogHelp.stdout, "applies when --time-domain is discrete") || catalogHelp.stderr != "" {
 		t.Fatalf("catalog help result = %s", catalogHelp)
 	}
 
@@ -128,6 +128,12 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 		!strings.Contains(delayHelp.stdout, "applies when --delay-mode is thiran and --sample-time-mode is explicit") ||
 		delayHelp.stderr != "" {
 		t.Fatalf("delay help result = %s", delayHelp)
+	}
+	delayCatalogHelp := harness.Run("--server", harness.URL(), "block", "help", "delay")
+	if delayCatalogHelp.code != 0 ||
+		!strings.Contains(delayCatalogHelp.stdout, "applies when --delay-mode is thiran and --sample-time-mode is explicit") ||
+		delayCatalogHelp.stderr != "" {
+		t.Fatalf("delay catalog help result = %s", delayCatalogHelp)
 	}
 
 	integratorHelp := harness.Run("--server", harness.URL(), "block", "add", "integrator", "--help")
