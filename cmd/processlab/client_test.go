@@ -415,6 +415,70 @@ func TestCLIHarnessRunsWireCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsFlowDumpAndApply(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	dump := harness.Run("--server", harness.URL(), "flow", "dump", "--flow", "1")
+	if dump.code != 0 || dump.stderr != "" {
+		t.Fatalf("flow dump result = %s", dump)
+	}
+	var dumped map[string]any
+	if err := json.Unmarshal([]byte(dump.stdout), &dumped); err != nil {
+		t.Fatalf("decode flow dump: %v", err)
+	}
+	if dumped["version"] != float64(1) {
+		t.Fatalf("flow dump version = %#v", dumped["version"])
+	}
+
+	roundTrip := harness.RunInput(dump.stdout, "--server", harness.URL(), "flow", "apply", "--flow", "1")
+	if roundTrip.code != 0 || roundTrip.stderr != "" || !strings.Contains(roundTrip.stdout, "No changes.") {
+		t.Fatalf("flow round-trip result = %s", roundTrip)
+	}
+
+	var changed map[string]any
+	if err := json.Unmarshal([]byte(dump.stdout), &changed); err != nil {
+		t.Fatal(err)
+	}
+	blocks := changed["blocks"].([]any)
+	blocks = append(blocks, map[string]any{
+		"kind": "constant", "name": "Preview", "position": map[string]any{"x": 800, "y": 100},
+		"parameters": map[string]any{"value": "4"},
+	})
+	changed["blocks"] = blocks
+	changedJSON, err := json.Marshal(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dryRun := harness.RunInput(string(changedJSON), "--server", harness.URL(), "flow", "apply", "--flow", "1", "--dry-run")
+	if dryRun.code != 0 || dryRun.stderr != "" || !strings.Contains(dryRun.stdout, "Added:") || !strings.Contains(dryRun.stdout, "Preview") || !strings.Contains(dryRun.stdout, "Dry run") {
+		t.Fatalf("flow dry-run result = %s", dryRun)
+	}
+
+	projectID := requireCLIID(t, harness.Run("--server", harness.URL(), "project", "create", "Declarative"))
+	flowID := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", secondString(projectID), "Empty target"))
+	emptyDocument := map[string]any{
+		"version": 1,
+		"blocks": []any{
+			map[string]any{"kind": "constant", "name": "Feed", "position": map[string]any{"x": 100, "y": 100}, "parameters": map[string]any{"value": "2"}},
+			map[string]any{"kind": "gain", "name": "Valve", "position": map[string]any{"x": 400, "y": 100}, "parameters": map[string]any{"gain": "3"}},
+		},
+		"wires": []any{map[string]any{"source": "Feed", "sourcePort": 0, "target": "Valve", "targetPort": 0}},
+	}
+	emptyJSON, err := json.Marshal(emptyDocument)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := harness.RunInput(string(emptyJSON), "--server", harness.URL(), "flow", "apply", "--flow", secondString(flowID))
+	if apply.code != 0 || apply.stderr != "" || !strings.Contains(apply.stdout, "Feed") || !strings.Contains(apply.stdout, "Valve") {
+		t.Fatalf("empty flow apply result = %s", apply)
+	}
+	finalDump := harness.Run("--server", harness.URL(), "flow", "dump", "--flow", secondString(flowID), "--json")
+	if finalDump.code != 0 || !strings.Contains(finalDump.stdout, "Feed") || !strings.Contains(finalDump.stdout, "Valve") {
+		t.Fatalf("final flow dump result = %s", finalDump)
+	}
+}
+
 func containsClientBlock(blocks []blockRecordClient, id int64) bool {
 	for _, block := range blocks {
 		if block.ID == id {
@@ -523,8 +587,19 @@ func (harness *cliHarness) URL() string {
 }
 
 func (harness *cliHarness) Run(args ...string) cliResult {
+	return harness.runWithInput("", args...)
+}
+
+func (harness *cliHarness) RunInput(input string, args ...string) cliResult {
+	return harness.runWithInput(input, args...)
+}
+
+func (harness *cliHarness) runWithInput(input string, args ...string) cliResult {
 	command := exec.Command(harness.binary, args...)
 	command.Dir = harness.root
+	if input != "" {
+		command.Stdin = strings.NewReader(input)
+	}
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
