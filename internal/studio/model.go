@@ -86,6 +86,7 @@ type Parameters struct {
 	Phase             float64   `json:"phase,omitempty"`
 	Gain              float64   `json:"gain,omitempty"`
 	Signs             string    `json:"signs,omitempty"`
+	SignalWidth       int       `json:"signalWidth,omitempty"`
 	TimeConstant      float64   `json:"timeConstant,omitempty"`
 	Numerator         []float64 `json:"numerator,omitempty"`
 	Denominator       []float64 `json:"denominator,omitempty"`

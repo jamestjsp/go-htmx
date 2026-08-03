@@ -240,7 +240,7 @@ representative fixtures—is in
 | Math | Matrix Gain | Named vector relation `y = Du` | One vector input |
 | Math | Mux / Demux | Assemble scalar channels into a named vector, or decompose one | Named scalar ports / one named vector |
 | Math | Selector / Permutation | Select a named subset, or reorder a complete named channel set | One named vector |
-| Math | Sum | Adds or subtracts inputs using a `+`/`-` sign pattern | One input port per sign |
+| Math | Sum | Adds, subtracts, or reduces scalar and explicitly sized vector inputs | One input port per sign |
 | Math | Vector Sum | Adds or subtracts named vectors | One vector input port per sign |
 | Continuous | First-order Lag | `1 / (τs + 1)` | Exactly one |
 | Continuous | Integrator | `1 / s` with zero initial condition | Exactly one |
@@ -251,7 +251,7 @@ representative fixtures—is in
 | Models | MIMO Transfer Function | Output-row denominators, per-channel numerators and delays | One named vector input |
 | Models | Zero-Pole-Gain | Per-channel zeros, poles, and finite gain matrix | One named vector input |
 | Models | Frequency Response Data | Named complex MIMO samples on an explicit rad/s grid | Frequency-domain workflows only |
-| Discrete | Unit Delay | Exact one-sample state at an explicit or inherited rate | Exactly one |
+| Discrete | Unit Delay | Exact one-sample scalar or vector state at an explicit or inherited rate | Exactly one |
 | Discrete | Transfer Function | Proper SISO numerator/denominator model in `z` | Exactly one |
 | Discrete | State-Space | Named MIMO `x[k+1]=Ax[k]+Bu[k]`, `y[k]=Cx[k]+Du[k]` | One named vector input |
 | Discrete | Discretized Transfer | Explicit ZOH, FOH, matched pole-zero, or impulse-invariant conversion | Exactly one |

@@ -141,6 +141,35 @@ frequency responses, discrete Forward Euler frequency response, and both PID2
 input paths against equations in the official R2026a block documentation.
 These analytic values are not MATLAB or Simulink output.
 
+## Sum, direct vectors, and named routing
+
+The direct Sum counterpart uses the documented default `+` sign and accepts
+either a `+`/`-` list or a positive numeric input count. Multi-input vectors of
+one authored width are added or subtracted elementwise. A one-port vector uses
+the documented Sum-of-elements behavior and produces a scalar. Process Lab
+authors width explicitly because it does not yet have diagram-wide inherited
+dimension propagation. Mixed scalar/vector expansion, matrices, sign-list
+spacers, and specified-dimension reduction remain outside this subset.
+
+Unit Delay accepts the same explicit scalar or vector width. Its scalar initial
+condition broadcasts across the vector unless a one-value or width-matched
+vector initial condition is authored. The existing inherited-rate mode uses the
+public run step and is unchanged. Saved Sum and Unit Delay blocks without a
+width remain scalar, so opening an existing diagram does not change its ports
+or response.
+
+Vector Sum, Vector Constant, Matrix Gain, Mux, Demux, Selector, Permutation, and
+Vector Scope remain intentional Process-Lab-specific named-channel
+specializations. Their channel labels are authored routing metadata rather than
+an assertion of direct Simulink block parity. Vector Sum keeps elementwise
+behavior even with one input; users choose direct Sum when they need documented
+one-input reduction.
+
+The executable fixture checks scalar Sum, numeric input-count shorthand,
+elementwise vector Sum, one-input vector reduction, and vector Unit Delay
+history through public Studio operations. Expected values come from the
+documented Sum and Unit Delay equations and are not MATLAB or Simulink output.
+
 ## Fixture layout
 
 Versioned fixtures live under

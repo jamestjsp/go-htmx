@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "id": "simulink-r2026a-sum-and-direct-vectors",
+  "release": "R2026a",
+  "mappings": [
+    {
+      "processLabBlock": "sum",
+      "mathWorksBlock": "Sum",
+      "compatibility": "direct-counterpart",
+      "supportedSubset": "Double-precision scalar and one-dimensional vector addition or subtraction, numeric input-count shorthand, elementwise equal-width multi-input vectors, and all-elements reduction for a one-port vector.",
+      "intentionalDeviations": [
+        "Process Lab authors signal width explicitly because it does not yet implement diagram-wide inherited dimension propagation.",
+        "Mixed scalar and vector input expansion, matrices, spacer characters, specified-dimension reduction, data-type accumulation policy, saturation, and fixed-point behavior are outside this subset."
+      ]
+    },
+    {
+      "processLabBlock": "unit_delay",
+      "mathWorksBlock": "Unit Delay",
+      "compatibility": "direct-counterpart",
+      "supportedSubset": "Scalar or one-dimensional vector signals delayed by one explicit or run-inherited sample period, with scalar-broadcast or width-matched finite initial conditions.",
+      "intentionalDeviations": [
+        "Process Lab authors vector width explicitly instead of inheriting signal dimensions.",
+        "Frame-based processing, data types other than double, state naming, and code-generation options are outside this subset."
+      ]
+    },
+    {
+      "processLabBlock": "vector_sum",
+      "mathWorksBlock": "Sum",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Elementwise signed addition of equal-width vectors with explicit input and output channel labels.",
+      "intentionalDeviations": [
+        "Vector Sum retains explicit named channels and is not the direct Sum counterpart.",
+        "A single Vector Sum input is passed elementwise instead of applying Simulink Sum-of-elements reduction."
+      ]
+    },
+    {
+      "processLabBlock": "mux",
+      "mathWorksBlock": "Mux",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Collect scalar ports into one explicitly named vector.",
+      "intentionalDeviations": [
+        "Channel labels are Process-Lab-authored routing metadata rather than inherited Simulink signal attributes."
+      ]
+    },
+    {
+      "processLabBlock": "demux",
+      "mathWorksBlock": "Demux",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Split one explicitly named vector into scalar ports.",
+      "intentionalDeviations": [
+        "Channel labels are Process-Lab-authored routing metadata rather than inherited Simulink signal attributes."
+      ]
+    },
+    {
+      "processLabBlock": "selector",
+      "mathWorksBlock": "Selector",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Select channels by authored names and order.",
+      "intentionalDeviations": [
+        "Process Lab uses names instead of Simulink index and dimension parameters."
+      ]
+    },
+    {
+      "processLabBlock": "permutation",
+      "mathWorksBlock": "Selector and signal routing composition",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Reorder every named channel exactly once.",
+      "intentionalDeviations": [
+        "Permutation is a Process-Lab-specific convenience abstraction without a single direct Simulink block counterpart."
+      ]
+    },
+    {
+      "processLabBlock": "vector_constant",
+      "mathWorksBlock": "Constant",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Emit a finite vector with explicit channel names.",
+      "intentionalDeviations": [
+        "Named channels are authored as block parameters."
+      ]
+    },
+    {
+      "processLabBlock": "matrix_gain",
+      "mathWorksBlock": "Gain",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Apply a constant matrix to an explicitly named input vector and emit explicitly named outputs.",
+      "intentionalDeviations": [
+        "Process Lab fixes matrix multiplication orientation and authors channel names explicitly."
+      ]
+    },
+    {
+      "processLabBlock": "vector_scope",
+      "mathWorksBlock": "Scope",
+      "compatibility": "process-lab-specialization",
+      "supportedSubset": "Persist every channel of one explicitly named vector input.",
+      "intentionalDeviations": [
+        "Vector Scope is a Process-Lab-specific persisted-result sink rather than a full Simulink Scope."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "sum-default-and-numeric-input-count",
+      "reference": {
+        "title": "Sum",
+        "url": "https://www.mathworks.com/help/simulink/slref/sum.html",
+        "section": "List of signs",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "The default plus sign and numeric input-count expansion are taken from the documented parameter contract; values are not MATLAB or Simulink output."
+      }
+    },
+    {
+      "id": "sum-scalar-and-vector-calculation",
+      "reference": {
+        "title": "Sum",
+        "url": "https://www.mathworks.com/help/simulink/slref/sum.html",
+        "section": "Calculation of Block Output and Ports",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected scalar, elementwise vector, and all-elements reduction values are computed from the documented formulas; they are not MATLAB or Simulink output."
+      }
+    },
+    {
+      "id": "unit-delay-vector-initial-condition",
+      "reference": {
+        "title": "Unit Delay",
+        "url": "https://www.mathworks.com/help/simulink/slref/unitdelay.html",
+        "section": "Vector signals and Initial condition",
+        "accessed": "2026-08-02"
+      },
+      "oracle": {
+        "kind": "mathworks-formula-analytic",
+        "description": "Expected first-period vector history and subsequent delayed samples follow the documented one-sample contract; they are not MATLAB or Simulink output."
+      }
+    }
+  ],
+  "sum": {
+    "defaultSigns": "+",
+    "scalarInputs": [10, 3, 2],
+    "scalarSigns": "+-+",
+    "vectorInputs": [
+      [1, 2, 3],
+      [0.5, 1, 4]
+    ],
+    "vectorSigns": "+-",
+    "collapseInput": [1, 2, 3]
+  },
+  "unitDelay": {
+    "input": [1, 2, 3],
+    "initialCondition": [9, -2, 4],
+    "sampleTime": 0.1,
+    "duration": 1
+  }
+}
