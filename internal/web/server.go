@@ -62,6 +62,8 @@ func New(studioService *studio.Studio) (*Server, error) {
 	server.apiMux.Handle("DELETE /blocks/{blockID}/connections", server.api(server.wireDisconnectBlockAPI))
 	server.apiMux.Handle("GET /flows/{flowID}/document", server.api(server.flowDocumentDumpAPI))
 	server.apiMux.Handle("PUT /flows/{flowID}/document", server.api(server.flowDocumentApplyAPI))
+	server.apiMux.Handle("POST /flows/{flowID}/simulations", server.api(server.simulationRunAPI))
+	server.apiMux.Handle("GET /flows/{flowID}/simulations/latest", server.api(server.simulationShowAPI))
 	server.apiMux.Handle("GET /projects", server.api(server.projectListAPI))
 	server.apiMux.Handle("GET /projects/{projectID}", server.api(server.projectDetailAPI))
 	server.apiMux.Handle("POST /projects", server.api(server.projectCreateAPI))
