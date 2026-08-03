@@ -1,9 +1,11 @@
 package studio
 
 import (
+	"fmt"
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -116,7 +118,7 @@ func TestParameterActivationDataDrivesValidationAndSchema(t *testing.T) {
 						t.Fatalf("set %q to %q: %v", condition.Name, condition.Values[0], err)
 					}
 				}
-				if !field.active(parameters) {
+				if !field.active(parameters, definition.Parameters) {
 					t.Fatal("derived predicate is false for activating values")
 				}
 
@@ -134,8 +136,8 @@ func TestParameterActivationDataDrivesValidationAndSchema(t *testing.T) {
 						if err := dependency.set(&candidate, option.Value); err != nil {
 							t.Fatalf("set %q to option %q: %v", condition.Name, option.Value, err)
 						}
-						if field.active(candidate) != activeValue {
-							t.Fatalf("predicate for %q = %v at %q, want %v", condition.Name, field.active(candidate), option.Value, activeValue)
+						if field.active(candidate, definition.Parameters) != activeValue {
+							t.Fatalf("predicate for %q = %v at %q, want %v", condition.Name, field.active(candidate, definition.Parameters), option.Value, activeValue)
 						}
 					}
 				}
@@ -144,13 +146,15 @@ func TestParameterActivationDataDrivesValidationAndSchema(t *testing.T) {
 	}
 }
 
-func findParameterDefinition(parameters []parameterDefinition, name string) *parameterDefinition {
-	for index := range parameters {
-		if parameters[index].Name == name {
-			return &parameters[index]
+func TestParameterActivationRejectsUnknownDependency(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil || !strings.Contains(fmt.Sprint(recovered), "undeclared parameter") {
+			t.Fatalf("unknown activation dependency panic = %v", recovered)
 		}
-	}
-	return nil
+	}()
+	parameterActivationsMatch(defaultParameters(BlockPID), []ParameterActivation{
+		parameterActivation("missing_parameter", "value"),
+	}, blockDefinitions[BlockPID].Parameters)
 }
 
 func TestBlockKindSchemaBoundsRejectOneStepOutside(t *testing.T) {
@@ -162,7 +166,7 @@ func TestBlockKindSchemaBoundsRejectOneStepOutside(t *testing.T) {
 			}
 			t.Run(string(kind)+"/"+field.Name, func(t *testing.T) {
 				parameters := defaultParameters(kind)
-				if field.active != nil && !field.active(parameters) {
+				if field.active != nil && !field.active(parameters, definition.Parameters) {
 					t.Skip("field is inactive at the kind default")
 				}
 				schema, ok := kind.Schema()

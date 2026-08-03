@@ -118,7 +118,7 @@ type parameterDefinition struct {
 	Placeholder string
 	Help        string
 	Options     []parameterOption
-	active      func(Parameters) bool
+	active      func(Parameters, []parameterDefinition) bool
 	activation  []ParameterActivation
 	shape       func(Parameters) (int, int)
 	optional    bool
@@ -141,7 +141,7 @@ type parameterOption struct {
 // validateBound enforces the field's own numeric range, if it has one.
 // Fields without a bound (text, coefficients, Padé order) have nothing to
 // check here — their rules live in the block's validate hook.
-func (field parameterDefinition) validateBound(parameters Parameters) error {
+func (field parameterDefinition) validateBound(parameters Parameters, definitions []parameterDefinition) error {
 	if field.bound == nil {
 		return nil
 	}
@@ -149,7 +149,7 @@ func (field parameterDefinition) validateBound(parameters Parameters) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return invalid("%s must be finite", field.bound.label)
 	}
-	if field.active != nil && !field.active(parameters) {
+	if field.active != nil && !field.active(parameters, definitions) {
 		return nil
 	}
 	if field.bound.min == nil && field.bound.max == nil {
@@ -2128,8 +2128,8 @@ func conditionalNumberField(
 	)
 	definition.activation = cloneParameterActivations(activation)
 	if len(definition.activation) > 0 {
-		definition.active = func(parameters Parameters) bool {
-			return parameterActivationsMatch(parameters, definition.activation)
+		definition.active = func(parameters Parameters, definitions []parameterDefinition) bool {
+			return parameterActivationsMatch(parameters, definition.activation, definitions)
 		}
 	}
 	return definition
@@ -2150,9 +2150,9 @@ func cloneParameterActivations(activation []ParameterActivation) []ParameterActi
 	return clone
 }
 
-func parameterActivationsMatch(parameters Parameters, activation []ParameterActivation) bool {
+func parameterActivationsMatch(parameters Parameters, activation []ParameterActivation, definitions []parameterDefinition) bool {
 	for _, condition := range activation {
-		value := parameterActivationValue(parameters, condition.Name)
+		value := parameterActivationValue(parameters, condition.Name, definitions)
 		matched := false
 		for _, activatingValue := range condition.Values {
 			if value == activatingValue {
@@ -2167,17 +2167,24 @@ func parameterActivationsMatch(parameters Parameters, activation []ParameterActi
 	return true
 }
 
-func parameterActivationValue(parameters Parameters, name string) string {
-	switch name {
-	case "delay_mode":
-		return normalizedDelayMode(parameters)
-	case "sample_time_mode":
-		return string(normalizedSampleTimeMode(parameters))
-	case "time_domain":
-		return normalizedModelDomain(parameters)
-	default:
-		return ""
+func parameterActivationValue(parameters Parameters, name string, definitions []parameterDefinition) string {
+	field := findParameterDefinition(definitions, name)
+	if field == nil {
+		panic(fmt.Sprintf("parameter activation names undeclared parameter %q", name))
 	}
+	if field.text == nil {
+		panic(fmt.Sprintf("parameter activation parameter %q has no text reader", name))
+	}
+	return field.text(parameters)
+}
+
+func findParameterDefinition(parameters []parameterDefinition, name string) *parameterDefinition {
+	for index := range parameters {
+		if parameters[index].Name == name {
+			return &parameters[index]
+		}
+	}
+	return nil
 }
 
 func sampleTimeFields() []parameterDefinition {
@@ -2667,7 +2674,7 @@ func validateParameters(kind BlockKind, parameters Parameters) error {
 		return nil
 	}
 	for _, field := range definition.Parameters {
-		if err := field.validateBound(parameters); err != nil {
+		if err := field.validateBound(parameters, definition.Parameters); err != nil {
 			return err
 		}
 	}
