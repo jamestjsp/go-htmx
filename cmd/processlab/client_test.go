@@ -112,8 +112,32 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	}
 
 	blockHelp := harness.Run("--server", harness.URL(), "block", "add", "pid", "--help")
-	if blockHelp.code != 0 || !strings.Contains(blockHelp.stdout, "--proportional") || blockHelp.stderr != "" {
+	if blockHelp.code != 0 || !strings.Contains(blockHelp.stdout, "--proportional") ||
+		!strings.Contains(blockHelp.stdout, "applies when --sample-time-mode is explicit") || blockHelp.stderr != "" {
 		t.Fatalf("block help result = %s", blockHelp)
+	}
+
+	catalogHelp := harness.Run("--server", harness.URL(), "block", "help", "pid")
+	if catalogHelp.code != 0 ||
+		!strings.Contains(catalogHelp.stdout, "applies when --sample-time-mode is explicit") || catalogHelp.stderr != "" {
+		t.Fatalf("catalog help result = %s", catalogHelp)
+	}
+
+	delayHelp := harness.Run("--server", harness.URL(), "block", "add", "delay", "--help")
+	if delayHelp.code != 0 ||
+		!strings.Contains(delayHelp.stdout, "applies when --delay-mode is thiran and --sample-time-mode is explicit") ||
+		delayHelp.stderr != "" {
+		t.Fatalf("delay help result = %s", delayHelp)
+	}
+
+	integratorHelp := harness.Run("--server", harness.URL(), "block", "add", "integrator", "--help")
+	if integratorHelp.code != 0 ||
+		!strings.Contains(integratorHelp.stdout, "--initial-condition") ||
+		!strings.Contains(integratorHelp.stdout, "default 0 sec") || integratorHelp.stderr != "" {
+		t.Fatalf("integrator help result = %s", integratorHelp)
+	}
+	if !strings.Contains(delayHelp.stdout, "--initial-output") || !strings.Contains(delayHelp.stdout, "default 0 scalar") {
+		t.Fatalf("delay units missing from help result = %s", delayHelp)
 	}
 
 	blockList := harness.Run("--server", harness.URL(), "block", "list")

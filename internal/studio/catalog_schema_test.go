@@ -73,6 +73,86 @@ func TestBlockKindSchemaDefaultsRoundTripThroughValidation(t *testing.T) {
 	}
 }
 
+func TestParameterActivationDataDrivesValidationAndSchema(t *testing.T) {
+	for _, kind := range blockOrder {
+		definition := blockDefinitions[kind]
+		schema, ok := kind.Schema()
+		if !ok {
+			t.Fatalf("%s: Schema() reported an unknown registered kind", kind)
+		}
+		for _, field := range definition.Parameters {
+			field := field
+			if len(field.activation) == 0 {
+				continue
+			}
+			t.Run(string(kind)+"/"+field.Name, func(t *testing.T) {
+				var published *ParameterSchema
+				for index := range schema.Parameters {
+					if schema.Parameters[index].Name == field.Name {
+						published = &schema.Parameters[index]
+						break
+					}
+				}
+				if published == nil {
+					t.Fatalf("schema does not publish %q", field.Name)
+				}
+				if !reflect.DeepEqual(published.ActiveWhen, field.activation) {
+					t.Fatalf("published activation = %#v, want %#v", published.ActiveWhen, field.activation)
+				}
+				if field.active == nil {
+					t.Fatal("activation has no derived validation predicate")
+				}
+
+				parameters := defaultParameters(kind)
+				for _, condition := range field.activation {
+					dependency := findParameterDefinition(definition.Parameters, condition.Name)
+					if dependency == nil {
+						t.Fatalf("activation names unknown parameter %q", condition.Name)
+					}
+					if len(condition.Values) == 0 {
+						t.Fatalf("activation for %q has no activating values", condition.Name)
+					}
+					if err := dependency.set(&parameters, condition.Values[0]); err != nil {
+						t.Fatalf("set %q to %q: %v", condition.Name, condition.Values[0], err)
+					}
+				}
+				if !field.active(parameters) {
+					t.Fatal("derived predicate is false for activating values")
+				}
+
+				for _, condition := range field.activation {
+					dependency := findParameterDefinition(definition.Parameters, condition.Name)
+					for _, option := range dependency.Options {
+						activeValue := false
+						for _, activatingValue := range condition.Values {
+							if option.Value == activatingValue {
+								activeValue = true
+								break
+							}
+						}
+						candidate := cloneParameters(parameters)
+						if err := dependency.set(&candidate, option.Value); err != nil {
+							t.Fatalf("set %q to option %q: %v", condition.Name, option.Value, err)
+						}
+						if field.active(candidate) != activeValue {
+							t.Fatalf("predicate for %q = %v at %q, want %v", condition.Name, field.active(candidate), option.Value, activeValue)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func findParameterDefinition(parameters []parameterDefinition, name string) *parameterDefinition {
+	for index := range parameters {
+		if parameters[index].Name == name {
+			return &parameters[index]
+		}
+	}
+	return nil
+}
+
 func TestBlockKindSchemaBoundsRejectOneStepOutside(t *testing.T) {
 	for _, kind := range blockOrder {
 		definition := blockDefinitions[kind]
