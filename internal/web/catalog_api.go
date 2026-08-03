@@ -35,6 +35,9 @@ func (s *Server) blockLibraryAPI(_ *http.Request) (apiResponse, error) {
 }
 
 func (s *Server) blockSchemaAPI(r *http.Request) (apiResponse, error) {
+	if blockID, err := parseInt64(r.PathValue("kind")); err == nil && blockID > 0 {
+		return s.blockDetailAPI(r, blockID)
+	}
 	blockKind := studio.BlockKind(strings.ToLower(strings.TrimSpace(r.PathValue("kind"))))
 	schema, ok := blockKind.Schema()
 	if !ok {

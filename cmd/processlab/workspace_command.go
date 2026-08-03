@@ -510,11 +510,9 @@ func moveCommandFlags(args, valueFlags, boolFlags []string) []string {
 		}
 		if isValueFlag {
 			flags = append(flags, argument)
-			if argument == "--project" || argument == "-project" {
-				if index+1 < len(args) {
-					flags = append(flags, args[index+1])
-					index++
-				}
+			if !strings.Contains(argument, "=") && index+1 < len(args) {
+				flags = append(flags, args[index+1])
+				index++
 			}
 			continue
 		}

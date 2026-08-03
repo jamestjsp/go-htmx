@@ -405,10 +405,10 @@ func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []i
 			if block.FlowID != flowID {
 				return ErrNotFound
 			}
-			placed, err := openPosition(ctx, tx, flowID, clampPosition(Point{
+			placed, err := openPositionExcluding(ctx, tx, flowID, clampPosition(Point{
 				X: block.Position.X + GridPitch,
 				Y: block.Position.Y + GridPitch,
-			}))
+			}), map[int64]bool{block.ID: true})
 			if err != nil {
 				return err
 			}
@@ -647,16 +647,24 @@ func (s *Studio) touchLayout(ctx context.Context, tx *sql.Tx, flowID int64) erro
 }
 
 func openPosition(ctx context.Context, tx *sql.Tx, flowID int64, desired Point) (Point, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT x, y FROM blocks WHERE flow_id = ?", flowID)
+	return openPositionExcluding(ctx, tx, flowID, desired, nil)
+}
+
+func openPositionExcluding(ctx context.Context, tx *sql.Tx, flowID int64, desired Point, excluded map[int64]bool) (Point, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT id, x, y FROM blocks WHERE flow_id = ?", flowID)
 	if err != nil {
 		return Point{}, fmt.Errorf("load block positions: %w", err)
 	}
 	var occupied []Point
 	for rows.Next() {
+		var id int64
 		var point Point
-		if err := rows.Scan(&point.X, &point.Y); err != nil {
+		if err := rows.Scan(&id, &point.X, &point.Y); err != nil {
 			rows.Close()
 			return Point{}, fmt.Errorf("scan block position: %w", err)
+		}
+		if excluded[id] {
+			continue
 		}
 		occupied = append(occupied, point)
 	}
