@@ -405,10 +405,16 @@ func (s *Studio) DuplicateBlocks(ctx context.Context, flowID int64, blockIDs []i
 			if block.FlowID != flowID {
 				return ErrNotFound
 			}
+			excluded := map[int64]bool{block.ID: true}
+			if len(blockIDs) > 1 {
+				// A selection is duplicated as a group. Its originals remain
+				// occupied during fallback so the copies cannot land on them.
+				excluded = nil
+			}
 			placed, err := openPositionExcluding(ctx, tx, flowID, clampPosition(Point{
 				X: block.Position.X + GridPitch,
 				Y: block.Position.Y + GridPitch,
-			}), map[int64]bool{block.ID: true})
+			}), excluded)
 			if err != nil {
 				return err
 			}
@@ -656,6 +662,7 @@ func openPositionExcluding(ctx context.Context, tx *sql.Tx, flowID int64, desire
 		return Point{}, fmt.Errorf("load block positions: %w", err)
 	}
 	var occupied []Point
+	var desiredOccupied []Point
 	for rows.Next() {
 		var id int64
 		var point Point
@@ -663,24 +670,24 @@ func openPositionExcluding(ctx context.Context, tx *sql.Tx, flowID int64, desire
 			rows.Close()
 			return Point{}, fmt.Errorf("scan block position: %w", err)
 		}
-		if excluded[id] {
-			continue
-		}
 		occupied = append(occupied, point)
+		if !excluded[id] {
+			desiredOccupied = append(desiredOccupied, point)
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return Point{}, fmt.Errorf("close block positions: %w", err)
 	}
 
-	available := func(candidate Point) bool {
-		for _, point := range occupied {
+	available := func(candidate Point, points []Point) bool {
+		for _, point := range points {
 			if abs(candidate.X-point.X) < BlockWidth && abs(candidate.Y-point.Y) < BlockHeight {
 				return false
 			}
 		}
 		return true
 	}
-	if available(desired) {
+	if available(desired, desiredOccupied) {
 		return desired, nil
 	}
 	// Walk a lattice with room for a wire run between neighbours, in reading
@@ -695,7 +702,7 @@ func openPositionExcluding(ctx context.Context, tx *sql.Tx, flowID int64, desire
 	for y := originY; y <= SheetHeight-BlockHeight; y += stepY {
 		for x := originX; x <= SheetWidth-BlockWidth; x += stepX {
 			candidate := clampPosition(Point{X: x, Y: y})
-			if available(candidate) {
+			if available(candidate, occupied) {
 				return candidate, nil
 			}
 		}
