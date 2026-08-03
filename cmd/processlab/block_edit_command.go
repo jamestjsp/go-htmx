@@ -97,7 +97,7 @@ func runBlockSet(ctx context.Context, client *apiClient, args []string, options 
 		set.StringVar(&value, parameterFlagName(field.Name), value, field.Label)
 	}
 	if hasHelpFlag(args[1:]) {
-		printBlockSchemaHelp(stdout, schema)
+		printBlockSchemaHelp(stdout, "Usage: processlab block set <id> [flags]", schema)
 		return nil
 	}
 	if err := set.Parse(args[1:]); err != nil {

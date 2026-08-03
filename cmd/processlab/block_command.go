@@ -114,8 +114,13 @@ func newBlockCommand() *command {
 			},
 			{
 				name: "set", summary: "Update a block", freeform: true,
-				flags: []commandFlag{documentedStringFlag("name", "string", "", "block name"), documentedBoolFlag("json", "write machine-readable output")},
+				arguments: []commandArgument{{name: "block id", description: "block identifier", required: true}},
+				flags:     []commandFlag{documentedStringFlag("name", "string", "", "block name"), documentedBoolFlag("json", "write machine-readable output")},
 				help: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					if len(args) == 0 {
+						printBlockSetHelp(stdout)
+						return nil
+					}
 					client, err := newAPIClient(options.server, options.timeout)
 					if err != nil {
 						return err
@@ -237,7 +242,7 @@ func runBlockHelp(ctx context.Context, client *apiClient, args []string, stdout 
 	if err != nil {
 		return err
 	}
-	printBlockSchemaHelp(stdout, schema)
+	printBlockSchemaHelp(stdout, "Usage: processlab block help <kind> [flags]", schema)
 	return nil
 }
 
@@ -278,7 +283,7 @@ func runBlockAdd(ctx context.Context, client *apiClient, args []string, options 
 		set.StringVar(&value, parameterFlagName(field.Name), value, field.Label)
 	}
 	if hasHelpFlag(args[1:]) {
-		printBlockSchemaHelp(stdout, schema)
+		printBlockSchemaHelp(stdout, "Usage: processlab block add "+kind+" [flags]", schema)
 		return nil
 	}
 	if err := set.Parse(args[1:]); err != nil {
@@ -366,8 +371,8 @@ func printBlockAddHelp(w io.Writer, entries []blockLibraryEntryClient) {
 	printBlockLibrary(w, entries)
 }
 
-func printBlockSchemaHelp(w io.Writer, schema blockSchemaClient) {
-	fmt.Fprintf(w, "Usage: processlab block add %s [flags]\n\n", schema.Kind)
+func printBlockSchemaHelp(w io.Writer, usage string, schema blockSchemaClient) {
+	fmt.Fprintf(w, "%s\n\n", usage)
 	fmt.Fprintf(w, "%s — %s\n", schema.Label, schema.Description)
 	fmt.Fprintln(w)
 	for _, field := range schema.Parameters {
@@ -411,6 +416,14 @@ func printBlockSchemaHelp(w io.Writer, schema blockSchemaClient) {
 			fmt.Fprintf(w, "    %s\n", field.Help)
 		}
 	}
+}
+
+func printBlockSetHelp(w io.Writer) {
+	fmt.Fprintln(w, "Usage: processlab block set <id> [flags]")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Update a block using the parameter flags for its kind.")
+	fmt.Fprintln(w, "Use processlab block set <id> --help for that block's parameters.")
+	fmt.Fprintln(w, "Use processlab block help <kind> for catalog help without a block id.")
 }
 
 func formatBlockParameterActivation(activation blockParameterActivationClient) string {

@@ -1027,6 +1027,38 @@ func TestCLIHarnessRunsBlockAuthoringCommands(t *testing.T) {
 		t.Fatalf("updated block = %#v", updatedBlock)
 	}
 
+	setHelp := harness.Run("--server", harness.URL(), "block", "set", "--help")
+	if setHelp.code != 0 || setHelp.stderr != "" ||
+		!strings.Contains(setHelp.stdout, "block set <id> --help") ||
+		!strings.Contains(setHelp.stdout, "block help <kind>") {
+		t.Fatalf("block set help = %s", setHelp)
+	}
+
+	setSchemaHelp := harness.Run("--server", harness.URL(), "block", "set", secondString(gain.ID), "--help")
+	if setSchemaHelp.code != 0 || setSchemaHelp.stderr != "" ||
+		!strings.Contains(setSchemaHelp.stdout, "Usage: processlab block set <id> [flags]") ||
+		strings.Contains(setSchemaHelp.stdout, "Usage: processlab block add") ||
+		!strings.Contains(setSchemaHelp.stdout, "--gain") {
+		t.Fatalf("block set schema help = %s", setSchemaHelp)
+	}
+
+	var blockHelp commandHelpJSON
+	jsonHelp := harness.Run("--server", harness.URL(), "help", "block", "--json")
+	if jsonHelp.code != 0 || jsonHelp.stderr != "" || json.Unmarshal([]byte(jsonHelp.stdout), &blockHelp) != nil {
+		t.Fatalf("block JSON help = %s", jsonHelp)
+	}
+	var setCommand *commandHelpJSON
+	for index := range blockHelp.Commands {
+		if blockHelp.Commands[index].Name == "set" {
+			setCommand = &blockHelp.Commands[index]
+			break
+		}
+	}
+	if setCommand == nil || len(setCommand.Arguments) != 1 ||
+		setCommand.Arguments[0].Name != "block id" || !setCommand.Arguments[0].Required {
+		t.Fatalf("block set JSON help = %#v", blockHelp)
+	}
+
 	sumUpdate := harness.Run("--server", harness.URL(), "block", "set", secondString(sum.ID), "--signs", "+")
 	if sumUpdate.code != 1 || !strings.Contains(sumUpdate.stderr, "wire on input port 1") {
 		t.Fatalf("wired sum edit result = %s", sumUpdate)
