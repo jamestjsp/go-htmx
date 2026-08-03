@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"math/cmplx"
@@ -39,6 +40,76 @@ type ModelStudy struct {
 	system     *controlsys.System
 	frd        *controlsys.FRD
 	provenance ModelStudyProvenance
+}
+
+func (s *Studio) ControlModelStudy(
+	ctx context.Context,
+	flowID int64,
+	role string,
+) (ModelStudyProvenance, error) {
+	snapshot, err := s.snapshot(ctx, flowID)
+	if err != nil {
+		return ModelStudyProvenance{}, err
+	}
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		role = "plant"
+	}
+	if role == "plant" {
+		if frd, ok := standaloneFRDStudySource(snapshot); ok {
+			study, err := NewFRDModelStudy(frd.Name, frd.Model)
+			if err != nil {
+				return ModelStudyProvenance{}, err
+			}
+			return study.Provenance(), nil
+		}
+	}
+	models, err := s.BuildControlModels(ctx, flowID, ControlModelBuildRequest{})
+	if err != nil {
+		return ModelStudyProvenance{}, err
+	}
+	var system *controlsys.System
+	switch role {
+	case "plant":
+		system = models.Plant
+	case "controller":
+		system = models.Controller
+	case "reference_controller", "reference-controller":
+		system = models.ReferenceController
+	case "generalized", "generalized_plant", "generalized-plant":
+		system = models.GeneralizedPlant
+	case "estimator", "estimator_plant", "estimator-plant":
+		system = models.EstimatorPlant
+	default:
+		return ModelStudyProvenance{}, invalid(
+			"unknown model-study role %q; choose plant, controller, reference_controller, generalized, or estimator",
+			role,
+		)
+	}
+	if system == nil {
+		return ModelStudyProvenance{}, invalid("model-study role %q produced no model", role)
+	}
+	study, err := NewStateSpaceModelStudy(snapshot.Flow.Name+" "+role, system)
+	if err != nil {
+		return ModelStudyProvenance{}, err
+	}
+	return study.Provenance(), nil
+}
+
+type frdStudySource struct {
+	Name  string
+	Model *controlsys.FRD
+}
+
+func standaloneFRDStudySource(snapshot Snapshot) (frdStudySource, bool) {
+	if len(snapshot.Blocks) != 1 || snapshot.Blocks[0].Kind != BlockFRD {
+		return frdStudySource{}, false
+	}
+	frd, err := frdFromParameters(snapshot.Blocks[0].Parameters)
+	if err != nil {
+		return frdStudySource{}, false
+	}
+	return frdStudySource{Name: snapshot.Blocks[0].Name, Model: frd}, true
 }
 
 func NewStateSpaceModelStudy(name string, system *controlsys.System) (*ModelStudy, error) {
