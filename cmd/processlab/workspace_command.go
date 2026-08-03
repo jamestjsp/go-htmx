@@ -224,7 +224,7 @@ func runProjectDelete(ctx context.Context, client *apiClient, args []string, opt
 
 func runFlow(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return usagef("processlab flow: choose list, show, create, rename, duplicate, delete, or reorder")
+		return usagef("processlab flow: choose list, dump, apply, show, create, rename, duplicate, delete, or reorder")
 	}
 	client, err := newAPIClient(options.server, options.timeout)
 	if err != nil {
@@ -233,6 +233,10 @@ func runFlow(ctx context.Context, options globalOptions, args []string, stdout, 
 	switch args[0] {
 	case "list":
 		return runFlowList(ctx, client, args[1:], options, stdout)
+	case "dump":
+		return runFlowDump(ctx, client, args[1:], options, stdout)
+	case "apply":
+		return runFlowApply(ctx, client, args[1:], options, stdout)
 	case "show":
 		return runFlowShow(ctx, client, args[1:], options, stdout)
 	case "create":
@@ -246,7 +250,7 @@ func runFlow(ctx context.Context, options globalOptions, args []string, stdout, 
 	case "reorder":
 		return runFlowReorder(ctx, client, args[1:], options, stdout)
 	default:
-		return usagef("processlab flow: unknown operation %q; choose list, show, create, rename, duplicate, delete, or reorder", args[0])
+		return usagef("processlab flow: unknown operation %q; choose list, dump, apply, show, create, rename, duplicate, delete, or reorder", args[0])
 	}
 }
 
