@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -157,6 +158,60 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	noServer := harness.Run("--server", "http://127.0.0.1:1", "block", "add", "--help")
 	if noServer.code != 3 || noServer.stdout != "" || !strings.Contains(noServer.stderr, "processlab serve") {
 		t.Fatalf("unreachable block command = %s", noServer)
+	}
+}
+
+func TestCLIHarnessRunsAnalysisCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	channels := harness.Run("--server", harness.URL(), "analyze", "channels", "--flow", "1", "--json")
+	if channels.code != 0 || channels.stderr != "" {
+		t.Fatalf("analysis channels result = %s", channels)
+	}
+	var workspace struct {
+		Inputs  []analysisChannelClient `json:"inputs"`
+		Outputs []analysisChannelClient `json:"outputs"`
+	}
+	if err := json.Unmarshal([]byte(channels.stdout), &workspace); err != nil {
+		t.Fatalf("decode analysis channels: %v\n%s", err, channels.stdout)
+	}
+	if len(workspace.Inputs) == 0 || len(workspace.Outputs) == 0 {
+		t.Fatalf("analysis channels = %#v", workspace)
+	}
+	ref := func(channel analysisChannelClient) string {
+		return fmt.Sprintf("%d:%d:%d", channel.BlockID, channel.Port, channel.Channel)
+	}
+
+	malformed := harness.Run("--server", "http://127.0.0.1:1", "analyze", "dynamics", "--flow", "1", "--input", "bad", "--output", "bad")
+	if malformed.code != 2 || !strings.Contains(malformed.stderr, "want block:port:channel") {
+		t.Fatalf("malformed channel result = %s", malformed)
+	}
+
+	dynamics := harness.Run(
+		"--server", harness.URL(), "analyze", "dynamics", "--flow", "1",
+		"--input", ref(workspace.Inputs[0]), "--output", ref(workspace.Outputs[len(workspace.Outputs)-1]),
+		"--horizon", "2", "--json",
+	)
+	if dynamics.code != 0 || dynamics.stderr != "" || !strings.Contains(dynamics.stdout, `"dynamics"`) {
+		t.Fatalf("analysis dynamics result = %s", dynamics)
+	}
+
+	frequency := harness.Run(
+		"--server", harness.URL(), "analyze", "frequency", "--flow", "1",
+		"--all-channels", "--points", "10", "--json",
+	)
+	if frequency.code != 0 || frequency.stderr != "" || !strings.Contains(frequency.stdout, `"frequency"`) {
+		t.Fatalf("analysis frequency result = %s", frequency)
+	}
+
+	added := harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", "1")
+	if added.code != 0 || added.stderr != "" {
+		t.Fatalf("model edit result = %s", added)
+	}
+	show := harness.Run("--server", harness.URL(), "analyze", "show", "--flow", "1")
+	if show.code != 0 || !strings.Contains(show.stderr, "cached analysis is stale") {
+		t.Fatalf("analysis show result = %s", show)
 	}
 }
 
