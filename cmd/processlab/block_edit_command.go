@@ -148,7 +148,7 @@ func runBlockMove(ctx context.Context, client *apiClient, args []string, options
 	}
 	return runBlockBatchAction(ctx, client, http.MethodPatch, "/flows/"+strconv.FormatInt(flowID, 10)+"/blocks/positions", struct {
 		Moves []blockMoveRequestClient `json:"moves"`
-	}{Moves: moves}, jsonOutput, stdout, fmt.Sprintf("moved %d blocks", len(moves)))
+	}{Moves: moves}, jsonOutput, stdout, fmt.Sprintf("moved %s", blockCountText(len(moves))))
 }
 
 func runBlockDelete(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
@@ -182,7 +182,14 @@ func runBlockIDsAction(ctx context.Context, client *apiClient, args []string, op
 	}
 	return runBlockBatchAction(ctx, client, method, path, struct {
 		BlockIDs []int64 `json:"blockIds"`
-	}{BlockIDs: ids}, jsonOutput, stdout, fmt.Sprintf("%s %d blocks", verb, len(ids)))
+	}{BlockIDs: ids}, jsonOutput, stdout, fmt.Sprintf("%s %s", verb, blockCountText(len(ids))))
+}
+
+func blockCountText(count int) string {
+	if count == 1 {
+		return "1 block"
+	}
+	return fmt.Sprintf("%d blocks", count)
 }
 
 func runBlockBatchAction(ctx context.Context, client *apiClient, method, path string, input any, jsonOutput bool, stdout io.Writer, text string) error {

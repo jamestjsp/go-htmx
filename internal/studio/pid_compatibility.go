@@ -18,7 +18,7 @@ func pidFilterCoefficientField() parameterDefinition {
 		return formatFloat(pidFilterCoefficient(parameters))
 	}
 	field.bound.value = pidFilterCoefficient
-	field.active = func(parameters Parameters) bool {
+	field.active = func(parameters Parameters, _ []parameterDefinition) bool {
 		return parameters.Derivative != 0
 	}
 	return field
