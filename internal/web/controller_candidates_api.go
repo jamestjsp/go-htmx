@@ -22,6 +22,21 @@ type robustCandidateAPIRequest struct {
 	ReviewHorizon float64 `json:"reviewHorizon,omitempty"`
 }
 
+type stateFeedbackCandidateAPIRequest struct {
+	studio.StateFeedbackRequest
+	ReviewHorizon float64 `json:"reviewHorizon,omitempty"`
+}
+
+type estimatorCandidateAPIRequest struct {
+	studio.EstimatorDesignRequest
+	ReviewHorizon float64 `json:"reviewHorizon,omitempty"`
+}
+
+type tuningCandidateAPIRequest struct {
+	studio.ControllerTuningRequest
+	ReviewHorizon float64 `json:"reviewHorizon,omitempty"`
+}
+
 type controllerCandidateAPIRecord struct {
 	ID            string                           `json:"id"`
 	FlowID        int64                            `json:"flowId"`
@@ -76,7 +91,7 @@ func (s *Server) controllerCandidatePIDAPI(r *http.Request) (apiResponse, error)
 		return apiResponse{}, err
 	}
 	return s.storeControllerCandidate(
-		flowID, "pid", review, &candidate, nil, nil,
+		flowID, "pid", review, &candidate, nil, nil, nil,
 	)
 }
 
@@ -98,7 +113,7 @@ func (s *Server) controllerCandidateStateAPI(r *http.Request) (apiResponse, erro
 		return apiResponse{}, err
 	}
 	return s.storeControllerCandidate(
-		flowID, "state-space", review, nil, &candidate, nil,
+		flowID, "state-space", review, nil, &candidate, nil, nil,
 	)
 }
 
@@ -120,7 +135,7 @@ func (s *Server) controllerCandidateRobustAPI(r *http.Request) (apiResponse, err
 		return apiResponse{}, err
 	}
 	return s.storeControllerCandidate(
-		flowID, "robust-synthesis", review, nil, nil, &candidate,
+		flowID, "robust-synthesis", review, nil, nil, &candidate, nil,
 	)
 }
 
@@ -131,6 +146,7 @@ func (s *Server) storeControllerCandidate(
 	pid *studio.PIDDesignCandidate,
 	state *studio.StateDesignCandidate,
 	robust *studio.RobustSynthesisCandidate,
+	tuning *studio.ControllerTuningCandidate,
 ) (apiResponse, error) {
 	id, err := newControllerCandidateID()
 	if err != nil {
@@ -138,7 +154,7 @@ func (s *Server) storeControllerCandidate(
 	}
 	candidate := &pendingControllerCandidate{
 		ID: id, FlowID: flowID, Kind: kind, Review: review,
-		PID: pid, State: state, Robust: robust,
+		PID: pid, State: state, Robust: robust, Tuning: tuning,
 	}
 	if conflict := s.controllerCandidates.put(candidate); conflict != controllerCandidatePutOK {
 		return apiResponse{}, apiConflict(conflict.message())
@@ -147,6 +163,66 @@ func (s *Server) storeControllerCandidate(
 		Status: http.StatusCreated,
 		Value:  controllerCandidateRecord(candidate),
 	}, nil
+}
+
+func (s *Server) controllerCandidateStateFeedbackAPI(r *http.Request) (apiResponse, error) {
+	flowID, err := parsePathInt(r, "flowID")
+	if err != nil {
+		return apiResponse{}, err
+	}
+	var input stateFeedbackCandidateAPIRequest
+	if err := decodeAPIJSON(r, &input); err != nil {
+		return apiResponse{}, err
+	}
+	candidate, err := s.studio.DesignStateFeedback(r.Context(), flowID, input.StateFeedbackRequest)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	review, err := s.studio.ReviewStateDesignCandidate(r.Context(), candidate, input.ReviewHorizon)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	return s.storeControllerCandidate(flowID, "state-space", review, nil, &candidate, nil, nil)
+}
+
+func (s *Server) controllerCandidateEstimatorAPI(r *http.Request) (apiResponse, error) {
+	flowID, err := parsePathInt(r, "flowID")
+	if err != nil {
+		return apiResponse{}, err
+	}
+	var input estimatorCandidateAPIRequest
+	if err := decodeAPIJSON(r, &input); err != nil {
+		return apiResponse{}, err
+	}
+	candidate, err := s.studio.DesignEstimator(r.Context(), flowID, input.EstimatorDesignRequest)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	review, err := s.studio.ReviewEstimatorCandidate(r.Context(), candidate)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	return s.storeControllerCandidate(flowID, "state-estimator", review, nil, &candidate, nil, nil)
+}
+
+func (s *Server) controllerCandidateTuningAPI(r *http.Request) (apiResponse, error) {
+	flowID, err := parsePathInt(r, "flowID")
+	if err != nil {
+		return apiResponse{}, err
+	}
+	var input tuningCandidateAPIRequest
+	if err := decodeAPIJSON(r, &input); err != nil {
+		return apiResponse{}, err
+	}
+	candidate, err := s.studio.TuneController(r.Context(), flowID, input.ControllerTuningRequest)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	review, err := s.studio.ReviewTuningCandidate(r.Context(), candidate, input.ReviewHorizon)
+	if err != nil {
+		return apiResponse{}, err
+	}
+	return s.storeControllerCandidate(flowID, "tuning", review, nil, nil, nil, &candidate)
 }
 
 func (s *Server) controllerCandidateApplyAPI(r *http.Request) (apiResponse, error) {
@@ -168,6 +244,10 @@ func (s *Server) controllerCandidateApplyAPI(r *http.Request) (apiResponse, erro
 		application, err = s.studio.ApplyStateDesignCandidate(r.Context(), *candidate.State)
 	case "robust-synthesis":
 		application, err = s.studio.ApplyRobustSynthesisCandidate(r.Context(), *candidate.Robust)
+	case "tuning":
+		application, err = s.studio.ApplyTuningCandidate(r.Context(), *candidate.Tuning)
+	case "state-estimator":
+		err = errors.New("estimator candidates are diagnostic-only and cannot be applied")
 	default:
 		err = errors.New("unsupported controller candidate kind")
 	}

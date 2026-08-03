@@ -84,13 +84,13 @@ func TestRunJSONHelpIncludesEveryCommand(t *testing.T) {
 		}
 	}
 	walk(help)
-	for _, command := range []string{"processlab", "help", "serve", "project", "flow", "block", "wire", "sim", "analyze", "roles", "sweep"} {
+	for _, command := range []string{"processlab", "help", "serve", "project", "flow", "block", "wire", "sim", "analyze", "roles", "sweep", "controller"} {
 		if !seen[command] {
 			t.Errorf("JSON help cannot reach command %q", command)
 		}
 	}
-	if len(help.Commands) != 10 {
-		t.Fatalf("root commands = %d, want 10: %#v", len(help.Commands), help.Commands)
+	if len(help.Commands) != 11 {
+		t.Fatalf("root commands = %d, want 11: %#v", len(help.Commands), help.Commands)
 	}
 }
 
