@@ -25,6 +25,17 @@ go run ./cmd/processlab serve
 
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `processlab.db` and seeds the reactor example. The address serves the drawing register; open the seeded project from there.
 
+The same server exposes the client CLI. In another terminal, list projects or
+run a simulation without opening the database from the client process:
+
+```bash
+go run ./cmd/processlab project list
+go run ./cmd/processlab sim run --flow 1 --duration 10 --sample-time 0.1
+```
+
+See [`docs/cli.md`](docs/cli.md) for the stream contract, exit codes, JSON
+mode, and generated command reference.
+
 To use another address or database:
 
 ```bash
@@ -66,6 +77,10 @@ docker compose down
 `docker compose down` preserves the database volume. Run
 `docker compose down --volumes` only when you intentionally want to delete all
 containerized Process Lab data.
+
+The CLI can target the Compose server from the host with
+`processlab --server http://127.0.0.1:8080 <command>`. The CLI is a separate
+client and does not read the Compose volume.
 
 ## Projects, flowsheets, and persistence
 
@@ -468,10 +483,11 @@ connection happens to run it.
 
 ```text
 cmd/processlab/           executable and graceful HTTP shutdown
+cmd/processlab-docs/      generated CLI and block-catalog reference command
 internal/studio/          domain, SQLite repository, compiler, simulation
 internal/web/             handlers, view models, embedded templates and assets
 browser/                  Chrome tests for swap, history, and restore behaviour
-docs/                     block library and workbench interaction notes
+docs/                     capability notes and the generated CLI reference
 .ergo/plans.jsonl         dependency-ordered implementation history
 ```
 
@@ -484,6 +500,11 @@ go test -race ./...
 go build ./cmd/processlab
 npm install && npm run test:browser
 ```
+
+The Go tests also execute the CLI documentation examples and check the
+generated section of [`docs/cli.md`](docs/cli.md) against the current command
+help and block catalog. Run the browser suite after the Go suite; it needs
+Google Chrome and a running Docker-free local server fixture.
 
 The Go suite covers everything the server decides. The browser suite covers
 what only a browser can show: that switching sheets pushes the canonical URL
