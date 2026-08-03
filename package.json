@@ -1,0 +1,10 @@
+{
+  "name": "process-lab-browser-tests",
+  "private": true,
+  "scripts": {
+    "test:browser": "node --test browser/*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.1"
+  }
+}

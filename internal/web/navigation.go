@@ -185,7 +185,7 @@ func (s *Server) renderWorkspace(
 ) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.templates.ExecuteTemplate(
-		w, "workbench", s.newWorkbenchView(workspace, selected, message),
+		w, "workbench-fragment", s.newWorkbenchView(workspace, selected, message),
 	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}

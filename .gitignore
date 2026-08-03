@@ -5,3 +5,4 @@
 .ergo/lock
 .DS_Store
 .superpowers/
+/node_modules/

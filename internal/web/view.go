@@ -117,6 +117,13 @@ type workbenchView struct {
 	SimulationMinDuration float64
 	SimulationMinSample   float64
 	BoundedEdit           bool
+
+	// Title names the flowsheet the page is showing. A tab swap pushes a new
+	// URL, so the title has to move with it or every history entry reads the
+	// same and the change is announced to nobody. The workbench fragment
+	// carries it as a root-level <title>, which htmx lifts out of a partial
+	// and applies to the document.
+	Title string
 }
 
 // flowTabView is one sheet in the tab strip, in the project's `position`
@@ -284,11 +291,29 @@ type analysisMarkerView struct {
 	Kind  string
 }
 
+// workbenchTitle names the sheet before the project so a browser tab, a
+// history entry, and a bookmark stay distinguishable when the label is
+// truncated to its first few characters.
+func workbenchTitle(workspace studio.Workspace) string {
+	flow := strings.TrimSpace(workspace.Snapshot.Flow.Name)
+	project := strings.TrimSpace(workspace.Project.Name)
+	switch {
+	case flow == "" && project == "":
+		return "Process Lab"
+	case flow == "":
+		return project + " · Process Lab"
+	case project == "":
+		return flow + " · Process Lab"
+	}
+	return flow + " · " + project + " · Process Lab"
+}
+
 func newWorkbenchView(workspace studio.Workspace, selectedID int64, errorMessage string) workbenchView {
 	snapshot := workspace.Snapshot
 	view := workbenchView{
 		Workspace:             workspace,
 		Snapshot:              snapshot,
+		Title:                 workbenchTitle(workspace),
 		Error:                 errorMessage,
 		Updated:               relativeTime(snapshot.Flow.UpdatedAt),
 		BlockCount:            len(snapshot.Blocks),

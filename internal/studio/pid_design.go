@@ -508,14 +508,6 @@ func pidCandidateChanges(
 func (s *Studio) ApplyPIDDesignCandidate(
 	ctx context.Context,
 	candidate PIDDesignCandidate,
-) (Snapshot, error) {
-	result, err := s.ApplyPIDDesignCandidateWithUndo(ctx, candidate)
-	return result.Snapshot, err
-}
-
-func (s *Studio) ApplyPIDDesignCandidateWithUndo(
-	ctx context.Context,
-	candidate PIDDesignCandidate,
 ) (ControllerCandidateApplication, error) {
 	if candidate.ControllerBlockID <= 0 || candidate.edit == nil {
 		return ControllerCandidateApplication{}, invalid(

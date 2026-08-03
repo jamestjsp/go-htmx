@@ -139,10 +139,11 @@ func TestPIDDesignAppliesAtomicallyAndRejectsStaleCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied, err := service.ApplyPIDDesignCandidate(ctx, candidate)
+	application, err := service.ApplyPIDDesignCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied := application.Snapshot
 	parameters := findBlock(t, applied.Blocks, controllerID).Parameters
 	if parameters.Proportional != candidate.Gains.Proportional ||
 		parameters.Integral != candidate.Gains.Integral ||
@@ -241,10 +242,11 @@ func TestPID2NamedRolesPreserveFeedbackSignAndReferenceEquivalence(t *testing.T)
 	if candidate.Gains.SetpointWeight != b || candidate.Gains.DerivativeWeight != c {
 		t.Fatalf("PID2 weights = %#v", candidate.Gains)
 	}
-	applied, err := service.ApplyPIDDesignCandidate(ctx, candidate)
+	application, err := service.ApplyPIDDesignCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied := application.Snapshot
 	parameters := findBlock(t, applied.Blocks, controllerID).Parameters
 	if parameters.SetpointWeight != b || parameters.DerivativeWeight != c {
 		t.Fatalf("applied PID2 weights = %#v", parameters)
@@ -325,12 +327,13 @@ func TestPIDDesignGatesIntegratorDelayUnstableAndDiscretePlants(t *testing.T) {
 				t.Fatalf("discrete PID Dt = %g, want 0.1", candidate.Gains.SampleTime)
 			}
 			if test.discrete {
-				applied, err := service.ApplyPIDDesignCandidate(
+				application, err := service.ApplyPIDDesignCandidate(
 					context.Background(), candidate,
 				)
 				if err != nil {
 					t.Fatal(err)
 				}
+				applied := application.Snapshot
 				controller := findBlock(t, applied.Blocks, candidate.ControllerBlockID)
 				if normalizedModelDomain(controller.Parameters) != modelDomainDiscrete ||
 					controller.Parameters.SampleTime != 0.1 {

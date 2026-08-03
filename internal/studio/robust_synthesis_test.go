@@ -118,7 +118,7 @@ func TestRobustSynthesisReviewApplyAndUndo(t *testing.T) {
 		!review.ApplyAvailable || review.Robustness.Candidate == nil {
 		t.Fatalf("robust review = %#v", review)
 	}
-	applied, err := service.ApplyRobustSynthesisCandidateWithUndo(ctx, candidate)
+	applied, err := service.ApplyRobustSynthesisCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}

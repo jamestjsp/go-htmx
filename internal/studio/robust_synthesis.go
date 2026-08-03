@@ -483,14 +483,6 @@ func (s *Studio) ReviewRobustSynthesisCandidate(
 func (s *Studio) ApplyRobustSynthesisCandidate(
 	ctx context.Context,
 	candidate RobustSynthesisCandidate,
-) (Snapshot, error) {
-	result, err := s.ApplyRobustSynthesisCandidateWithUndo(ctx, candidate)
-	return result.Snapshot, err
-}
-
-func (s *Studio) ApplyRobustSynthesisCandidateWithUndo(
-	ctx context.Context,
-	candidate RobustSynthesisCandidate,
 ) (ControllerCandidateApplication, error) {
 	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
 		candidate.edit == nil {

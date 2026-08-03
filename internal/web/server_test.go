@@ -316,7 +316,7 @@ func TestWorkbenchPageRendersTheShell(t *testing.T) {
 	}
 	body := response.Body.String()
 	for _, expected := range []string{
-		"<title>Process Lab · Simulation, design &amp; analysis</title>",
+		"<title>Reactor temperature loop · Process Lab project · Process Lab</title>",
 		"Simulation, design &amp; analysis",
 		"Process Lab project",
 		"Reactor temperature loop",

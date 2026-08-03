@@ -670,14 +670,6 @@ func controlsysTuningGoalType(kind TuningGoalKind) (controlsys.TuningGoalType, e
 func (s *Studio) ApplyTuningCandidate(
 	ctx context.Context,
 	candidate ControllerTuningCandidate,
-) (Snapshot, error) {
-	result, err := s.ApplyTuningCandidateWithUndo(ctx, candidate)
-	return result.Snapshot, err
-}
-
-func (s *Studio) ApplyTuningCandidateWithUndo(
-	ctx context.Context,
-	candidate ControllerTuningCandidate,
 ) (ControllerCandidateApplication, error) {
 	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
 		candidate.edit == nil {

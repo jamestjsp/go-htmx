@@ -447,15 +447,15 @@ func (s *Server) applyControllerCandidate(w http.ResponseWriter, r *http.Request
 	)
 	switch candidate.Kind {
 	case "pid":
-		result, err = s.studio.ApplyPIDDesignCandidateWithUndo(
+		result, err = s.studio.ApplyPIDDesignCandidate(
 			r.Context(), *candidate.PID,
 		)
 	case "state-space":
-		result, err = s.studio.ApplyStateDesignCandidateWithUndo(
+		result, err = s.studio.ApplyStateDesignCandidate(
 			r.Context(), *candidate.State,
 		)
 	case "robust-synthesis":
-		result, err = s.studio.ApplyRobustSynthesisCandidateWithUndo(
+		result, err = s.studio.ApplyRobustSynthesisCandidate(
 			r.Context(), *candidate.Robust,
 		)
 	default:

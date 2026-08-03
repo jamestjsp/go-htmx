@@ -223,7 +223,7 @@ func (s *Server) renameFlow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.templates.ExecuteTemplate(w, "workbench", s.newWorkbenchView(
+	if err := s.templates.ExecuteTemplate(w, "workbench-fragment", s.newWorkbenchView(
 		workspace, selectedID(r), "",
 	)); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
@@ -657,7 +657,7 @@ func (s *Server) renderWorkbenchResponse(
 		w.Header().Set("X-Process-Lab-Block-Update", strconv.FormatInt(selected, 10))
 	}
 	if err := s.templates.ExecuteTemplate(
-		w, "workbench", view,
+		w, "workbench-fragment", view,
 	); err != nil {
 		http.Error(w, "Process Lab could not render the workbench.", http.StatusInternalServerError)
 	}

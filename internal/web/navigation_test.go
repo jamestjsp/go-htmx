@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -458,4 +459,71 @@ func openFlowID(t *testing.T, body string) int64 {
 		t.Fatalf("data-flow-id = %q: %v", rest[:end], err)
 	}
 	return flowID
+}
+
+// A history restore request carries HX-Request alongside
+// HX-History-Restore-Request. Branching on HX-Request alone would answer the
+// back button with a fragment, which htmx swaps into the history element,
+// removing the shell and the #workbench target every later swap needs. The
+// document routes here never branch on HX-Request, and this pins that.
+func TestHistoryRestoreRequestReceivesCompleteDocument(t *testing.T) {
+	server, service := openTestServer(t)
+	workspace, err := service.CurrentWorkspace(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/projects" +
+		"/" + strconv.FormatInt(workspace.Project.ID, 10) +
+		"/flows/" + strconv.FormatInt(workspace.Snapshot.Flow.ID, 10)
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-History-Restore-Request", "true")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("restore status = %d", response.Code)
+	}
+	body := response.Body.String()
+	if !strings.Contains(body, "<!doctype html>") {
+		t.Fatal("history restore did not receive a complete document")
+	}
+	for _, expected := range []string{`id="workbench"`, "<title>", `src="/assets/htmx-2.0.10.min.js"`} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("restored document does not contain %q", expected)
+		}
+	}
+}
+
+// The tab strip pushes the canonical document URL while swapping the fragment,
+// so the title has to travel with the fragment or every history entry reads
+// the same. htmx lifts a root-level <title> out of a partial.
+func TestWorkbenchFragmentCarriesTheSheetTitle(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	workspace, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateFlow(ctx, workspace.Project.ID, "Column overhead")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fragment := requestHX(t, server, http.MethodGet,
+		"/flows/"+strconv.FormatInt(created.Snapshot.Flow.ID, 10)+"/workbench", nil)
+	if fragment.Code != http.StatusOK {
+		t.Fatalf("fragment status = %d", fragment.Code)
+	}
+	body := fragment.Body.String()
+	if strings.Contains(body, "<!doctype html>") {
+		t.Fatal("workbench fragment returned a full document")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(body), "<title>Column overhead · ") {
+		t.Fatalf("fragment does not open with the sheet title: %.120s", body)
+	}
+	if !strings.Contains(body, `id="workbench"`) {
+		t.Fatal("fragment does not carry the workbench")
+	}
 }

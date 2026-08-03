@@ -8,3 +8,7 @@ docs
 *.db-wal
 processlab
 .DS_Store
+node_modules
+browser
+package.json
+package-lock.json

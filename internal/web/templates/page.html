@@ -6,7 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="htmx-config" content='{"defaultSettleDelay":0}'>
-  <title>Process Lab · Simulation, design &amp; analysis</title>
+  <title>{{.Workbench.Title}}</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/tokens.css">
   <link rel="stylesheet" href="/assets/app.css">
   <script src="/assets/htmx-2.0.10.min.js"></script>
@@ -24,6 +25,19 @@
   <script src="/assets/tabs.js" defer></script>
 </head>
 <body>
+  <!-- The register at / is a working page without JavaScript: its links are
+       real links and its new-project form is a real POST. The workbench is
+       not, and cannot honestly be made so — placing and wiring blocks on a
+       canvas has no HTML equivalent, and the property form is a PUT, which a
+       form element cannot express. Every mutation route here is a fragment
+       endpoint by design. Say that plainly instead of shipping forms that
+       silently do nothing. -->
+  <noscript>
+    <p class="noscript-notice">
+      The workbench needs JavaScript to place, wire, and edit blocks.
+      <a href="/">The project register</a> works without it.
+    </p>
+  </noscript>
   {{template "workbench" .Workbench}}
 </body>
 </html>

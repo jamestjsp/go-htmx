@@ -752,14 +752,6 @@ func (design stateDesignPlant) stateSpaceControllerEdit(
 func (s *Studio) ApplyStateDesignCandidate(
 	ctx context.Context,
 	candidate StateDesignCandidate,
-) (Snapshot, error) {
-	result, err := s.ApplyStateDesignCandidateWithUndo(ctx, candidate)
-	return result.Snapshot, err
-}
-
-func (s *Studio) ApplyStateDesignCandidateWithUndo(
-	ctx context.Context,
-	candidate StateDesignCandidate,
 ) (ControllerCandidateApplication, error) {
 	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
 		candidate.edit == nil {

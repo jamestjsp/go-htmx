@@ -103,6 +103,27 @@ func Open(ctx context.Context, path string) (*Studio, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// One connection, deliberately.
+	//
+	// Process Lab is a single-operator workbench on a local disk, and one
+	// connection buys two things worth more here than read concurrency:
+	// SQLITE_BUSY cannot arise between this process's own statements, and the
+	// PRAGMA state a table rebuild toggles (foreign_keys, below) cannot leak
+	// across connections mid-operation.
+	//
+	// The cost is that reads serialize. That is affordable only because the
+	// expensive work is never held here: simulation, analysis, and controller
+	// synthesis all run against a snapshot outside any transaction, so this
+	// connection is held for short statements. Keep it that way. Note the
+	// sharp edge — a transaction body that reaches for a second connection
+	// deadlocks against this limit instead of blocking, so pass tx down and
+	// never s.db.
+	//
+	// Raise the limit and enable WAL when any of these becomes true: requests
+	// are measured queueing on database access rather than on computation, or
+	// a long read needs to overlap a write. A second process or host opening
+	// this file is not a tuning question — that is the point at which a file
+	// on local disk stops being the right store at all.
 	db.SetMaxOpenConns(1)
 	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
 		db.Close()

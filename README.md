@@ -470,6 +470,7 @@ connection happens to run it.
 cmd/processlab/           executable and graceful HTTP shutdown
 internal/studio/          domain, SQLite repository, compiler, simulation
 internal/web/             handlers, view models, embedded templates and assets
+browser/                  Chrome tests for swap, history, and restore behaviour
 docs/                     block library and workbench interaction notes
 .ergo/plans.jsonl         dependency-ordered implementation history
 ```
@@ -481,7 +482,18 @@ gofmt -w cmd internal
 go vet ./...
 go test -race ./...
 go build ./cmd/processlab
+npm install && npm run test:browser
 ```
+
+The Go suite covers everything the server decides. The browser suite covers
+what only a browser can show: that switching sheets pushes the canonical URL
+and moves the document title with it, that going back restores a page whose
+`#workbench` swap target still works, and that a history restore which misses
+htmx's snapshot cache is answered by the server with a complete document
+rather than a fragment. It builds and drives the real binary against a
+throwaway database, and fails the run on any console error, failed request, or
+4xx. It needs Google Chrome; set `CHROME_PATH` if it is not at the default
+macOS location.
 
 The persistent tests cover project and flowsheet lifecycle operations —
 including the refusal to delete the last project or the last flowsheet,

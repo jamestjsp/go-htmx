@@ -64,10 +64,11 @@ func TestDesignContinuousLQRHasSmallIndependentRiccatiResidualAndAtomicApply(t *
 	if unmodified.Flow.ModelUpdatedAt != before.Flow.ModelUpdatedAt {
 		t.Fatal("state candidate generation mutated the model")
 	}
-	applied, err := service.ApplyStateDesignCandidate(ctx, candidate)
+	application, err := service.ApplyStateDesignCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied := application.Snapshot
 	controller := findBlock(t, applied.Blocks, controllerID)
 	for column := range 2 {
 		if math.Abs(controller.Parameters.D.At(0, column)+k.At(0, column)) > 1e-12 {
@@ -302,12 +303,13 @@ func TestLQEKalmdAndLQGProduceNamedEstimatorAndRegulatorCandidates(t *testing.T)
 	if !mat.EqualApprox(regulator.Controller.A, lqg.Controller.A, 1e-11) {
 		t.Fatal("explicit Reg candidate differs from LQG regulator")
 	}
-	applied, err := service.ApplyStateDesignCandidate(
+	application, err := service.ApplyStateDesignCandidate(
 		context.Background(), lqg,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied := application.Snapshot
 	authored := findBlock(t, applied.Blocks, controllerID)
 	if !mat.EqualApprox(
 		denseMatrix(authored.Parameters.A), lqg.Controller.A, 1e-11,

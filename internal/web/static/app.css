@@ -3565,3 +3565,14 @@ body.is-resizing-dock .studio-grid {
     animation: none;
   }
 }
+
+/* Shown only when scripting is off, so it must carry its own presentation:
+   the workbench chrome below it will never be laid out. */
+.noscript-notice {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  background: var(--surface-warning, #fff4d6);
+  border-bottom: 1px solid var(--line, #d9d4c8);
+  color: var(--ink, #1c1a17);
+  font: inherit;
+}

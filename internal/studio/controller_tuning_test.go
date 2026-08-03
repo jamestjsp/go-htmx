@@ -57,10 +57,11 @@ func TestTuneControllerFindsBoundaryCandidateWithoutMutatingThenAppliesAtomicall
 		t.Fatal("candidate generation changed model revision")
 	}
 
-	applied, err := service.ApplyTuningCandidate(ctx, candidate)
+	application, err := service.ApplyTuningCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
+	applied := application.Snapshot
 	if gain := findBlock(t, applied.Blocks, controllerID).Parameters.Gain; gain != 2 {
 		t.Fatalf("applied gain = %g, want 2", gain)
 	}

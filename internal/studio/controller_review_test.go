@@ -168,7 +168,7 @@ func TestControllerCandidateApplyReturnsRevisionCheckedUndo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	applied, err := service.ApplyPIDDesignCandidateWithUndo(ctx, candidate)
+	applied, err := service.ApplyPIDDesignCandidate(ctx, candidate)
 	if err != nil {
 		t.Fatal(err)
 	}
