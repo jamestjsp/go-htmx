@@ -1005,19 +1005,23 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 			Kind: BlockSum, Label: "Sum", Category: "Math",
 			Description: "Signed signal sum", Glyph: "Σ", Tag: "MATH",
 		},
-		Defaults: Parameters{Signs: "+"},
-		Parameters: []parameterDefinition{{
-			Name: "signs", Label: "Input signs", Type: "text",
-			// The hint states the port rule because the field is now the port
-			// list: a wire can only land on a sign, so the old "one sign
-			// broadcasts" shorthand would promise inputs Connect refuses.
-			Placeholder: "+-", Help: "One sign per input port, in order",
-			set: func(parameters *Parameters, raw string) error {
-				parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
-				return nil
+		Defaults: Parameters{Signs: "+", SignalWidth: 1},
+		Parameters: []parameterDefinition{
+			{
+				Name: "signs", Label: "Input signs", Type: "text",
+				Placeholder: "+-", Help: "One sign per input port, in order; a positive integer creates that many + ports",
+				set: func(parameters *Parameters, raw string) error {
+					signs, err := parseSumSigns(raw)
+					if err != nil {
+						return err
+					}
+					parameters.Signs = signs
+					return nil
+				},
+				text: func(parameters Parameters) string { return parameters.Signs },
 			},
-			text: func(parameters Parameters) string { return parameters.Signs },
-		}},
+			signalWidthField(),
+		},
 		variadic: true,
 		// Sum's input ports are its signs: one terminal per sign character,
 		// so the sign an input carries is the port it lands on and editing
@@ -1045,18 +1049,12 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		// change what it computes, and where a lone sign covers every port.
 		// Matching the sign count against the actual connected input count is
 		// checkInputs's job, not this hook's.
-		realize: func(block Block, ports []int) (*controlsys.System, error) {
-			gains := make([]float64, len(ports))
-			for i, port := range ports {
-				signIndex := min(port, len(block.Parameters.Signs)-1)
-				gains[i] = 1
-				if block.Parameters.Signs[signIndex] == '-' {
-					gains[i] = -1
-				}
-			}
-			return controlsys.NewGain(mat.NewDense(1, len(gains), gains), 0)
-		},
+		portSchema: directSumPortSchema,
+		realize:    realizeDirectSum,
 		validate: func(parameters Parameters) error {
+			if err := validateDirectSignalWidth(parameters); err != nil {
+				return err
+			}
 			if len(parameters.Signs) == 0 || len(parameters.Signs) > maxInputSigns {
 				return invalid("input signs must contain 1 to %d plus or minus signs", maxInputSigns)
 			}
@@ -1094,7 +1092,11 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				Name: "signs", Label: "Input signs", Type: "text",
 				Placeholder: "+-", Help: "One sign per vector input port, in order",
 				set: func(parameters *Parameters, raw string) error {
-					parameters.Signs = strings.ReplaceAll(strings.TrimSpace(raw), " ", "")
+					signs, err := parseSumSigns(raw)
+					if err != nil {
+						return err
+					}
+					parameters.Signs = signs
 					return nil
 				},
 				text: func(parameters Parameters) string { return parameters.Signs },
@@ -1749,35 +1751,38 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 		},
 		Defaults: Parameters{
 			InitialCondition: 0,
+			SignalWidth:      1,
 			SampleTime:       0.1, SampleTimeMode: string(sampleTimeExplicit),
 		},
 		Parameters: append([]parameterDefinition{
-			finiteNumberField(
-				"initial_condition", "Initial condition", "initial condition", "scalar",
-				func(parameters *Parameters) *float64 { return &parameters.InitialCondition },
-			),
+			unitDelayInitialConditionField(),
+			signalWidthField(),
 		}, sampleTimeFields()...),
+		portSchema: func(parameters Parameters) blockPortSchema {
+			width := normalizedDirectSignalWidth(parameters)
+			return directSignalPortSchema(1, width, width)
+		},
 		realize: func(block Block, _ []int) (*controlsys.System, error) {
-			return controlsys.New(
-				mat.NewDense(1, 1, []float64{0}),
-				mat.NewDense(1, 1, []float64{1}),
-				mat.NewDense(1, 1, []float64{1}),
-				mat.NewDense(1, 1, []float64{0}),
-				block.Parameters.SampleTime,
-			)
+			return realizeVectorUnitDelay(block.Parameters)
 		},
 		initialState: func(parameters Parameters) []float64 {
-			return []float64{parameters.InitialCondition}
+			return unitDelayInitialState(parameters)
 		},
 		timeDomain: func(parameters Parameters) blockTimeDomain {
 			return discreteTimeDomain(parameters)
 		},
-		validate: validateDiscreteSampleTime,
-		summary: func(parameters Parameters) string {
-			if normalizedSampleTimeMode(parameters) == sampleTimeInherited {
-				return "z⁻¹ @ run step"
+		validate: func(parameters Parameters) error {
+			if err := validateDiscreteSampleTime(parameters); err != nil {
+				return err
 			}
-			return fmt.Sprintf("z⁻¹ @ %.3g s", parameters.SampleTime)
+			return validateUnitDelayInitialState(parameters)
+		},
+		summary: func(parameters Parameters) string {
+			width := normalizedDirectSignalWidth(parameters)
+			if normalizedSampleTimeMode(parameters) == sampleTimeInherited {
+				return fmt.Sprintf("%d-channel z⁻¹ @ run step", width)
+			}
+			return fmt.Sprintf("%d-channel z⁻¹ @ %.3g s", width, parameters.SampleTime)
 		},
 	},
 	BlockDiscreteTransfer: {
