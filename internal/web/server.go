@@ -46,6 +46,8 @@ func New(studioService *studio.Studio) (*Server, error) {
 	server.apiMux.Handle("/", server.api(func(*http.Request) (apiResponse, error) {
 		return apiResponse{}, studio.ErrNotFound
 	}))
+	server.apiMux.Handle("GET /blocks", server.api(server.blockLibraryAPI))
+	server.apiMux.Handle("GET /blocks/{kind}", server.api(server.blockSchemaAPI))
 	apiHandler := http.StripPrefix("/api/v1", server.apiMux)
 	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
 		mux.Handle(method+" /api/v1/", apiHandler)
