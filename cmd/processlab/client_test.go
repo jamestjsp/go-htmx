@@ -215,6 +215,86 @@ func TestCLIHarnessRunsAnalysisCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsExportAndActivityCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	response, err := http.Get(harness.URL() + "/flows/1/results.json")
+	if err != nil {
+		t.Fatalf("get browser export: %v", err)
+	}
+	browserDocument, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatalf("read browser export: %v", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("browser export status = %d: %s", response.StatusCode, browserDocument)
+	}
+
+	exported := harness.Run("--server", harness.URL(), "export", "--flow", "1")
+	if exported.code != 0 || exported.stderr != "" {
+		t.Fatalf("export result = %s", exported)
+	}
+	if exported.stdout != string(browserDocument) {
+		t.Fatalf("CLI export differs from browser export:\nCLI:    %q\nBrowser: %q", exported.stdout, browserDocument)
+	}
+	var document struct {
+		SchemaVersion int             `json:"schemaVersion"`
+		Simulation    json.RawMessage `json:"simulation"`
+		Analysis      json.RawMessage `json:"analysis"`
+	}
+	if err := json.Unmarshal([]byte(exported.stdout), &document); err != nil {
+		t.Fatalf("decode export: %v", err)
+	}
+	if document.SchemaVersion != 1 || document.Simulation != nil || len(document.Analysis) == 0 {
+		t.Fatalf("export document = %#v", document)
+	}
+
+	for index := 0; index < 5; index++ {
+		added := harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", "1")
+		if added.code != 0 || added.stderr != "" {
+			t.Fatalf("activity edit %d = %s", index, added)
+		}
+	}
+	listed := harness.Run("--server", harness.URL(), "log", "--flow", "1", "--limit", "5", "--json")
+	if listed.code != 0 || listed.stderr != "" {
+		t.Fatalf("activity JSON result = %s", listed)
+	}
+	var events []eventClient
+	if err := json.Unmarshal([]byte(listed.stdout), &events); err != nil {
+		t.Fatalf("decode activity JSON: %v\n%s", err, listed.stdout)
+	}
+	if len(events) != 5 || !strings.Contains(events[0].Message, "Updated Constant") {
+		t.Fatalf("activity events = %#v", events)
+	}
+	for index := 1; index < len(events); index++ {
+		if events[index-1].ID <= events[index].ID {
+			t.Fatalf("activity is not newest first: %#v", events)
+		}
+	}
+
+	blocksResult := harness.Run("--server", harness.URL(), "block", "list", "--flow", "1", "--json")
+	if blocksResult.code != 0 || blocksResult.stderr != "" {
+		t.Fatalf("block list for layout edit = %s", blocksResult)
+	}
+	var blocks []blockRecordClient
+	if err := json.Unmarshal([]byte(blocksResult.stdout), &blocks); err != nil || len(blocks) == 0 {
+		t.Fatalf("decode blocks for layout edit: %v\n%s", err, blocksResult.stdout)
+	}
+	moved := harness.Run(
+		"--server", harness.URL(), "block", "mv", "--flow", "1",
+		fmt.Sprintf("%d:500,500", blocks[0].ID),
+	)
+	if moved.code != 0 || moved.stderr != "" {
+		t.Fatalf("layout edit = %s", moved)
+	}
+	afterMove := harness.Run("--server", harness.URL(), "log", "--flow", "1", "--limit", "5", "--json")
+	if afterMove.code != 0 || afterMove.stderr != "" || afterMove.stdout != listed.stdout {
+		t.Fatalf("layout edit changed activity: before=%s after=%s", listed, afterMove)
+	}
+}
+
 func TestCLIHarnessRunsControlRoleCommands(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()
