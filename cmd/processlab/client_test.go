@@ -271,6 +271,66 @@ func TestCLIHarnessRunsControlRoleCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsParameterSweepCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	listed := harness.Run("--server", harness.URL(), "block", "list", "--flow", "1", "--json")
+	if listed.code != 0 || listed.stderr != "" {
+		t.Fatalf("list sweep blocks result = %s", listed)
+	}
+	var blocks []blockRecordClient
+	if err := json.Unmarshal([]byte(listed.stdout), &blocks); err != nil {
+		t.Fatalf("decode sweep blocks: %v", err)
+	}
+	var lag int64
+	for _, block := range blocks {
+		if block.Kind == "lag" {
+			lag = block.ID
+			break
+		}
+	}
+	if lag == 0 {
+		t.Fatal("seeded flow has no lag block")
+	}
+	result := harness.Run(
+		"--server", harness.URL(), "sweep", "run", "--flow", "1", "--block", secondString(lag),
+		"--axis", "time_constant=0.5:2:4",
+	)
+	if result.code != 0 || result.stderr != "" {
+		t.Fatalf("sweep run result = %s", result)
+	}
+	lines := strings.Split(strings.TrimSpace(result.stdout), "\n")
+	if len(lines) != 5 || !strings.Contains(result.stdout, "coordinates") || !strings.Contains(result.stdout, "*") {
+		t.Fatalf("sweep table = %s", result)
+	}
+
+	jsonResult := harness.Run(
+		"--server", harness.URL(), "sweep", "run", "--flow", "1", "--block", secondString(lag),
+		"--axis", "time_constant=0.5,1", "--json",
+	)
+	if jsonResult.code != 0 || jsonResult.stderr != "" || !strings.Contains(jsonResult.stdout, `"frequency"`) || !strings.Contains(jsonResult.stdout, `"time"`) {
+		t.Fatalf("sweep JSON result = %s", jsonResult)
+	}
+
+	unknown := harness.Run(
+		"--server", harness.URL(), "sweep", "run", "--flow", "1", "--block", secondString(lag),
+		"--axis", "missing=1,2",
+	)
+	if unknown.code != 1 || !strings.Contains(unknown.stderr, "available parameters: time_constant") {
+		t.Fatalf("unknown sweep parameter = %s", unknown)
+	}
+
+	tooMany := harness.Run(
+		"--server", harness.URL(), "sweep", "run", "--flow", "1", "--block", secondString(lag),
+		"--axis", "time_constant=1,2", "--axis", "time_constant=3,4",
+		"--axis", "time_constant=5,6", "--axis", "time_constant=7,8", "--axis", "time_constant=9,10",
+	)
+	if tooMany.code != 1 || !strings.Contains(tooMany.stderr, "between 1 and 4 axes") {
+		t.Fatalf("too many sweep axes = %s", tooMany)
+	}
+}
+
 func TestCLIHarnessRunsWorkspaceCommands(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()

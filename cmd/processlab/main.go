@@ -189,6 +189,7 @@ func commandTree() *command {
 		newSimulationCommand(),
 		newAnalysisCommand(),
 		newRolesCommand(),
+		newSweepCommand(),
 	}
 	return root
 }
