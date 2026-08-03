@@ -182,6 +182,8 @@ func commandTree() *command {
 			},
 		},
 		newServeCommand(),
+		newProjectCommand(),
+		newFlowCommand(),
 		newBlockCommand(),
 	}
 	return root
