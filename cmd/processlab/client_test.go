@@ -362,6 +362,59 @@ func TestCLIHarnessRunsBlockAuthoringCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsWireCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	source := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", "1"))
+	target := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "gain", "--flow", "1"))
+	connection := harness.Run("--server", harness.URL(), "wire", "connect", "--flow", "1", secondString(source)+":0", secondString(target)+":0")
+	connectionID := requireCLIID(t, connection)
+
+	listed := harness.Run("--server", harness.URL(), "wire", "list", "--flow", "1", "--json")
+	if listed.code != 0 || listed.stderr != "" {
+		t.Fatalf("wire list result = %s", listed)
+	}
+	var wires []wireRecordClient
+	if err := json.Unmarshal([]byte(listed.stdout), &wires); err != nil {
+		t.Fatalf("decode wire list: %v\n%s", err, listed.stdout)
+	}
+	var found wireRecordClient
+	for _, wire := range wires {
+		if wire.ID == connectionID {
+			found = wire
+		}
+	}
+	if found.SourceWidth != 1 || found.TargetWidth != 1 || found.SourcePort != 0 || found.TargetPort != 0 {
+		t.Fatalf("wire record = %#v", found)
+	}
+
+	secondSource := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", "1"))
+	occupied := harness.Run("--server", harness.URL(), "wire", "connect", "--flow", "1", secondString(secondSource), secondString(target))
+	if occupied.code != 1 || !strings.Contains(occupied.stderr, "already has an input") {
+		t.Fatalf("occupied wire result = %s", occupied)
+	}
+	vector := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "vector_constant", "--flow", "1"))
+	mismatch := harness.Run("--server", harness.URL(), "wire", "connect", "--flow", "1", secondString(vector), secondString(target))
+	if mismatch.code != 1 || !strings.Contains(mismatch.stderr, "cannot connect") {
+		t.Fatalf("width mismatch result = %s", mismatch)
+	}
+
+	removed := harness.Run("--server", harness.URL(), "wire", "rm", "--block", secondString(source), "--json")
+	if removed.code != 0 || removed.stderr != "" {
+		t.Fatalf("block wire removal result = %s", removed)
+	}
+	var mutation wireMutationClient
+	if err := json.Unmarshal([]byte(removed.stdout), &mutation); err != nil || mutation.Removed != 1 {
+		t.Fatalf("removed wire response = %v: %s", err, removed.stdout)
+	}
+
+	reconnected := requireCLIID(t, harness.Run("--server", harness.URL(), "wire", "connect", "--flow", "1", secondString(source), secondString(target)))
+	if result := harness.Run("--server", harness.URL(), "wire", "rm", secondString(reconnected)); result.code != 0 || !strings.Contains(result.stdout, "removed 1 connections") || result.stderr != "" {
+		t.Fatalf("connection wire removal result = %s", result)
+	}
+}
+
 func containsClientBlock(blocks []blockRecordClient, id int64) bool {
 	for _, block := range blocks {
 		if block.ID == id {

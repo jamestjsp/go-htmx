@@ -21,6 +21,11 @@ type apiPoint struct {
 	Y int `json:"y"`
 }
 
+type apiPortRecord struct {
+	Width    int      `json:"width"`
+	Channels []string `json:"channels"`
+}
+
 type apiBlockRecord struct {
 	ID              int64             `json:"id"`
 	FlowID          int64             `json:"flowId"`
@@ -29,6 +34,8 @@ type apiBlockRecord struct {
 	Position        apiPoint          `json:"position"`
 	Parameters      studio.Parameters `json:"parameters"`
 	ParameterValues map[string]string `json:"parameterValues"`
+	Inputs          []apiPortRecord   `json:"inputs"`
+	Outputs         []apiPortRecord   `json:"outputs"`
 	Summary         string            `json:"summary"`
 }
 
@@ -326,9 +333,30 @@ func newAPIBlockRecord(block studio.Block) apiBlockRecord {
 	for _, field := range block.EditorFields() {
 		values[field.Name] = field.Value
 	}
+	inputs := make([]apiPortRecord, 0)
+	for index := 0; ; index++ {
+		port, ok := block.InputPort(index)
+		if !ok {
+			break
+		}
+		inputs = append(inputs, apiPortRecord{
+			Width: port.Width, Channels: append([]string(nil), port.Channels...),
+		})
+	}
+	outputs := make([]apiPortRecord, 0)
+	for index := 0; ; index++ {
+		port, ok := block.OutputPort(index)
+		if !ok {
+			break
+		}
+		outputs = append(outputs, apiPortRecord{
+			Width: port.Width, Channels: append([]string(nil), port.Channels...),
+		})
+	}
 	return apiBlockRecord{
 		ID: block.ID, FlowID: block.FlowID, Kind: block.Kind, Name: block.Name,
 		Position:   apiPoint{X: block.Position.X, Y: block.Position.Y},
-		Parameters: block.Parameters, ParameterValues: values, Summary: block.Summary(),
+		Parameters: block.Parameters, ParameterValues: values,
+		Inputs: inputs, Outputs: outputs, Summary: block.Summary(),
 	}
 }
