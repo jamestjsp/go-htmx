@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,26 +24,9 @@ type flowApplyResponseClient struct {
 	Result flowApplyResultClient `json:"result"`
 }
 
-func runFlowDump(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow dump", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab flow dump --flow <id> [--json]")
-			return nil
-		}
-		return usagef("processlab flow dump: %v", err)
-	}
+func runFlowDump(ctx context.Context, client *apiClient, options globalOptions, flowID int64, jsonOutput bool, stdout io.Writer) error {
 	if flowID <= 0 {
 		return usagef("processlab flow dump: --flow is required")
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab flow dump: unexpected argument %q", set.Arg(0))
 	}
 	var raw json.RawMessage
 	if err := client.request(ctx, http.MethodGet, "/flows/"+strconv.FormatInt(flowID, 10)+"/document", nil, &raw); err != nil {
@@ -54,28 +35,9 @@ func runFlowDump(ctx context.Context, client *apiClient, args []string, options 
 	return writeRawJSON(stdout, raw)
 }
 
-func runFlowApply(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json", "--dry-run", "-dry-run"})
-	set := flag.NewFlagSet("flow apply", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	dryRun := false
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.BoolVar(&dryRun, "dry-run", false, "show reconciliation without changing the flowsheet")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab flow apply --flow <id> [--dry-run] [--json] < document.json")
-			return nil
-		}
-		return usagef("processlab flow apply: %v", err)
-	}
+func runFlowApply(ctx context.Context, client *apiClient, options globalOptions, flowID int64, jsonOutput, dryRun bool, stdout io.Writer) error {
 	if flowID <= 0 {
 		return usagef("processlab flow apply: --flow is required")
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab flow apply: unexpected argument %q", set.Arg(0))
 	}
 	document, err := io.ReadAll(os.Stdin)
 	if err != nil {

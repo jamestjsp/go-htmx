@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,66 +75,105 @@ type tuningCandidateRequestClient struct {
 
 func newControllerCommand() *command {
 	return &command{
-		name:      "controller",
-		summary:   "Design, tune, and review controller candidates",
-		freeform:  true,
-		arguments: []commandArgument{{name: "operation", description: "controller operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runController(ctx, options, args, stdout, stderr)
+		name: "controller", summary: "Design, tune, and review controller candidates", children: []*command{
+			newCommand("pid", "Design a PID controller", controllerPIDFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerPID(ctx, client, args, options, stdout, stderr)
+			}),
+			{
+				name: "state", summary: "Design state-space controllers", children: []*command{
+					newCommand("feedback", "Design state feedback", controllerStateFeedbackFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+						client, err := newAPIClient(options.server, options.timeout)
+						if err != nil {
+							return err
+						}
+						return runControllerStateFeedback(ctx, client, args, options, stdout, stderr)
+					}),
+					newCommand("estimator", "Design a state estimator", controllerEstimatorFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+						client, err := newAPIClient(options.server, options.timeout)
+						if err != nil {
+							return err
+						}
+						return runControllerEstimator(ctx, client, args, options, stdout, stderr)
+					}),
+					newCommand("observer", "Design an observer regulator", controllerObserverFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+						client, err := newAPIClient(options.server, options.timeout)
+						if err != nil {
+							return err
+						}
+						return runControllerObserver(ctx, client, args, options, stdout, stderr)
+					}),
+				},
+			},
+			newCommand("robust", "Design a robust controller", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("method", "string", string(studio.RobustSynthesisH2), "robust method: h2 or hinf"), documentedFloat64Flag("base-step", "seconds", 0, "simulation base step in seconds"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerRobust(ctx, client, args, options, stdout, stderr)
+			}),
+			newCommand("tune", "Tune a controller", controllerTuneFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerTune(ctx, client, args, options, stdout, stderr)
+			}),
+			newCommand("review", "Review a controller candidate", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "candidate id", description: "candidate identifier", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerReview(ctx, client, args, options, stdout)
+			}),
+			newCommand("apply", "Apply a controller candidate", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "candidate id", description: "candidate identifier", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerAction(ctx, client, args, options, stdout, "apply")
+			}),
+			newCommand("undo", "Undo a controller candidate", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "candidate id", description: "candidate identifier", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runControllerAction(ctx, client, args, options, stdout, "undo")
+			}),
 		},
 	}
 }
 
-func runController(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab controller: choose pid, state, robust, tune, or review")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "pid":
-		return runControllerPID(ctx, client, args[1:], options, stdout, stderr)
-	case "state":
-		return runControllerState(ctx, client, args[1:], options, stdout, stderr)
-	case "robust":
-		return runControllerRobust(ctx, client, args[1:], options, stdout, stderr)
-	case "tune":
-		return runControllerTune(ctx, client, args[1:], options, stdout, stderr)
-	case "review":
-		return runControllerReview(ctx, client, args[1:], options, stdout)
-	case "apply":
-		return runControllerAction(ctx, client, args[1:], options, stdout, "apply")
-	case "undo":
-		return runControllerAction(ctx, client, args[1:], options, stdout, "undo")
-	default:
-		return usagef("processlab controller: unknown operation %q; choose pid, state, robust, tune, review, apply, or undo", args[0])
-	}
+func controllerPIDFlags() []commandFlag {
+	return []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("type", "string", "PID", "PID tuning type: P, PI, PD, or PID"), documentedFloat64Flag("crossover", "hz", 0, "target crossover frequency"), documentedFloat64Flag("phase-margin", "degrees", 0, "target phase margin in degrees"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedFloat64Flag("base-step", "seconds", 0, "simulation base step in seconds"), documentedStringFlag("setpoint-weight", "float", "", "PID2 setpoint weight"), documentedStringFlag("derivative-weight", "float", "", "PID2 derivative weight"), documentedBoolFlag("json", "write machine-readable output")}
+}
+
+func controllerStateFeedbackFlags() []commandFlag {
+	return []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("method", "string", string(studio.StateFeedbackLQR), "state feedback method"), documentedStringFlag("q", "matrix", "", "state cost matrix"), documentedStringFlag("r", "matrix", "", "control cost matrix"), documentedStringFlag("regulated-output", "matrix", "", "regulated output matrix"), documentedStringFlag("poles", "list", "", "comma-separated real or complex poles"), documentedFloat64Flag("sample-time", "seconds", 0, "sample time in seconds"), documentedFloat64Flag("base-step", "seconds", 0, "simulation base step in seconds"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedBoolFlag("json", "write machine-readable output")}
+}
+
+func controllerEstimatorFlags() []commandFlag {
+	return []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("method", "string", string(studio.EstimatorLQE), "estimator method"), documentedStringFlag("qn", "matrix", "", "process noise matrix"), documentedStringFlag("rn", "matrix", "", "measurement noise matrix"), documentedStringFlag("g", "matrix", "", "process noise input matrix"), documentedStringFlag("poles", "list", "", "comma-separated real or complex poles"), documentedFloat64Flag("sample-time", "seconds", 0, "sample time in seconds"), documentedFloat64Flag("base-step", "seconds", 0, "simulation base step in seconds"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedBoolFlag("json", "write machine-readable output")}
+}
+
+func controllerObserverFlags() []commandFlag {
+	return []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("method", "string", string(studio.ObserverRegulatorLQG), "observer regulator method"), documentedStringFlag("q", "matrix", "", "state cost matrix"), documentedStringFlag("r", "matrix", "", "control cost matrix"), documentedStringFlag("qn", "matrix", "", "process noise matrix"), documentedStringFlag("rn", "matrix", "", "measurement noise matrix"), documentedStringFlag("k", "matrix", "", "state feedback gain matrix"), documentedStringFlag("l", "matrix", "", "observer gain matrix"), documentedFloat64Flag("base-step", "seconds", 0, "simulation base step in seconds"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedBoolFlag("json", "write machine-readable output")}
+}
+
+func controllerTuneFlags() []commandFlag {
+	return []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("algorithm", "string", string(studio.TuningGrid), "tuning algorithm"), documentedStringListFlag("parameter", "string", "field=lower:upper; repeatable"), documentedStringListFlag("goal", "string", "name:kind:maximum[:minimum]; repeatable"), documentedStringFlag("goals", "path", "", "JSON tuning goals file, or - for stdin"), documentedIntFlag("grid-points", "count", 3, "grid points per parameter"), documentedIntFlag("max-evaluations", "count", 100, "maximum tuning evaluations"), documentedFloat64Flag("base-step", "seconds", 0, "base simulation step in seconds"), documentedFloat64Flag("review-horizon", "seconds", 0, "review horizon in seconds"), documentedBoolFlag("json", "write machine-readable output")}
 }
 
 func runControllerAction(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer, action string) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("controller "+action, flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id; omit to search all flows")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintf(stdout, "Usage: processlab controller %s <candidate-id> [--flow <id>] [--json]\n", action)
-			if action == "apply" {
-				fmt.Fprintln(stdout, "Applying invalidates stored simulation and analysis records for the flowsheet.")
-			}
-			return nil
-		}
-		return usagef("processlab controller %s: %v", action, err)
-	}
-	if set.NArg() != 1 {
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	if len(args) != 1 {
 		return usagef("processlab controller %s: exactly one candidate id is required", action)
 	}
-	id := set.Arg(0)
+	id := args[0]
 	record, err := findControllerCandidate(ctx, client, id, flowID)
 	if err != nil {
 		return err
@@ -227,38 +265,23 @@ func controllerBlockChanges(before, after []blockRecordClient) []controllerBlock
 }
 
 func runControllerPID(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--type", "-type", "--crossover", "-crossover", "--phase-margin", "-phase-margin", "--review-horizon", "-review-horizon", "--base-step", "-base-step", "--setpoint-weight", "-setpoint-weight", "--derivative-weight", "-derivative-weight"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller pid", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var typeText string
-	var crossover, phaseMargin, reviewHorizon, baseStep float64
-	var setpointWeight, derivativeWeight string
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&typeText, "type", "PID", "PID tuning type: P, PI, PD, or PID")
-	set.Float64Var(&crossover, "crossover", 0, "target crossover frequency")
-	set.Float64Var(&phaseMargin, "phase-margin", 0, "target phase margin in degrees")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.StringVar(&setpointWeight, "setpoint-weight", "", "PID2 setpoint weight")
-	set.StringVar(&derivativeWeight, "derivative-weight", "", "PID2 derivative weight")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller pid --flow <id> [--type PID] [--crossover <hz>] [--phase-margin <degrees>] [--review-horizon <seconds>] [--json]")
-			return nil
-		}
-		return usagef("processlab controller pid: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	typeText := options.commandString("type")
+	crossover := options.commandFloat64("crossover")
+	phaseMargin := options.commandFloat64("phase-margin")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	baseStep := options.commandFloat64("base-step")
+	setpointWeight := options.commandString("setpoint-weight")
+	derivativeWeight := options.commandString("derivative-weight")
+	if typeText == "" {
+		typeText = "PID"
 	}
 	if flowID <= 0 {
 		return usagef("processlab controller pid: --flow is required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab controller pid: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab controller pid: unexpected argument %q", args[0])
 	}
 	request := pidCandidateRequestClient{
 		PIDDesignRequest: studio.PIDDesignRequest{
@@ -282,52 +305,25 @@ func runControllerPID(ctx context.Context, client *apiClient, args []string, opt
 	return postControllerCandidate(ctx, client, flowID, "pid", request, jsonOutput, stdout, stderr)
 }
 
-func runControllerState(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab controller state: choose feedback, estimator, or observer")
-	}
-	switch args[0] {
-	case "feedback":
-		return runControllerStateFeedback(ctx, client, args[1:], options, stdout, stderr)
-	case "estimator":
-		return runControllerEstimator(ctx, client, args[1:], options, stdout, stderr)
-	case "observer":
-		return runControllerObserver(ctx, client, args[1:], options, stdout, stderr)
-	default:
-		return usagef("processlab controller state: unknown operation %q; choose feedback, estimator, or observer", args[0])
-	}
-}
-
 func runControllerStateFeedback(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--method", "-method", "--q", "-q", "--r", "-r", "--regulated-output", "-regulated-output", "--poles", "-poles", "--sample-time", "-sample-time", "--base-step", "-base-step", "--review-horizon", "-review-horizon"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller state feedback", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var method, qText, rText, regulatedOutputText, polesText string
-	var sampleTime, baseStep, reviewHorizon float64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&method, "method", string(studio.StateFeedbackLQR), "state feedback method")
-	set.StringVar(&qText, "q", "", "state cost matrix, for example 1 or 1,0;0,1")
-	set.StringVar(&rText, "r", "", "control cost matrix")
-	set.StringVar(&regulatedOutputText, "regulated-output", "", "regulated output matrix")
-	set.StringVar(&polesText, "poles", "", "comma-separated real or complex poles")
-	set.Float64Var(&sampleTime, "sample-time", 0, "sample time in seconds")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller state feedback --flow <id> --method <lqr|lqi|lqrd|acker|place> [--q <matrix>] [--r <matrix>] [--poles <list>] [--json]")
-			return nil
-		}
-		return usagef("processlab controller state feedback: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	method := options.commandString("method")
+	qText := options.commandString("q")
+	rText := options.commandString("r")
+	regulatedOutputText := options.commandString("regulated-output")
+	polesText := options.commandString("poles")
+	sampleTime := options.commandFloat64("sample-time")
+	baseStep := options.commandFloat64("base-step")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	if method == "" {
+		method = string(studio.StateFeedbackLQR)
 	}
 	if flowID <= 0 {
 		return usagef("processlab controller state feedback: --flow is required")
+	}
+	if len(args) != 0 {
+		return usagef("processlab controller state feedback: unexpected argument %q", args[0])
 	}
 	request, err := stateFeedbackRequest(method, qText, rText, regulatedOutputText, polesText, sampleTime, baseStep)
 	if err != nil {
@@ -338,35 +334,24 @@ func runControllerStateFeedback(ctx context.Context, client *apiClient, args []s
 }
 
 func runControllerEstimator(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--method", "-method", "--qn", "-qn", "--rn", "-rn", "--g", "-g", "--poles", "-poles", "--sample-time", "-sample-time", "--base-step", "-base-step", "--review-horizon", "-review-horizon"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller state estimator", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var method, qnText, rnText, gText, polesText string
-	var sampleTime, baseStep, reviewHorizon float64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&method, "method", string(studio.EstimatorLQE), "estimator method")
-	set.StringVar(&qnText, "qn", "", "process noise matrix")
-	set.StringVar(&rnText, "rn", "", "measurement noise matrix")
-	set.StringVar(&gText, "g", "", "process noise input matrix")
-	set.StringVar(&polesText, "poles", "", "comma-separated real or complex poles")
-	set.Float64Var(&sampleTime, "sample-time", 0, "sample time in seconds")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller state estimator --flow <id> --method <lqe|kalman|kalmd|place> [--qn <matrix>] [--rn <matrix>] [--json]")
-			return nil
-		}
-		return usagef("processlab controller state estimator: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	method := options.commandString("method")
+	qnText := options.commandString("qn")
+	rnText := options.commandString("rn")
+	gText := options.commandString("g")
+	polesText := options.commandString("poles")
+	sampleTime := options.commandFloat64("sample-time")
+	baseStep := options.commandFloat64("base-step")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	if method == "" {
+		method = string(studio.EstimatorLQE)
 	}
 	if flowID <= 0 {
 		return usagef("processlab controller state estimator: --flow is required")
+	}
+	if len(args) != 0 {
+		return usagef("processlab controller state estimator: unexpected argument %q", args[0])
 	}
 	qn, err := optionalControllerMatrix(qnText, "qn")
 	if err != nil {
@@ -395,36 +380,25 @@ func runControllerEstimator(ctx context.Context, client *apiClient, args []strin
 }
 
 func runControllerObserver(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--method", "-method", "--q", "-q", "--r", "-r", "--qn", "-qn", "--rn", "-rn", "--k", "-k", "--l", "-l", "--base-step", "-base-step", "--review-horizon", "-review-horizon"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller state observer", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var method, qText, rText, qnText, rnText, kText, lText string
-	var baseStep, reviewHorizon float64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&method, "method", string(studio.ObserverRegulatorLQG), "observer regulator method")
-	set.StringVar(&qText, "q", "", "state cost matrix")
-	set.StringVar(&rText, "r", "", "control cost matrix")
-	set.StringVar(&qnText, "qn", "", "process noise matrix")
-	set.StringVar(&rnText, "rn", "", "measurement noise matrix")
-	set.StringVar(&kText, "k", "", "state feedback gain matrix")
-	set.StringVar(&lText, "l", "", "observer gain matrix")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller state observer --flow <id> --method <lqg|reg> [--q <matrix>] [--r <matrix>] [--qn <matrix>] [--rn <matrix>] [--json]")
-			return nil
-		}
-		return usagef("processlab controller state observer: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	method := options.commandString("method")
+	qText := options.commandString("q")
+	rText := options.commandString("r")
+	qnText := options.commandString("qn")
+	rnText := options.commandString("rn")
+	kText := options.commandString("k")
+	lText := options.commandString("l")
+	baseStep := options.commandFloat64("base-step")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	if method == "" {
+		method = string(studio.ObserverRegulatorLQG)
 	}
 	if flowID <= 0 {
 		return usagef("processlab controller state observer: --flow is required")
+	}
+	if len(args) != 0 {
+		return usagef("processlab controller state observer: unexpected argument %q", args[0])
 	}
 	q, err := optionalControllerMatrix(qText, "q")
 	if err != nil {
@@ -460,30 +434,19 @@ func runControllerObserver(ctx context.Context, client *apiClient, args []string
 }
 
 func runControllerRobust(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--method", "-method", "--base-step", "-base-step", "--review-horizon", "-review-horizon"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller robust", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var method string
-	var baseStep, reviewHorizon float64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&method, "method", string(studio.RobustSynthesisH2), "robust method: h2 or hinf")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller robust --flow <id> --method <h2|hinf> [--json]")
-			return nil
-		}
-		return usagef("processlab controller robust: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	method := options.commandString("method")
+	baseStep := options.commandFloat64("base-step")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	if method == "" {
+		method = string(studio.RobustSynthesisH2)
 	}
 	if flowID <= 0 {
 		return usagef("processlab controller robust: --flow is required")
+	}
+	if len(args) != 0 {
+		return usagef("processlab controller robust: unexpected argument %q", args[0])
 	}
 	request := robustCandidateRequestClient{
 		RobustSynthesisRequest: studio.RobustSynthesisRequest{Method: studio.RobustSynthesisMethod(method), BaseStep: baseStep},
@@ -493,40 +456,24 @@ func runControllerRobust(ctx context.Context, client *apiClient, args []string, 
 }
 
 func runControllerTune(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{"--flow", "-flow", "--algorithm", "-algorithm", "--parameter", "-parameter", "--goal", "-goal", "--goals", "-goals", "--grid-points", "-grid-points", "--max-evaluations", "-max-evaluations", "--base-step", "-base-step", "--review-horizon", "-review-horizon"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("controller tune", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var algorithm, goalsFile string
-	var parameters, goals repeatedStringFlag
-	var gridPoints, maxEvaluations int
-	var baseStep, reviewHorizon float64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&algorithm, "algorithm", string(studio.TuningGrid), "tuning algorithm")
-	set.Var(&parameters, "parameter", "field=lower:upper; repeatable")
-	set.Var(&goals, "goal", "name:kind:maximum[:minimum]; repeatable")
-	set.StringVar(&goalsFile, "goals", "", "JSON tuning goals file, or - for stdin")
-	set.IntVar(&gridPoints, "grid-points", 3, "grid points per parameter")
-	set.IntVar(&maxEvaluations, "max-evaluations", 100, "maximum tuning evaluations")
-	set.Float64Var(&baseStep, "base-step", 0, "simulation base step in seconds")
-	set.Float64Var(&reviewHorizon, "review-horizon", 0, "review horizon in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller tune --flow <id> --parameter <field=lower:upper> --goal <name:kind:maximum[:minimum]> [--json]")
-			return nil
-		}
-		return usagef("processlab controller tune: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	algorithm := options.commandString("algorithm")
+	parameters := options.commandStrings("parameter")
+	goals := options.commandStrings("goal")
+	goalsFile := options.commandString("goals")
+	gridPoints := options.commandInt("grid-points")
+	maxEvaluations := options.commandInt("max-evaluations")
+	baseStep := options.commandFloat64("base-step")
+	reviewHorizon := options.commandFloat64("review-horizon")
+	if algorithm == "" {
+		algorithm = string(studio.TuningGrid)
 	}
 	if flowID <= 0 || len(parameters) == 0 {
 		return usagef("processlab controller tune: --flow and at least one --parameter are required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab controller tune: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab controller tune: unexpected argument %q", args[0])
 	}
 	roles, err := getControlRoles(ctx, client, flowID)
 	if err != nil {
@@ -555,28 +502,16 @@ func runControllerTune(ctx context.Context, client *apiClient, args []string, op
 }
 
 func runControllerReview(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("controller review", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab controller review --flow <id> <candidate-id> [--json]")
-			return nil
-		}
-		return usagef("processlab controller review: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab controller review: --flow is required")
 	}
-	if set.NArg() != 1 {
+	if len(args) != 1 {
 		return usagef("processlab controller review: exactly one candidate id is required")
 	}
 	var record controllerCandidateRecordClient
-	path := "/flows/" + strconv.FormatInt(flowID, 10) + "/controller-candidates/" + set.Arg(0)
+	path := "/flows/" + strconv.FormatInt(flowID, 10) + "/controller-candidates/" + args[0]
 	if err := client.request(ctx, http.MethodGet, path, nil, &record); err != nil {
 		return err
 	}

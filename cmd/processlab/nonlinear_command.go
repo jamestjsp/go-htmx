@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -28,47 +26,24 @@ type nonlinearTSV struct {
 
 func newNonlinearCommand() *command {
 	return &command{
-		name:      "nonlinear",
-		summary:   "Register, linearize, and estimate nonlinear models",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "nonlinear operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runNonlinearCommand(ctx, options, args, stdout, stderr)
+		name: "nonlinear", summary: "Register, linearize, and estimate nonlinear models", children: []*command{
+			newCommand("register", "Register a persisted nonlinear definition", []commandFlag{documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return runNonlinearRegister(ctx, options, args, stdout)
+			}),
+			newCommand("linearize", "Linearize a nonlinear definition", []commandFlag{documentedStringFlag("definition", "key@version", "", "definition reference (key@version)"), documentedStringFlag("operating-point", "path", "", "JSON linearization request file"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return runNonlinearLinearize(ctx, options, args, stdout)
+			}),
+			newCommand("ekf", "Estimate a nonlinear model with an EKF", []commandFlag{documentedStringFlag("definition", "key@version", "", "definition reference (key@version)"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return runNonlinearEKF(ctx, options, args, stdout)
+			}),
 		},
 	}
 }
 
-func runNonlinearCommand(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab nonlinear: choose register, linearize, or ekf")
-	}
-	switch args[0] {
-	case "register":
-		return runNonlinearRegister(ctx, options, args[1:], stdout)
-	case "linearize":
-		return runNonlinearLinearize(ctx, options, args[1:], stdout)
-	case "ekf":
-		return runNonlinearEKF(ctx, options, args[1:], stdout)
-	default:
-		return usagef("processlab nonlinear: unknown operation %q; choose register, linearize, or ekf", args[0])
-	}
-}
-
 func runNonlinearRegister(ctx context.Context, options globalOptions, args []string, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("nonlinear register", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab nonlinear register < definition.json [--json]")
-			return nil
-		}
-		return usagef("processlab nonlinear register: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab nonlinear register: unexpected argument %q", set.Arg(0))
+	jsonOutput := options.json || options.commandBool("json")
+	if len(args) != 0 {
+		return usagef("processlab nonlinear register: unexpected argument %q", args[0])
 	}
 	document, err := readJSONDocument(os.Stdin, "nonlinear definition stdin")
 	if err != nil {
@@ -94,23 +69,11 @@ func runNonlinearRegister(ctx context.Context, options globalOptions, args []str
 }
 
 func runNonlinearLinearize(ctx context.Context, options globalOptions, args []string, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--definition", "-definition", "--operating-point", "-operating-point"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("nonlinear linearize", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var definitionText, operatingPointPath string
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.StringVar(&definitionText, "definition", "", "definition reference (key@version)")
-	set.StringVar(&operatingPointPath, "operating-point", "", "JSON linearization request file")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab nonlinear linearize --definition <key@version> --operating-point <file> [--json]")
-			return nil
-		}
-		return usagef("processlab nonlinear linearize: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab nonlinear linearize: unexpected argument %q", set.Arg(0))
+	jsonOutput := options.json || options.commandBool("json")
+	definitionText := options.commandString("definition")
+	operatingPointPath := options.commandString("operating-point")
+	if len(args) != 0 {
+		return usagef("processlab nonlinear linearize: unexpected argument %q", args[0])
 	}
 	definitionRef, err := parseNonlinearDefinitionRef(definitionText)
 	if err != nil {
@@ -144,22 +107,10 @@ func runNonlinearLinearize(ctx context.Context, options globalOptions, args []st
 }
 
 func runNonlinearEKF(ctx context.Context, options globalOptions, args []string, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--definition", "-definition"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("nonlinear ekf", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var definitionText string
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.StringVar(&definitionText, "definition", "", "definition reference (key@version)")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab nonlinear ekf --definition <key@version> [--json] < input.tsv")
-			return nil
-		}
-		return usagef("processlab nonlinear ekf: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab nonlinear ekf: unexpected argument %q", set.Arg(0))
+	jsonOutput := options.json || options.commandBool("json")
+	definitionText := options.commandString("definition")
+	if len(args) != 0 {
+		return usagef("processlab nonlinear ekf: unexpected argument %q", args[0])
 	}
 	definitionRef, err := parseNonlinearDefinitionRef(definitionText)
 	if err != nil {

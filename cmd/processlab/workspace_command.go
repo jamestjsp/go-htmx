@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -52,69 +51,142 @@ type flowReorderRequest struct {
 }
 
 func newProjectCommand() *command {
+	var jsonOutput, force bool
 	return &command{
-		name:      "project",
-		summary:   "List and manage Process Lab projects",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "project operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runProject(ctx, options, args, stdout, stderr)
+		name:    "project",
+		summary: "List and manage Process Lab projects",
+		children: []*command{
+			{
+				name: "list", summary: "List projects",
+				flags: []commandFlag{{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
+					set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
+				}}},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runProjectList(ctx, client, options, jsonOutput || options.json, stdout)
+				},
+			},
+			{
+				name: "show", summary: "Show a project", arguments: []commandArgument{{name: "project id", description: "project identifier", required: true}},
+				flags: []commandFlag{{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
+					set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
+				}}},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runProjectShow(ctx, client, args, options, jsonOutput || options.json, stdout)
+				},
+			},
+			{
+				name: "create", summary: "Create a project", arguments: []commandArgument{{name: "name", description: "project name", required: true}},
+				flags: []commandFlag{{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
+					set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
+				}}},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runProjectCreate(ctx, client, args, options, jsonOutput || options.json, stdout)
+				},
+			},
+			{
+				name: "rename", summary: "Rename a project", arguments: []commandArgument{{name: "project id", description: "project identifier", required: true}, {name: "name", description: "new project name", required: true}},
+				flags: []commandFlag{{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
+					set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
+				}}},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runProjectRename(ctx, client, args, options, jsonOutput || options.json, stdout)
+				},
+			},
+			{
+				name: "delete", summary: "Delete a project", arguments: []commandArgument{{name: "project id", description: "project identifier", required: true}},
+				flags: []commandFlag{
+					{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) { set.BoolVar(&jsonOutput, "json", false, "write machine-readable output") }},
+					{name: "force", typeName: "bool", defaultValue: "false", usage: "confirm cascading deletion", register: func(set *flag.FlagSet) { set.BoolVar(&force, "force", false, "confirm cascading deletion") }},
+				},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runProjectDelete(ctx, client, args, options, jsonOutput || options.json, force, stdout)
+				},
+			},
 		},
 	}
 }
 
 func newFlowCommand() *command {
+	var jsonOutput, dryRun, force bool
+	var projectID int64
+	clientRun := func(ctx context.Context, options globalOptions, action func(*apiClient) error) error {
+		client, err := newAPIClient(options.server, options.timeout)
+		if err != nil {
+			return err
+		}
+		return action(client)
+	}
 	return &command{
-		name:      "flow",
-		summary:   "List and manage flowsheets",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "flowsheet operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runFlow(ctx, options, args, stdout, stderr)
+		name: "flow", summary: "List and manage flowsheets", children: []*command{
+			{name: "list", summary: "List flowsheets", flags: []commandFlag{commandInt64Flag("project", "id", 0, "filter by project id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowList(ctx, client, options, projectID, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "dump", summary: "Dump a declarative flowsheet document", flags: []commandFlag{commandInt64Flag("flow", "id", 0, "flowsheet id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowDump(ctx, client, options, projectID, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "apply", summary: "Apply a declarative flowsheet document", flags: []commandFlag{commandInt64Flag("flow", "id", 0, "flowsheet id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput), commandBoolFlag("dry-run", "show reconciliation without changing the flowsheet", &dryRun)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowApply(ctx, client, options, projectID, jsonOutput || options.json, dryRun, stdout)
+				})
+			}},
+			{name: "show", summary: "Show a flowsheet", arguments: []commandArgument{{name: "flow id", description: "flowsheet identifier", required: true}}, flags: []commandFlag{commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowShow(ctx, client, args, options, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "create", summary: "Create a flowsheet", arguments: []commandArgument{{name: "name", description: "flowsheet name", required: true}}, flags: []commandFlag{commandInt64Flag("project", "id", 0, "project id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowCreate(ctx, client, args, options, projectID, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "rename", summary: "Rename a flowsheet", arguments: []commandArgument{{name: "flow id", description: "flowsheet identifier", required: true}, {name: "name", description: "new flowsheet name", required: true}}, flags: []commandFlag{commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowRename(ctx, client, args, options, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "duplicate", summary: "Duplicate a flowsheet", arguments: []commandArgument{{name: "flow id", description: "flowsheet identifier", required: true}}, flags: []commandFlag{commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowDuplicate(ctx, client, args, options, jsonOutput || options.json, stdout)
+				})
+			}},
+			{name: "delete", summary: "Delete a flowsheet", arguments: []commandArgument{{name: "flow id", description: "flowsheet identifier", required: true}}, flags: []commandFlag{commandBoolFlag("json", "write machine-readable output", &jsonOutput), commandBoolFlag("force", "confirm deletion of blocks in the flowsheet", &force)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowDelete(ctx, client, args, options, jsonOutput || options.json, force, stdout)
+				})
+			}},
+			{name: "reorder", summary: "Reorder a project's flowsheets", arguments: []commandArgument{{name: "flow id", description: "flowsheet identifier", required: true}}, variadic: true, flags: []commandFlag{commandInt64Flag("project", "id", 0, "project id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error {
+					return runFlowReorder(ctx, client, args, options, projectID, jsonOutput || options.json, stdout)
+				})
+			}},
 		},
 	}
 }
-
-func runProject(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab project: choose list, show, create, rename, or delete")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "list":
-		return runProjectList(ctx, client, args[1:], options, stdout)
-	case "show":
-		return runProjectShow(ctx, client, args[1:], options, stdout)
-	case "create":
-		return runProjectCreate(ctx, client, args[1:], options, stdout)
-	case "rename":
-		return runProjectRename(ctx, client, args[1:], options, stdout)
-	case "delete":
-		return runProjectDelete(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab project: unknown operation %q; choose list, show, create, rename, or delete", args[0])
-	}
-}
-
-func runProjectList(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("project list", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab project list [--json]")
-			return nil
-		}
-		return usagef("processlab project list: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab project list: unexpected argument %q", set.Arg(0))
-	}
+func runProjectList(ctx context.Context, client *apiClient, options globalOptions, jsonOutput bool, stdout io.Writer) error {
 	var raw json.RawMessage
 	if err := client.request(ctx, http.MethodGet, "/projects", nil, &raw); err != nil {
 		return err
@@ -132,19 +204,8 @@ func runProjectList(ctx context.Context, client *apiClient, args []string, optio
 	return nil
 }
 
-func runProjectShow(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("project show", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab project show: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab project show: expected a project id")
-	}
-	projectID, err := commandID(set.Arg(0), "project id")
+func runProjectShow(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	projectID, err := commandID(args[0], "project id")
 	if err != nil {
 		return err
 	}
@@ -163,55 +224,20 @@ func runProjectShow(ctx context.Context, client *apiClient, args []string, optio
 	return nil
 }
 
-func runProjectCreate(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("project create", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab project create: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab project create: expected a project name")
-	}
-	return runWorkspaceAction(ctx, client, http.MethodPost, "/projects", workspaceNameRequest{Name: set.Arg(0)}, jsonOutput, stdout, "project")
+func runProjectCreate(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	return runWorkspaceAction(ctx, client, http.MethodPost, "/projects", workspaceNameRequest{Name: args[0]}, jsonOutput, stdout, "project")
 }
 
-func runProjectRename(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("project rename", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab project rename: %v", err)
-	}
-	if set.NArg() != 2 {
-		return usagef("processlab project rename: expected a project id and name")
-	}
-	projectID, err := commandID(set.Arg(0), "project id")
+func runProjectRename(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	projectID, err := commandID(args[0], "project id")
 	if err != nil {
 		return err
 	}
-	return runWorkspaceAction(ctx, client, http.MethodPut, "/projects/"+strconv.FormatInt(projectID, 10)+"/name", workspaceNameRequest{Name: set.Arg(1)}, jsonOutput, stdout, "project")
+	return runWorkspaceAction(ctx, client, http.MethodPut, "/projects/"+strconv.FormatInt(projectID, 10)+"/name", workspaceNameRequest{Name: args[1]}, jsonOutput, stdout, "project")
 }
 
-func runProjectDelete(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json", "--force", "-force"})
-	set := flag.NewFlagSet("project delete", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	force := false
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.BoolVar(&force, "force", false, "confirm cascading deletion")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab project delete: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab project delete: expected a project id")
-	}
-	projectID, err := commandID(set.Arg(0), "project id")
+func runProjectDelete(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput, force bool, stdout io.Writer) error {
+	projectID, err := commandID(args[0], "project id")
 	if err != nil {
 		return err
 	}
@@ -222,56 +248,7 @@ func runProjectDelete(ctx context.Context, client *apiClient, args []string, opt
 	return runWorkspaceAction(ctx, client, http.MethodDelete, "/projects/"+strconv.FormatInt(projectID, 10), input, jsonOutput, stdout, "project")
 }
 
-func runFlow(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab flow: choose list, dump, apply, show, create, rename, duplicate, delete, or reorder")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "list":
-		return runFlowList(ctx, client, args[1:], options, stdout)
-	case "dump":
-		return runFlowDump(ctx, client, args[1:], options, stdout)
-	case "apply":
-		return runFlowApply(ctx, client, args[1:], options, stdout)
-	case "show":
-		return runFlowShow(ctx, client, args[1:], options, stdout)
-	case "create":
-		return runFlowCreate(ctx, client, args[1:], options, stdout)
-	case "rename":
-		return runFlowRename(ctx, client, args[1:], options, stdout)
-	case "duplicate":
-		return runFlowDuplicate(ctx, client, args[1:], options, stdout)
-	case "delete":
-		return runFlowDelete(ctx, client, args[1:], options, stdout)
-	case "reorder":
-		return runFlowReorder(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab flow: unknown operation %q; choose list, dump, apply, show, create, rename, duplicate, delete, or reorder", args[0])
-	}
-}
-
-func runFlowList(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--project", "-project"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow list", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var projectID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&projectID, "project", 0, "filter by project id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab flow list [--project <id>] [--json]")
-			return nil
-		}
-		return usagef("processlab flow list: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab flow list: unexpected argument %q", set.Arg(0))
-	}
+func runFlowList(ctx context.Context, client *apiClient, options globalOptions, projectID int64, jsonOutput bool, stdout io.Writer) error {
 	path := "/flows"
 	if projectID != 0 {
 		if projectID < 0 {
@@ -300,19 +277,8 @@ func runFlowList(ctx context.Context, client *apiClient, args []string, options 
 	return nil
 }
 
-func runFlowShow(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow show", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow show: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab flow show: expected a flowsheet id")
-	}
-	flowID, err := commandID(set.Arg(0), "flowsheet id")
+func runFlowShow(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	flowID, err := commandID(args[0], "flowsheet id")
 	if err != nil {
 		return err
 	}
@@ -331,79 +297,31 @@ func runFlowShow(ctx context.Context, client *apiClient, args []string, options 
 	return nil
 }
 
-func runFlowCreate(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--project", "-project"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow create", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var projectID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&projectID, "project", 0, "project id")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow create: %v", err)
-	}
+func runFlowCreate(ctx context.Context, client *apiClient, args []string, options globalOptions, projectID int64, jsonOutput bool, stdout io.Writer) error {
 	if projectID <= 0 {
 		return usagef("processlab flow create: --project is required")
 	}
-	if set.NArg() != 1 {
-		return usagef("processlab flow create: expected a flowsheet name")
-	}
-	return runWorkspaceAction(ctx, client, http.MethodPost, "/projects/"+strconv.FormatInt(projectID, 10)+"/flows", workspaceNameRequest{Name: set.Arg(0)}, jsonOutput, stdout, "flow")
+	return runWorkspaceAction(ctx, client, http.MethodPost, "/projects/"+strconv.FormatInt(projectID, 10)+"/flows", workspaceNameRequest{Name: args[0]}, jsonOutput, stdout, "flow")
 }
 
-func runFlowRename(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow rename", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow rename: %v", err)
-	}
-	if set.NArg() != 2 {
-		return usagef("processlab flow rename: expected a flowsheet id and name")
-	}
-	flowID, err := commandID(set.Arg(0), "flowsheet id")
+func runFlowRename(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	flowID, err := commandID(args[0], "flowsheet id")
 	if err != nil {
 		return err
 	}
-	return runWorkspaceAction(ctx, client, http.MethodPut, "/flows/"+strconv.FormatInt(flowID, 10)+"/name", workspaceNameRequest{Name: set.Arg(1)}, jsonOutput, stdout, "flow")
+	return runWorkspaceAction(ctx, client, http.MethodPut, "/flows/"+strconv.FormatInt(flowID, 10)+"/name", workspaceNameRequest{Name: args[1]}, jsonOutput, stdout, "flow")
 }
 
-func runFlowDuplicate(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow duplicate", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow duplicate: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab flow duplicate: expected a flowsheet id")
-	}
-	flowID, err := commandID(set.Arg(0), "flowsheet id")
+func runFlowDuplicate(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput bool, stdout io.Writer) error {
+	flowID, err := commandID(args[0], "flowsheet id")
 	if err != nil {
 		return err
 	}
 	return runWorkspaceAction(ctx, client, http.MethodPost, "/flows/"+strconv.FormatInt(flowID, 10)+"/duplicate", nil, jsonOutput, stdout, "flow")
 }
 
-func runFlowDelete(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json", "--force", "-force"})
-	set := flag.NewFlagSet("flow delete", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	force := false
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.BoolVar(&force, "force", false, "confirm deletion of blocks in the flowsheet")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow delete: %v", err)
-	}
-	if set.NArg() != 1 {
-		return usagef("processlab flow delete: expected a flowsheet id")
-	}
-	flowID, err := commandID(set.Arg(0), "flowsheet id")
+func runFlowDelete(ctx context.Context, client *apiClient, args []string, options globalOptions, jsonOutput, force bool, stdout io.Writer) error {
+	flowID, err := commandID(args[0], "flowsheet id")
 	if err != nil {
 		return err
 	}
@@ -425,25 +343,15 @@ func runFlowDelete(ctx context.Context, client *apiClient, args []string, option
 	return runWorkspaceAction(ctx, client, http.MethodDelete, "/flows/"+strconv.FormatInt(flowID, 10), input, jsonOutput, stdout, "flow")
 }
 
-func runFlowReorder(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--project", "-project"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("flow reorder", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var projectID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&projectID, "project", 0, "project id")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab flow reorder: %v", err)
-	}
+func runFlowReorder(ctx context.Context, client *apiClient, args []string, options globalOptions, projectID int64, jsonOutput bool, stdout io.Writer) error {
 	if projectID <= 0 {
 		return usagef("processlab flow reorder: --project is required")
 	}
-	if set.NArg() == 0 {
+	if len(args) == 0 {
 		return usagef("processlab flow reorder: expected at least one flowsheet id")
 	}
-	flowIDs := make([]int64, set.NArg())
-	for index, argument := range set.Args() {
+	flowIDs := make([]int64, len(args))
+	for index, argument := range args {
 		id, err := commandID(argument, "flowsheet id")
 		if err != nil {
 			return err

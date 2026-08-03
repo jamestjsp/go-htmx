@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,57 +31,36 @@ type wireMutationClient struct {
 }
 
 func newWireCommand() *command {
+	clientRun := func(ctx context.Context, options globalOptions, action func(*apiClient) error) error {
+		client, err := newAPIClient(options.server, options.timeout)
+		if err != nil {
+			return err
+		}
+		return action(client)
+	}
 	return &command{
-		name:      "wire",
-		summary:   "Connect and disconnect flowsheet signals",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "wiring operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runWire(ctx, options, args, stdout, stderr)
+		name: "wire", summary: "Connect and disconnect flowsheet signals", children: []*command{
+			newCommand("list", "List signal connections", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error { return runWireList(ctx, client, args, options, stdout) })
+			}),
+			newCommand("connect", "Connect two signal endpoints", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "source", description: "source endpoint", required: true}, {name: "target", description: "target endpoint", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error { return runWireConnect(ctx, client, args, options, stdout) })
+			}),
+			newCommand("rm", "Remove signal connections", []commandFlag{documentedInt64Flag("block", "id", 0, "remove every wire connected to this block"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "connection id", description: "connection identifier"}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				return clientRun(ctx, options, func(client *apiClient) error { return runWireRemove(ctx, client, args, options, stdout) })
+			}),
 		},
 	}
 }
 
-func runWire(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab wire: choose list, connect, or rm")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "list":
-		return runWireList(ctx, client, args[1:], options, stdout)
-	case "connect":
-		return runWireConnect(ctx, client, args[1:], options, stdout)
-	case "rm":
-		return runWireRemove(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab wire: unknown operation %q; choose list, connect, or rm", args[0])
-	}
-}
-
 func runWireList(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("wire list", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab wire list --flow <id> [--json]")
-			return nil
-		}
-		return usagef("processlab wire list: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab wire list: --flow is required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab wire list: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab wire list: unexpected argument %q", args[0])
 	}
 	var raw json.RawMessage
 	if err := client.request(ctx, http.MethodGet, "/flows/"+strconv.FormatInt(flowID, 10)+"/connections", nil, &raw); err != nil {
@@ -105,27 +82,19 @@ func runWireList(ctx context.Context, client *apiClient, args []string, options 
 }
 
 func runWireConnect(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("wire connect", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab wire connect: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab wire connect: --flow is required")
 	}
-	if set.NArg() != 2 {
+	if len(args) != 2 {
 		return usagef("processlab wire connect: expected source and target endpoints")
 	}
-	sourceID, sourcePort, err := parseWireEndpoint(set.Arg(0))
+	sourceID, sourcePort, err := parseWireEndpoint(args[0])
 	if err != nil {
 		return err
 	}
-	targetID, targetPort, err := parseWireEndpoint(set.Arg(1))
+	targetID, targetPort, err := parseWireEndpoint(args[1])
 	if err != nil {
 		return err
 	}
@@ -151,26 +120,18 @@ func runWireConnect(ctx context.Context, client *apiClient, args []string, optio
 }
 
 func runWireRemove(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--block", "-block"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("wire rm", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var blockID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&blockID, "block", 0, "remove every wire connected to this block")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab wire rm: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	blockID := options.commandInt64("block")
 	if blockID != 0 {
-		if set.NArg() != 0 {
+		if len(args) != 0 {
 			return usagef("processlab wire rm: --block cannot be combined with a connection id")
 		}
 		return removeWire(ctx, client, http.MethodDelete, "/blocks/"+strconv.FormatInt(blockID, 10)+"/connections", jsonOutput, stdout)
 	}
-	if set.NArg() != 1 {
+	if len(args) != 1 {
 		return usagef("processlab wire rm: expected a connection id or --block <id>")
 	}
-	connectionID, err := commandID(set.Arg(0), "connection id")
+	connectionID, err := commandID(args[0], "connection id")
 	if err != nil {
 		return err
 	}

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -75,43 +74,86 @@ type blockRecordClient struct {
 
 func newBlockCommand() *command {
 	return &command{
-		name:      "block",
-		summary:   "Discover, add, and configure library blocks",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "block operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runBlock(ctx, options, args, stdout, stderr)
+		name: "block", summary: "Discover, add, and configure library blocks", children: []*command{
+			newCommand("list", "List library or flowsheet blocks", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockList(ctx, client, args, options, stdout)
+			}),
+			newCommand("show", "Show a block", []commandFlag{documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "block id", description: "block identifier", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockShow(ctx, client, args, options, stdout)
+			}),
+			{
+				name: "add", summary: "Add a catalog block", freeform: true,
+				flags: []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedIntFlag("x", "pixels", 90, "horizontal position"), documentedIntFlag("y", "pixels", 120, "vertical position"), documentedBoolFlag("json", "write machine-readable output")},
+				help: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runBlockAdd(ctx, client, append(args, "--help"), options, stdout)
+				},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runBlockAdd(ctx, client, args, options, stdout)
+				},
+			},
+			{
+				name: "set", summary: "Update a block", freeform: true,
+				flags: []commandFlag{documentedStringFlag("name", "string", "", "block name"), documentedBoolFlag("json", "write machine-readable output")},
+				help: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runBlockSet(ctx, client, append(args, "--help"), options, stdout)
+				},
+				run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					client, err := newAPIClient(options.server, options.timeout)
+					if err != nil {
+						return err
+					}
+					return runBlockSet(ctx, client, args, options, stdout)
+				},
+			},
+			newVariadicCommand("mv", "Move blocks", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "blockID:x,y", description: "block position", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockMove(ctx, client, args, options, stdout)
+			}),
+			newVariadicCommand("rm", "Delete blocks", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "block id", description: "one or more block identifiers", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockDelete(ctx, client, args, options, stdout)
+			}),
+			newVariadicCommand("cp", "Duplicate blocks", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "block id", description: "one or more block identifiers", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockDuplicate(ctx, client, args, options, stdout)
+			}),
+			newCommand("help", "Show catalog block help", nil, []commandArgument{{name: "kind", description: "block kind", required: true}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runBlockHelp(ctx, client, args, stdout)
+			}),
 		},
-	}
-}
-
-func runBlock(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab block: choose list, add, or help")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "list":
-		return runBlockList(ctx, client, args[1:], options, stdout)
-	case "show":
-		return runBlockShow(ctx, client, args[1:], options, stdout)
-	case "set":
-		return runBlockSet(ctx, client, args[1:], options, stdout)
-	case "mv":
-		return runBlockMove(ctx, client, args[1:], options, stdout)
-	case "rm":
-		return runBlockDelete(ctx, client, args[1:], options, stdout)
-	case "cp":
-		return runBlockDuplicate(ctx, client, args[1:], options, stdout)
-	case "help":
-		return runBlockHelp(ctx, client, args[1:], stdout)
-	case "add":
-		return runBlockAdd(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab block: unknown operation %q; choose list, show, add, set, mv, rm, or cp", args[0])
 	}
 }
 
@@ -137,22 +179,10 @@ func requestBlockSchema(ctx context.Context, client *apiClient, kind string) (bl
 }
 
 func runBlockList(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("block list", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab block list [--flow <id>] [--json]")
-			return nil
-		}
-		return usagef("processlab block list: %v", err)
-	}
-	if set.NArg() != 0 {
-		return usagef("processlab block list: unexpected argument %q", set.Arg(0))
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	if len(args) != 0 {
+		return usagef("processlab block list: unexpected argument %q", args[0])
 	}
 	var raw json.RawMessage
 	var entries []blockLibraryEntryClient
@@ -232,24 +262,21 @@ func runBlockAdd(ctx context.Context, client *apiClient, args []string, options 
 	}
 	set := flag.NewFlagSet("block add "+kind, flag.ContinueOnError)
 	set.SetOutput(io.Discard)
-	var flowID int64
-	var x, y int
-	var jsonOutput = options.json
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.IntVar(&x, "x", 90, "horizontal position")
-	set.IntVar(&y, "y", 120, "vertical position")
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
+	flowID := options.commandInt64("flow")
+	x := options.commandInt("x")
+	y := options.commandInt("y")
+	jsonOutput := options.json || options.commandBool("json")
 	values := make(map[string]*string, len(schema.Parameters))
 	for _, field := range schema.Parameters {
 		value := field.Default
 		values[field.Name] = &value
 		set.StringVar(&value, parameterFlagName(field.Name), value, field.Label)
 	}
+	if hasHelpFlag(args[1:]) {
+		printBlockSchemaHelp(stdout, schema)
+		return nil
+	}
 	if err := set.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printBlockSchemaHelp(stdout, schema)
-			return nil
-		}
 		return usagef("processlab block add %s: %v", kind, err)
 	}
 	if set.NArg() != 0 {

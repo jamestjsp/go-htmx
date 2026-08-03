@@ -70,22 +70,32 @@ func TestRunJSONHelpIncludesEveryCommand(t *testing.T) {
 	}
 
 	seen := make(map[string]bool)
-	var walk func(commandHelpJSON)
-	walk = func(command commandHelpJSON) {
+	var walk func(commandHelpJSON, string)
+	walk = func(command commandHelpJSON, path string) {
 		if command.Name == "" || command.Summary == "" {
 			t.Errorf("command lacks name or summary: %#v", command)
 		}
-		if seen[command.Name] {
-			t.Errorf("command %q appears more than once", command.Name)
+		if seen[path] {
+			t.Errorf("command %q appears more than once", path)
 		}
-		seen[command.Name] = true
+		seen[path] = true
+		if len(command.Commands) == 0 && len(command.Flags) == 0 && len(command.Arguments) == 0 {
+			t.Errorf("leaf command %q has no documented flags or arguments", path)
+		}
 		for _, child := range command.Commands {
-			walk(child)
+			walk(child, path+" "+child.Name)
 		}
 	}
-	walk(help)
+	walk(help, help.Name)
 	for _, command := range []string{"processlab", "help", "serve", "project", "flow", "block", "wire", "sim", "analyze", "roles", "sweep", "controller", "ident", "study", "nonlinear", "export", "log"} {
-		if !seen[command] {
+		found := false
+		for path := range seen {
+			if path == command || strings.HasSuffix(path, " "+command) {
+				found = true
+				break
+			}
+		}
+		if !found {
 			t.Errorf("JSON help cannot reach command %q", command)
 		}
 	}
@@ -110,25 +120,70 @@ func TestRunJSONHelpSubtreeAndTextAgreement(t *testing.T) {
 	root := commandTree()
 	var text bytes.Buffer
 	printRootHelp(&text, root)
+	var printTree func(*command)
+	printTree = func(command *command) {
+		printCommandHelp(&text, command)
+		for _, child := range command.children {
+			printTree(child)
+		}
+	}
 	for _, child := range root.children {
-		printCommandHelp(&text, child)
+		printTree(child)
 	}
 	textHelp := text.String()
-	for _, child := range root.children {
-		if !strings.Contains(textHelp, child.name) {
-			t.Errorf("text help omitted command %q", child.name)
+	var compare func(commandHelpJSON, string)
+	compare = func(command commandHelpJSON, path string) {
+		if !strings.Contains(textHelp, "Usage: "+path) {
+			t.Errorf("text help omitted command %q", path)
 		}
-		for _, specification := range child.flags {
-			if !strings.Contains(textHelp, "--"+specification.name) {
-				t.Errorf("text help omitted flag %q", specification.name)
+		for _, specification := range command.Flags {
+			if !strings.Contains(textHelp, "--"+specification.Name) {
+				t.Errorf("text help omitted flag %q", path+" --"+specification.Name)
 			}
 		}
-	}
-	for _, specification := range root.flags {
-		if !strings.Contains(textHelp, "--"+specification.name) {
-			t.Errorf("text help omitted global flag %q", specification.name)
+		for _, child := range command.Commands {
+			compare(child, path+" "+child.Name)
 		}
 	}
+	compare(commandHelp(root), "processlab")
+}
+
+func TestRunRejectsMissingRequiredArgument(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"flow", "create", "--project", "1"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("missing positional argument exit code = %d, want 2: %s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `argument "name" is required`) {
+		t.Fatalf("missing positional argument was not named: %s", stderr.String())
+	}
+}
+
+func TestRunLeafHelp(t *testing.T) {
+	root := commandTree()
+	var visit func(*command, []string)
+	visit = func(current *command, path []string) {
+		if current.freeform {
+			return
+		}
+		if len(current.children) == 0 {
+			args := append(append([]string{}, path[1:]...), "--help")
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr); code != 0 {
+				t.Errorf("%s --help exit code = %d: %s", strings.Join(path, " "), code, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Errorf("%s --help wrote diagnostics: %s", strings.Join(path, " "), stderr.String())
+			}
+			if stdout.Len() == 0 {
+				t.Errorf("%s --help wrote no output", strings.Join(path, " "))
+			}
+			return
+		}
+		for _, child := range current.children {
+			visit(child, append(path, child.name))
+		}
+	}
+	visit(root, []string{root.name})
 }
 
 func TestParseGlobalOptionsServerPrecedence(t *testing.T) {
