@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,24 @@ type controllerCandidateRecordClient struct {
 	Review        studio.ControllerCandidateReview `json:"review"`
 	Applied       bool                             `json:"applied"`
 	UndoAvailable bool                             `json:"undoAvailable"`
+}
+
+type controllerActionRecordClient struct {
+	ID     string `json:"id"`
+	FlowID int64  `json:"flowId"`
+	Kind   string `json:"kind"`
+	Action string `json:"action"`
+}
+
+type controllerBlockChangeClient struct {
+	ID         int64          `json:"id"`
+	Name       string         `json:"name"`
+	Parameters map[string]any `json:"parameters"`
+}
+
+type controllerActionOutputClient struct {
+	controllerActionRecordClient
+	Changes []controllerBlockChangeClient `json:"changes"`
 }
 
 type pidCandidateRequestClient struct {
@@ -86,9 +105,125 @@ func runController(ctx context.Context, options globalOptions, args []string, st
 		return runControllerTune(ctx, client, args[1:], options, stdout, stderr)
 	case "review":
 		return runControllerReview(ctx, client, args[1:], options, stdout)
+	case "apply":
+		return runControllerAction(ctx, client, args[1:], options, stdout, "apply")
+	case "undo":
+		return runControllerAction(ctx, client, args[1:], options, stdout, "undo")
 	default:
-		return usagef("processlab controller: unknown operation %q; choose pid, state, robust, tune, or review", args[0])
+		return usagef("processlab controller: unknown operation %q; choose pid, state, robust, tune, review, apply, or undo", args[0])
 	}
+}
+
+func runControllerAction(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer, action string) error {
+	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
+	set := flag.NewFlagSet("controller "+action, flag.ContinueOnError)
+	set.SetOutput(io.Discard)
+	jsonOutput := options.json
+	var flowID int64
+	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
+	set.Int64Var(&flowID, "flow", 0, "flowsheet id; omit to search all flows")
+	if err := set.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintf(stdout, "Usage: processlab controller %s <candidate-id> [--flow <id>] [--json]\n", action)
+			if action == "apply" {
+				fmt.Fprintln(stdout, "Applying invalidates stored simulation and analysis records for the flowsheet.")
+			}
+			return nil
+		}
+		return usagef("processlab controller %s: %v", action, err)
+	}
+	if set.NArg() != 1 {
+		return usagef("processlab controller %s: exactly one candidate id is required", action)
+	}
+	id := set.Arg(0)
+	record, err := findControllerCandidate(ctx, client, id, flowID)
+	if err != nil {
+		return err
+	}
+	before, err := getControllerBlocks(ctx, client, record.FlowID)
+	if err != nil {
+		return err
+	}
+	path := "/flows/" + strconv.FormatInt(record.FlowID, 10) + "/controller-candidates/" + id + "/" + action
+	var result controllerActionRecordClient
+	if err := client.request(ctx, http.MethodPost, path, nil, &result); err != nil {
+		return err
+	}
+	after, err := getControllerBlocks(ctx, client, record.FlowID)
+	if err != nil {
+		return err
+	}
+	output := controllerActionOutputClient{controllerActionRecordClient: result, Changes: controllerBlockChanges(before, after)}
+	if jsonOutput {
+		return json.NewEncoder(stdout).Encode(output)
+	}
+	fmt.Fprintf(stdout, "%s candidate %s (%s)\n", result.Action, result.ID, result.Kind)
+	if len(output.Changes) == 0 {
+		fmt.Fprintln(stdout, "blocks changed: none")
+		return nil
+	}
+	for _, change := range output.Changes {
+		parameters, _ := json.Marshal(change.Parameters)
+		fmt.Fprintf(stdout, "block %d %s: %s\n", change.ID, change.Name, parameters)
+	}
+	return nil
+}
+
+func findControllerCandidate(ctx context.Context, client *apiClient, id string, flowID int64) (controllerCandidateRecordClient, error) {
+	if flowID > 0 {
+		return requestControllerCandidate(ctx, client, flowID, id)
+	}
+	var flows []flowClientRecord
+	if err := client.request(ctx, http.MethodGet, "/flows", nil, &flows); err != nil {
+		return controllerCandidateRecordClient{}, err
+	}
+	for _, flow := range flows {
+		record, err := requestControllerCandidate(ctx, client, flow.ID, id)
+		if err == nil {
+			return record, nil
+		}
+		var clientErr *clientError
+		if !errors.As(err, &clientErr) || clientErr.code != 1 || clientErr.kind != "not_found" {
+			return controllerCandidateRecordClient{}, err
+		}
+	}
+	return controllerCandidateRecordClient{}, fmt.Errorf("controller candidate %q was not found", id)
+}
+
+func requestControllerCandidate(ctx context.Context, client *apiClient, flowID int64, id string) (controllerCandidateRecordClient, error) {
+	var record controllerCandidateRecordClient
+	path := "/flows/" + strconv.FormatInt(flowID, 10) + "/controller-candidates/" + id
+	if err := client.request(ctx, http.MethodGet, path, nil, &record); err != nil {
+		return controllerCandidateRecordClient{}, err
+	}
+	return record, nil
+}
+
+func getControllerBlocks(ctx context.Context, client *apiClient, flowID int64) ([]blockRecordClient, error) {
+	var blocks []blockRecordClient
+	path := "/flows/" + strconv.FormatInt(flowID, 10) + "/blocks"
+	if err := client.request(ctx, http.MethodGet, path, nil, &blocks); err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
+func controllerBlockChanges(before, after []blockRecordClient) []controllerBlockChangeClient {
+	previous := make(map[int64]blockRecordClient, len(before))
+	for _, block := range before {
+		previous[block.ID] = block
+	}
+	changes := make([]controllerBlockChangeClient, 0)
+	for _, block := range after {
+		old, ok := previous[block.ID]
+		if !ok || reflect.DeepEqual(old.Parameters, block.Parameters) {
+			continue
+		}
+		changes = append(changes, controllerBlockChangeClient{
+			ID: block.ID, Name: block.Name, Parameters: block.Parameters,
+		})
+	}
+	return changes
 }
 
 func runControllerPID(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
