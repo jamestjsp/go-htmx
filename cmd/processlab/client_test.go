@@ -77,6 +77,28 @@ func TestAPIClientUnreachableUsesExitThree(t *testing.T) {
 	}
 }
 
+func TestAPIClientUndecodableErrorIsInternal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, "upstream proxy failed")
+	}))
+	defer server.Close()
+
+	client, err := newAPIClient(server.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.request(context.Background(), http.MethodGet, "status", nil, nil)
+	var clientErr *clientError
+	if !errors.As(err, &clientErr) {
+		t.Fatalf("error = %v, want clientError", err)
+	}
+	if clientErr.kind != "internal" || clientErr.ExitCode() != 1 || !strings.Contains(clientErr.Error(), "upstream proxy failed") {
+		t.Fatalf("client error = %#v", clientErr)
+	}
+}
+
 func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()

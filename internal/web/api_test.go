@@ -151,6 +151,16 @@ func TestAPIRouterReturnsJSONForUnknownRoute(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); contentType != "application/json; charset=utf-8" {
 		t.Fatalf("Content-Type = %q, want JSON", contentType)
 	}
+	var payload apiErrorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Kind != "not_found" || !strings.Contains(payload.Error.Message, "GET /api/v1/no-such-resource") {
+		t.Fatalf("unknown route error = %#v", payload.Error)
+	}
+	if strings.Contains(payload.Error.Message, "requested item no longer exists") {
+		t.Fatal("unknown route used the missing-record message")
+	}
 }
 
 func invokeAPI(t *testing.T, server *Server, operation apiOperation) *httptest.ResponseRecorder {

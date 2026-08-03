@@ -43,8 +43,8 @@ func New(studioService *studio.Studio) (*Server, error) {
 		controllerCandidates: newControllerCandidateRegistry(),
 	}
 	mux := http.NewServeMux()
-	server.apiMux.Handle("/", server.api(func(*http.Request) (apiResponse, error) {
-		return apiResponse{}, studio.ErrNotFound
+	server.apiMux.Handle("/", server.api(func(r *http.Request) (apiResponse, error) {
+		return apiResponse{}, apiRouteNotFound(r)
 	}))
 	server.apiMux.Handle("GET /blocks", server.api(server.blockLibraryAPI))
 	server.apiMux.Handle("GET /blocks/{kind}", server.api(server.blockSchemaAPI))
