@@ -473,6 +473,74 @@ func TestCLIHarnessRunsIdentificationCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsModelStudyCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	flowID := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", "1", "Study loop"))
+	plant := requireCLIID(t, harness.Run(
+		"--server", harness.URL(), "block", "add", "state_space", "--flow", secondString(flowID),
+		"--a", "-1", "--b", "1", "--c", "1", "--d", "0",
+		"--input-names", "u", "--output-names", "y", "--state-names", "x",
+	))
+	controller := requireCLIID(t, harness.Run(
+		"--server", harness.URL(), "block", "add", "matrix_gain", "--flow", secondString(flowID),
+		"--d", "1", "--input-names", "y", "--output-names", "u",
+	))
+	for _, endpoints := range [][2]int64{{controller, plant}, {plant, controller}} {
+		result := harness.Run(
+			"--server", harness.URL(), "wire", "connect", "--flow", secondString(flowID),
+			secondString(endpoints[0]), secondString(endpoints[1]),
+		)
+		if result.code != 0 || result.stderr != "" {
+			t.Fatalf("study boundary wire result = %s", result)
+		}
+	}
+	roles := harness.Run(
+		"--server", harness.URL(), "roles", "set", "--flow", secondString(flowID),
+		"--plant", secondString(plant), "--controller", secondString(controller), "--json",
+	)
+	if roles.code != 0 || roles.stderr != "" {
+		t.Fatalf("study roles result = %s", roles)
+	}
+
+	shown := harness.Run("--server", harness.URL(), "study", "show", "--flow", secondString(flowID), "--json")
+	if shown.code != 0 || shown.stderr != "" {
+		t.Fatalf("study show result = %s", shown)
+	}
+	var provenance struct {
+		Kind   string `json:"kind"`
+		Order  int    `json:"order"`
+		Inputs int    `json:"inputs"`
+		Stable *bool  `json:"stable"`
+	}
+	if err := json.Unmarshal([]byte(shown.stdout), &provenance); err != nil {
+		t.Fatalf("decode model study: %v\n%s", err, shown.stdout)
+	}
+	if provenance.Kind != "state-space" || provenance.Order != 1 || provenance.Inputs != 1 || provenance.Stable == nil {
+		t.Fatalf("model study provenance = %#v", provenance)
+	}
+	controllerStudy := harness.Run("--server", harness.URL(), "study", "show", "--flow", secondString(flowID), "--role", "controller")
+	if controllerStudy.code != 0 || !strings.Contains(controllerStudy.stdout, "kind: state-space") || !strings.Contains(controllerStudy.stdout, "stability:") {
+		t.Fatalf("controller model study = %s", controllerStudy)
+	}
+
+	frdFlow := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", "1", "FRD study"))
+	if result := harness.Run("--server", harness.URL(), "block", "add", "frd", "--flow", secondString(frdFlow)); result.code != 0 || result.stderr != "" {
+		t.Fatalf("FRD block result = %s", result)
+	}
+	frdStudy := harness.Run("--server", harness.URL(), "study", "show", "--flow", secondString(frdFlow), "--json")
+	if frdStudy.code != 0 || frdStudy.stderr != "" || !strings.Contains(frdStudy.stdout, `"kind":"frd"`) || !strings.Contains(frdStudy.stdout, `"frequencySamples":3`) {
+		t.Fatalf("FRD model study = %s", frdStudy)
+	}
+
+	emptyFlow := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", "1", "Empty study"))
+	refused := harness.Run("--server", harness.URL(), "study", "show", "--flow", secondString(emptyFlow))
+	if refused.code != 1 || refused.stdout != "" {
+		t.Fatalf("uncompiled model study = %s", refused)
+	}
+}
+
 func identificationDatasetJSON(samples, channels int) string {
 	inputValues := make([]float64, channels*samples)
 	inputNames := make([]string, channels)
