@@ -160,6 +160,135 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsWorkspaceCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	created := harness.Run("--server", harness.URL(), "project", "create", "Boiler")
+	projectID := requireCLIID(t, created)
+
+	listed := harness.Run("--server", harness.URL(), "project", "list", "--json")
+	if listed.code != 0 || listed.stderr != "" {
+		t.Fatalf("project list result = %s", listed)
+	}
+	var projects []projectClientRecord
+	if err := json.Unmarshal([]byte(listed.stdout), &projects); err != nil {
+		t.Fatalf("decode project list: %v\n%s", err, listed.stdout)
+	}
+	var boiler projectClientRecord
+	for _, project := range projects {
+		if project.ID == projectID {
+			boiler = project
+		}
+	}
+	if boiler.Name != "Boiler" || boiler.FlowCount != 1 {
+		t.Fatalf("created project = %#v, want Boiler with its default flowsheet", boiler)
+	}
+
+	createdFlow := harness.Run("--server", harness.URL(), "flow", "create", "--project", strconv.FormatInt(projectID, 10), "Level loop")
+	flowID := requireCLIID(t, createdFlow)
+	flowList := harness.Run("--server", harness.URL(), "flow", "list", "--project", strconv.FormatInt(projectID, 10), "--json")
+	if flowList.code != 0 || flowList.stderr != "" {
+		t.Fatalf("flow list result = %s", flowList)
+	}
+	var flows []flowClientRecord
+	if err := json.Unmarshal([]byte(flowList.stdout), &flows); err != nil {
+		t.Fatalf("decode flow list: %v\n%s", err, flowList.stdout)
+	}
+	if len(flows) != 2 {
+		t.Fatalf("flow list = %#v, want default and created flowsheet", flows)
+	}
+	var defaultFlowID int64
+	for _, flow := range flows {
+		if flow.ID == flowID && !flow.NeedsRun {
+			t.Fatalf("new flow stale flag = %#v, want true", flow)
+		}
+		if flow.ID != flowID {
+			defaultFlowID = flow.ID
+		}
+	}
+
+	added := harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", strconv.FormatInt(flowID, 10))
+	if added.code != 0 || added.stderr != "" {
+		t.Fatalf("add block to flow result = %s", added)
+	}
+	withoutForce := harness.Run("--server", harness.URL(), "flow", "delete", strconv.FormatInt(flowID, 10))
+	if withoutForce.code != 1 || !strings.Contains(withoutForce.stderr, "use --force") {
+		t.Fatalf("delete without force result = %s", withoutForce)
+	}
+	withForce := harness.Run("--server", harness.URL(), "flow", "delete", strconv.FormatInt(flowID, 10), "--force")
+	if withForce.code != 0 || withForce.stderr != "" {
+		t.Fatalf("delete with force result = %s", withForce)
+	}
+
+	first := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", strconv.FormatInt(projectID, 10), "First"))
+	second := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", strconv.FormatInt(projectID, 10), "Second"))
+	if result := harness.Run("--server", harness.URL(), "flow", "reorder", secondString(second), secondString(first), secondString(defaultFlowID), "--project", strconv.FormatInt(projectID, 10)); result.code != 0 || result.stderr != "" {
+		t.Fatalf("flow reorder result = %s", result)
+	}
+
+	otherProject := requireCLIID(t, harness.Run("--server", harness.URL(), "project", "create", "Other"))
+	otherFlows := harness.Run("--server", harness.URL(), "flow", "list", "--project", strconv.FormatInt(otherProject, 10), "--json")
+	if otherFlows.code != 0 {
+		t.Fatalf("other flow list result = %s", otherFlows)
+	}
+	var foreign []flowClientRecord
+	if err := json.Unmarshal([]byte(otherFlows.stdout), &foreign); err != nil || len(foreign) != 1 {
+		t.Fatalf("decode other flows = %v, %#v", err, foreign)
+	}
+	if result := harness.Run("--server", harness.URL(), "flow", "reorder", secondString(second), secondString(first), secondString(defaultFlowID), secondString(foreign[0].ID), "--project", strconv.FormatInt(projectID, 10)); result.code != 1 || !strings.Contains(result.stderr, "each of this project's") {
+		t.Fatalf("foreign flow reorder result = %s", result)
+	}
+
+	if result := harness.Run("--server", harness.URL(), "project", "rename", secondString(projectID), "Boiler renamed"); result.code != 0 || result.stderr != "" {
+		t.Fatalf("project rename result = %s", result)
+	}
+	shown := harness.Run("--server", harness.URL(), "project", "show", secondString(projectID), "--json")
+	var shownWorkspace workspaceClientRecord
+	if shown.code != 0 || json.Unmarshal([]byte(shown.stdout), &shownWorkspace) != nil || shownWorkspace.Project.Name != "Boiler renamed" {
+		t.Fatalf("project show result = %s", shown)
+	}
+
+	duplicate := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "duplicate", secondString(first)))
+	if result := harness.Run("--server", harness.URL(), "flow", "rename", secondString(first), "Renamed first"); result.code != 0 || result.stderr != "" {
+		t.Fatalf("flow rename result = %s", result)
+	}
+	if result := harness.Run("--server", harness.URL(), "flow", "delete", secondString(duplicate), "--force"); result.code != 0 || result.stderr != "" {
+		t.Fatalf("duplicate delete result = %s", result)
+	}
+
+	lastFlow := harness.Run("--server", harness.URL(), "flow", "list", "--project", strconv.FormatInt(otherProject, 10), "--json")
+	if lastFlow.code != 0 {
+		t.Fatalf("last flow list result = %s", lastFlow)
+	}
+	if err := json.Unmarshal([]byte(lastFlow.stdout), &foreign); err != nil || len(foreign) != 1 {
+		t.Fatalf("decode last flow = %v, %#v", err, foreign)
+	}
+	lastDelete := harness.Run("--server", harness.URL(), "flow", "delete", secondString(foreign[0].ID), "--force")
+	if lastDelete.code != 1 || !strings.Contains(lastDelete.stderr, "at least one flowsheet") {
+		t.Fatalf("last flow delete result = %s", lastDelete)
+	}
+	if result := harness.Run("--server", harness.URL(), "project", "delete", secondString(otherProject), "--force"); result.code != 0 || result.stderr != "" {
+		t.Fatalf("project delete result = %s", result)
+	}
+}
+
+func requireCLIID(t *testing.T, result cliResult) int64 {
+	t.Helper()
+	if result.code != 0 || result.stderr != "" {
+		t.Fatalf("expected successful id command: %s", result)
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(result.stdout), 10, 64)
+	if err != nil || id <= 0 {
+		t.Fatalf("expected positive id in %s: %v", result.stdout, err)
+	}
+	return id
+}
+
+func secondString(value int64) string {
+	return strconv.FormatInt(value, 10)
+}
+
 func parameterJSONName(flag string) string {
 	name := strings.ReplaceAll(flag, "-", "_")
 	for index := strings.IndexByte(name, '_'); index >= 0 && index+1 < len(name); index = strings.IndexByte(name, '_') {

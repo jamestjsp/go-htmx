@@ -71,7 +71,9 @@ func (client *apiClient) request(
 	output any,
 ) error {
 	requestURL := *client.baseURL
-	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/api/v1/" + strings.TrimLeft(path, "/")
+	requestPath, query, _ := strings.Cut(strings.TrimLeft(path, "/"), "?")
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/api/v1/" + requestPath
+	requestURL.RawQuery = query
 	var body io.Reader
 	if input != nil {
 		encoded, err := json.Marshal(input)
