@@ -382,6 +382,147 @@ func TestCLIHarnessRunsStateControllerCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsIdentificationCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	jsonInput := identificationDatasetJSON(64, 1)
+	jsonResult := harness.RunInput(
+		jsonInput,
+		"--server", harness.URL(), "ident", "estimate", "--sample-time", "0.1",
+		"--nfft", "8", "--overlap", "4", "--json",
+	)
+	if jsonResult.code != 0 || jsonResult.stderr != "" {
+		t.Fatalf("JSON identification result = %s", jsonResult)
+	}
+	var jsonCandidate struct {
+		Name string `json:"name"`
+		Fit  struct {
+			ComparedBins int `json:"comparedBins"`
+		} `json:"fit"`
+	}
+	if err := json.Unmarshal([]byte(jsonResult.stdout), &jsonCandidate); err != nil {
+		t.Fatalf("decode JSON identification result: %v\n%s", err, jsonResult.stdout)
+	}
+	if jsonCandidate.Name != "identification" || jsonCandidate.Fit.ComparedBins == 0 {
+		t.Fatalf("JSON identification candidate = %#v", jsonCandidate)
+	}
+
+	var csvInput strings.Builder
+	csvInput.WriteString("u,y\n")
+	for sample := 0; sample < 64; sample++ {
+		input := float64(sample%7 - 3)
+		output := 0.5*input + float64((sample+2)%5-2)
+		fmt.Fprintf(&csvInput, "%g,%g\n", input, output)
+	}
+	csvResult := harness.RunInput(
+		csvInput.String(),
+		"--server", harness.URL(), "ident", "estimate", "--format", "csv",
+		"--input-columns", "u", "--output-columns", "y", "--sample-time", "0.1",
+		"--training-start", "0", "--training-end", "32", "--validation-start", "32", "--validation-end", "64",
+		"--nfft", "8", "--overlap", "4",
+	)
+	if csvResult.code != 0 || csvResult.stderr != "" || !strings.Contains(csvResult.stdout, "validation fit:") {
+		t.Fatalf("CSV identification result = %s", csvResult)
+	}
+
+	overlap := harness.RunInput(
+		jsonInput, "--server", harness.URL(), "ident", "estimate", "--sample-time", "0.1",
+		"--training-start", "0", "--training-end", "40", "--validation-start", "20", "--validation-end", "64",
+		"--nfft", "8", "--overlap", "4",
+	)
+	if overlap.code != 1 || !strings.Contains(overlap.stderr, "sample ranges overlap") {
+		t.Fatalf("overlapping identification split = %s", overlap)
+	}
+
+	fftLimit := harness.RunInput(
+		jsonInput, "--server", harness.URL(), "ident", "estimate", "--sample-time", "0.1",
+		"--nfft", "100", "--overlap", "4",
+	)
+	if fftLimit.code != 1 || !strings.Contains(fftLimit.stderr, "nfft 100 exceeds") {
+		t.Fatalf("identification FFT limit = %s", fftLimit)
+	}
+
+	channelLimit := harness.RunInput(
+		identificationDatasetJSON(8, 33), "--server", harness.URL(), "ident", "estimate",
+		"--sample-time", "0.1", "--nfft", "8", "--overlap", "4",
+	)
+	if channelLimit.code != 1 || !strings.Contains(channelLimit.stderr, "32-channel limit") {
+		t.Fatalf("identification channel limit = %s", channelLimit)
+	}
+
+	era := harness.RunInput(
+		markovDatasetJSON(4), "--server", harness.URL(), "ident", "era", "--order", "1", "--json",
+	)
+	if era.code != 0 || era.stderr != "" || !strings.Contains(era.stdout, `"order":1`) {
+		t.Fatalf("ERA identification result = %s", era)
+	}
+
+	eraOrderLimit := harness.RunInput(
+		markovDatasetJSON(4), "--server", harness.URL(), "ident", "era", "--order", "257",
+	)
+	if eraOrderLimit.code != 1 || !strings.Contains(eraOrderLimit.stderr, "order must be between 1 and 256") {
+		t.Fatalf("ERA order limit = %s", eraOrderLimit)
+	}
+
+	markovLimit := harness.RunInput(
+		markovDatasetJSON(4097), "--server", harness.URL(), "ident", "era", "--order", "1",
+	)
+	if markovLimit.code != 1 || !strings.Contains(markovLimit.stderr, "4096-parameter limit") {
+		t.Fatalf("Markov limit = %s", markovLimit)
+	}
+}
+
+func identificationDatasetJSON(samples, channels int) string {
+	inputValues := make([]float64, channels*samples)
+	inputNames := make([]string, channels)
+	inputUnits := make([]string, channels)
+	for channel := range channels {
+		inputNames[channel] = fmt.Sprintf("u%d", channel)
+		inputUnits[channel] = "1"
+		for sample := range samples {
+			inputValues[channel*samples+sample] = float64((channel+sample)%7 - 3)
+		}
+	}
+	outputValues := make([]float64, samples)
+	for sample := range samples {
+		outputValues[sample] = 0.5*inputValues[sample] + float64((sample+2)%5-2)
+	}
+	value := map[string]any{
+		"inputs":     map[string]any{"rows": channels, "columns": samples, "values": inputValues},
+		"outputs":    map[string]any{"rows": 1, "columns": samples, "values": outputValues},
+		"inputNames": inputNames, "outputNames": []string{"y"},
+		"inputUnits": inputUnits, "outputUnits": []string{"1"},
+		"sampleTime": 0.1, "timeUnit": "s",
+		"split": map[string]any{
+			"training":   map[string]int{"start": 0, "end": samples / 2},
+			"validation": map[string]int{"start": samples / 2, "end": samples},
+		},
+		"preprocessing": "none",
+	}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func markovDatasetJSON(count int) string {
+	parameters := make([]map[string]any, count)
+	for index := range parameters {
+		value := 1.0
+		if index > 0 {
+			value = 1 / float64(index+1)
+		}
+		parameters[index] = map[string]any{"rows": 1, "columns": 1, "values": []float64{value}}
+	}
+	value := map[string]any{
+		"parameters": parameters, "trainingCount": 3,
+		"inputNames": []string{"u"}, "outputNames": []string{"y"},
+		"inputUnits": []string{"1"}, "outputUnits": []string{"1"},
+		"sampleTime": 0.1, "timeUnit": "s",
+	}
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
 func TestCLIHarnessRunsParameterSweepCommands(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()
