@@ -316,6 +316,91 @@ func TestCLIHarnessRunsPIDControllerCommands(t *testing.T) {
 		t.Fatalf("controller review result = %s", review)
 	}
 
+	beforeBlock := harness.Run("--server", harness.URL(), "block", "show", secondString(candidate.Review.SourceControlRoles.Spec.Controller.Blocks[0]), "--json")
+	if beforeBlock.code != 0 || beforeBlock.stderr != "" {
+		t.Fatalf("controller before-apply result = %s", beforeBlock)
+	}
+	var beforeParameters blockRecordClient
+	if err := json.Unmarshal([]byte(beforeBlock.stdout), &beforeParameters); err != nil {
+		t.Fatalf("decode controller before-apply block: %v", err)
+	}
+
+	applied := harness.Run("--server", harness.URL(), "controller", "apply", candidate.ID)
+	if applied.code != 0 || !strings.Contains(applied.stdout, "applied candidate") || !strings.Contains(applied.stdout, "block") {
+		t.Fatalf("controller apply result = %s", applied)
+	}
+	appliedAgain := harness.Run("--server", harness.URL(), "controller", "apply", candidate.ID)
+	if appliedAgain.code != 1 || !strings.Contains(appliedAgain.stderr, "already applied") {
+		t.Fatalf("repeated controller apply result = %s", appliedAgain)
+	}
+	afterApply := harness.Run("--server", harness.URL(), "block", "show", secondString(beforeParameters.ID), "--json")
+	if afterApply.code != 0 || afterApply.stderr != "" {
+		t.Fatalf("controller after-apply result = %s", afterApply)
+	}
+	var afterApplyParameters blockRecordClient
+	if err := json.Unmarshal([]byte(afterApply.stdout), &afterApplyParameters); err != nil {
+		t.Fatalf("decode controller after-apply block: %v", err)
+	}
+	if reflect.DeepEqual(beforeParameters.Parameters, afterApplyParameters.Parameters) {
+		t.Fatal("controller apply did not change authored parameters")
+	}
+
+	undone := harness.Run("--server", harness.URL(), "controller", "undo", candidate.ID)
+	if undone.code != 0 || !strings.Contains(undone.stdout, "undone candidate") {
+		t.Fatalf("controller undo result = %s", undone)
+	}
+	afterUndo := harness.Run("--server", harness.URL(), "block", "show", secondString(beforeParameters.ID), "--json")
+	if afterUndo.code != 0 || afterUndo.stderr != "" {
+		t.Fatalf("controller after-undo result = %s", afterUndo)
+	}
+	var afterUndoParameters blockRecordClient
+	if err := json.Unmarshal([]byte(afterUndo.stdout), &afterUndoParameters); err != nil {
+		t.Fatalf("decode controller after-undo block: %v", err)
+	}
+	if !reflect.DeepEqual(beforeParameters.Parameters, afterUndoParameters.Parameters) {
+		t.Fatalf("controller undo parameters = %#v, want %#v", afterUndoParameters.Parameters, beforeParameters.Parameters)
+	}
+
+	staleCandidate := harness.Run(
+		"--server", harness.URL(), "controller", "pid", "--flow", "1",
+		"--type", "PI", "--crossover", "1", "--phase-margin", "55", "--review-horizon", "2", "--json",
+	)
+	if staleCandidate.code != 0 || staleCandidate.stderr != "" {
+		t.Fatalf("stale controller design result = %s", staleCandidate)
+	}
+	var stale controllerCandidateRecordClient
+	if err := json.Unmarshal([]byte(staleCandidate.stdout), &stale); err != nil {
+		t.Fatalf("decode stale controller candidate: %v", err)
+	}
+	if edited := harness.Run("--server", harness.URL(), "block", "set", secondString(plant), "--time-constant", "3"); edited.code != 0 || edited.stderr != "" {
+		t.Fatalf("stale model edit result = %s", edited)
+	}
+	staleApply := harness.Run("--server", harness.URL(), "controller", "apply", stale.ID, "--flow", "1")
+	if staleApply.code != 1 || !strings.Contains(staleApply.stderr, "stale") {
+		t.Fatalf("stale controller apply result = %s", staleApply)
+	}
+	undoCandidateResult := harness.Run(
+		"--server", harness.URL(), "controller", "pid", "--flow", "1",
+		"--type", "PI", "--crossover", "1", "--phase-margin", "55", "--review-horizon", "2", "--json",
+	)
+	if undoCandidateResult.code != 0 || undoCandidateResult.stderr != "" {
+		t.Fatalf("undo-stale controller design result = %s", undoCandidateResult)
+	}
+	var undoCandidate controllerCandidateRecordClient
+	if err := json.Unmarshal([]byte(undoCandidateResult.stdout), &undoCandidate); err != nil {
+		t.Fatalf("decode undo-stale controller candidate: %v", err)
+	}
+	if apply := harness.Run("--server", harness.URL(), "controller", "apply", undoCandidate.ID, "--flow", "1"); apply.code != 0 {
+		t.Fatalf("undo-stale controller apply result = %s", apply)
+	}
+	if edited := harness.Run("--server", harness.URL(), "block", "set", secondString(plant), "--time-constant", "4"); edited.code != 0 || edited.stderr != "" {
+		t.Fatalf("undo-stale model edit result = %s", edited)
+	}
+	staleUndo := harness.Run("--server", harness.URL(), "controller", "undo", undoCandidate.ID, "--flow", "1")
+	if staleUndo.code != 1 || !strings.Contains(staleUndo.stderr, "stale") {
+		t.Fatalf("stale controller undo result = %s", staleUndo)
+	}
+
 	tuned := harness.Run(
 		"--server", harness.URL(), "controller", "tune", "--flow", "1",
 		"--parameter", "proportional=0.1:5", "--goal", "tracking:tracking:10",

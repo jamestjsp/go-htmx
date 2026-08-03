@@ -231,6 +231,14 @@ func (s *Server) controllerCandidateApplyAPI(r *http.Request) (apiResponse, erro
 		return apiResponse{}, err
 	}
 	id := r.PathValue("candidateID")
+	if known := s.controllerCandidates.get(id, flowID); known != nil {
+		if known.Applied {
+			return apiResponse{}, apiConflict("Controller candidate is already applied; undo it before applying another candidate.")
+		}
+		if known.applying || known.undoing {
+			return apiResponse{}, apiConflict("Another controller candidate action is in progress. Try again after it finishes.")
+		}
+	}
 	candidate, release := s.controllerCandidates.beginApply(id, flowID)
 	if candidate == nil {
 		return apiResponse{}, studio.ErrNotFound
@@ -271,6 +279,14 @@ func (s *Server) controllerCandidateUndoAPI(r *http.Request) (apiResponse, error
 		return apiResponse{}, err
 	}
 	id := r.PathValue("candidateID")
+	if known := s.controllerCandidates.get(id, flowID); known != nil {
+		if !known.Applied || known.Undo == nil {
+			return apiResponse{}, apiConflict("Undo is unavailable because this controller candidate has not been applied.")
+		}
+		if known.applying || known.undoing {
+			return apiResponse{}, apiConflict("Another controller candidate action is in progress. Try again after it finishes.")
+		}
+	}
 	candidate, release := s.controllerCandidates.beginUndo(id, flowID)
 	if candidate == nil {
 		return apiResponse{}, studio.ErrNotFound
