@@ -215,6 +215,62 @@ func TestCLIHarnessRunsAnalysisCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsControlRoleCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	plant := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "lag", "--flow", "1"))
+	controller := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "gain", "--flow", "1"))
+	for _, endpoints := range [][2]int64{{controller, plant}, {plant, controller}} {
+		result := harness.Run(
+			"--server", harness.URL(), "wire", "connect", "--flow", "1",
+			secondString(endpoints[0]), secondString(endpoints[1]),
+		)
+		if result.code != 0 || result.stderr != "" {
+			t.Fatalf("role boundary wire result = %s", result)
+		}
+	}
+
+	set := harness.Run(
+		"--server", harness.URL(), "roles", "set", "--flow", "1",
+		"--plant", secondString(plant), "--controller", secondString(controller), "--json",
+	)
+	if set.code != 0 || set.stderr != "" {
+		t.Fatalf("roles set result = %s", set)
+	}
+	var roles rolesOutput
+	if err := json.Unmarshal([]byte(set.stdout), &roles); err != nil {
+		t.Fatalf("decode roles set: %v\n%s", err, set.stdout)
+	}
+	if roles.Version != 1 || roles.Fingerprint == "" || len(roles.Spec.Plant.Blocks) != 1 || len(roles.Spec.Controller.Blocks) != 1 {
+		t.Fatalf("roles set = %#v", roles)
+	}
+
+	show := harness.Run("--server", harness.URL(), "roles", "show", "--flow", "1")
+	if show.code != 0 || show.stderr != "" || !strings.Contains(show.stdout, "plant:") || !strings.Contains(show.stdout, "controller:") || strings.Contains(show.stdout, "<missing>") {
+		t.Fatalf("roles show result = %s", show)
+	}
+
+	foreignFlow := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", "1", "Foreign"))
+	foreignBlock := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "lag", "--flow", secondString(foreignFlow)))
+	foreign := harness.Run(
+		"--server", harness.URL(), "roles", "set", "--flow", "1",
+		"--plant", secondString(foreignBlock), "--controller", secondString(controller),
+	)
+	if foreign.code != 1 || !strings.Contains(foreign.stderr, "not in the selected flowsheet") {
+		t.Fatalf("foreign role result = %s", foreign)
+	}
+
+	deleted := harness.Run("--server", harness.URL(), "block", "rm", "--flow", "1", secondString(plant))
+	if deleted.code != 0 || deleted.stderr != "" {
+		t.Fatalf("referenced block delete result = %s", deleted)
+	}
+	cleared := harness.Run("--server", harness.URL(), "roles", "show", "--flow", "1")
+	if cleared.code != 0 || cleared.stderr != "" || !strings.Contains(cleared.stdout, "roles: cleared") {
+		t.Fatalf("cleared roles result = %s", cleared)
+	}
+}
+
 func TestCLIHarnessRunsWorkspaceCommands(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()

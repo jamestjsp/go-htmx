@@ -70,9 +70,30 @@ func (client *apiClient) request(
 	input any,
 	output any,
 ) error {
+	return client.requestAt(ctx, method, path, input, output, "/api/v1/")
+}
+
+func (client *apiClient) requestRoot(
+	ctx context.Context,
+	method string,
+	path string,
+	input any,
+	output any,
+) error {
+	return client.requestAt(ctx, method, path, input, output, "/")
+}
+
+func (client *apiClient) requestAt(
+	ctx context.Context,
+	method string,
+	path string,
+	input any,
+	output any,
+	prefix string,
+) error {
 	requestURL := *client.baseURL
 	requestPath, query, _ := strings.Cut(strings.TrimLeft(path, "/"), "?")
-	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + "/api/v1/" + requestPath
+	requestURL.Path = strings.TrimRight(requestURL.Path, "/") + prefix + requestPath
 	requestURL.RawQuery = query
 	var body io.Reader
 	if input != nil {
@@ -112,10 +133,14 @@ func (client *apiClient) request(
 	if response.StatusCode >= http.StatusBadRequest {
 		var envelope apiErrorBody
 		if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Error.Message == "" {
+			message := strings.TrimSpace(string(responseBody))
+			if message == "" {
+				message = fmt.Sprintf("Process Lab returned HTTP %d", response.StatusCode)
+			}
 			return &clientError{
-				kind:    "internal",
+				kind:    "usage",
 				code:    1,
-				message: fmt.Sprintf("Process Lab returned HTTP %d without a valid error envelope", response.StatusCode),
+				message: message,
 			}
 		}
 		return &clientError{
