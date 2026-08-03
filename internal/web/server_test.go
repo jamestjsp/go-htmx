@@ -361,6 +361,9 @@ func TestHTMXBlockUpdateReturnsBoundedAuthoritativeRegions(t *testing.T) {
 		t.Fatalf("X-Process-Lab-Block-Update = %q, want %q", got, want)
 	}
 	body := response.Body.String()
+	if strings.Contains(body, "<title>") {
+		t.Fatal("bounded response rendered the unchanged document title")
+	}
 	if got := strings.Count(body, `hx-swap-oob="outerHTML"`); got != 5 {
 		t.Fatalf("bounded response has %d out-of-band regions, want 5", got)
 	}

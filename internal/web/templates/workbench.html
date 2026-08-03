@@ -2,15 +2,16 @@
   Two entry points, one body.
 
   "workbench" is the markup itself, nested inside "page" for a document
-  response. "workbench-fragment" is what every HTMX swap renders: the same
-  markup preceded by a root-level <title>, which htmx lifts out, applies to
-  the document, and drops from the swapped content. Switching sheets pushes a
-  new URL, so without it the title and the history entry fall out of step.
+  response. "workbench-fragment" is what every HTMX swap renders. Navigation
+  fragments carry a root-level <title>, which htmx lifts out and applies to
+  the document. Bounded block updates keep the current sheet, so they omit the
+  same-value title instead of making the browser process it on every edit.
 
   A <title> cannot go in the shared block: on the document path that block is
   rendered inside <body>, where a title element does not belong.
 */}}
-{{define "workbench-fragment"}}<title>{{.Title}}</title>
+{{define "workbench-fragment"}}{{if not .BoundedEdit}}<title>{{.Title}}</title>
+{{end}}
 {{template "workbench" .}}{{end}}
 
 {{define "workbench"}}
