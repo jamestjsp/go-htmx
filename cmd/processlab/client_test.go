@@ -271,6 +271,117 @@ func TestCLIHarnessRunsControlRoleCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsPIDControllerCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	plant := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "lag", "--flow", "1"))
+	controller := requireCLIID(t, harness.Run("--server", harness.URL(), "block", "add", "pid", "--flow", "1"))
+	for _, endpoints := range [][2]int64{{controller, plant}, {plant, controller}} {
+		result := harness.Run(
+			"--server", harness.URL(), "wire", "connect", "--flow", "1",
+			secondString(endpoints[0]), secondString(endpoints[1]),
+		)
+		if result.code != 0 || result.stderr != "" {
+			t.Fatalf("controller boundary wire result = %s", result)
+		}
+	}
+	roles := harness.Run(
+		"--server", harness.URL(), "roles", "set", "--flow", "1",
+		"--plant", secondString(plant), "--controller", secondString(controller), "--json",
+	)
+	if roles.code != 0 || roles.stderr != "" {
+		t.Fatalf("controller roles result = %s", roles)
+	}
+
+	designed := harness.Run(
+		"--server", harness.URL(), "controller", "pid", "--flow", "1",
+		"--type", "PI", "--crossover", "1", "--phase-margin", "55", "--review-horizon", "2", "--json",
+	)
+	if designed.code != 0 || designed.stderr != "" {
+		t.Fatalf("controller PID result = %s", designed)
+	}
+	var candidate controllerCandidateRecordClient
+	if err := json.Unmarshal([]byte(designed.stdout), &candidate); err != nil {
+		t.Fatalf("decode controller candidate: %v\n%s", err, designed.stdout)
+	}
+	if candidate.ID == "" || candidate.Kind != "pid" || candidate.Review.Kind != "pid" {
+		t.Fatalf("controller candidate = %#v", candidate)
+	}
+
+	review := harness.Run(
+		"--server", harness.URL(), "controller", "review", "--flow", "1", candidate.ID, "--json",
+	)
+	if review.code != 0 || review.stderr != "" || !strings.Contains(review.stdout, `"kind":"pid"`) {
+		t.Fatalf("controller review result = %s", review)
+	}
+
+	tuned := harness.Run(
+		"--server", harness.URL(), "controller", "tune", "--flow", "1",
+		"--parameter", "proportional=0.1:5", "--goal", "tracking:tracking:10",
+		"--grid-points", "2", "--max-evaluations", "2", "--json",
+	)
+	if tuned.code != 0 || tuned.stderr != "" || !strings.Contains(tuned.stdout, `"kind":"tuning"`) {
+		t.Fatalf("controller tuning result = %s", tuned)
+	}
+}
+
+func TestCLIHarnessRunsStateControllerCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	flowID := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", "1", "State loop"))
+	plant := requireCLIID(t, harness.Run(
+		"--server", harness.URL(), "block", "add", "state_space", "--flow", secondString(flowID),
+		"--a", "1", "--b", "1", "--c", "1", "--d", "0",
+		"--input-names", "u", "--output-names", "y", "--state-names", "x",
+	))
+	controller := requireCLIID(t, harness.Run(
+		"--server", harness.URL(), "block", "add", "matrix_gain", "--flow", secondString(flowID),
+		"--d", "0", "--input-names", "y", "--output-names", "u",
+	))
+	for _, endpoints := range [][2]int64{{controller, plant}, {plant, controller}} {
+		result := harness.Run(
+			"--server", harness.URL(), "wire", "connect", "--flow", secondString(flowID),
+			secondString(endpoints[0]), secondString(endpoints[1]),
+		)
+		if result.code != 0 || result.stderr != "" {
+			t.Fatalf("state boundary wire result = %s", result)
+		}
+	}
+	roles := harness.Run(
+		"--server", harness.URL(), "roles", "set", "--flow", secondString(flowID),
+		"--plant", secondString(plant), "--controller", secondString(controller), "--json",
+	)
+	if roles.code != 0 || roles.stderr != "" {
+		t.Fatalf("state roles result = %s", roles)
+	}
+
+	feedback := harness.Run(
+		"--server", harness.URL(), "controller", "state", "feedback", "--flow", secondString(flowID),
+		"--method", "lqr", "--q", "1", "--r", "1", "--json",
+	)
+	if feedback.code != 0 || feedback.stderr != "" || !strings.Contains(feedback.stdout, `"kind":"state-space"`) {
+		t.Fatalf("state feedback result = %s", feedback)
+	}
+
+	estimator := harness.Run(
+		"--server", harness.URL(), "controller", "state", "estimator", "--flow", secondString(flowID),
+		"--method", "kalman", "--qn", "1", "--rn", "1", "--json",
+	)
+	if estimator.code != 0 || estimator.stderr != "" || !strings.Contains(estimator.stdout, `"kind":"state-estimator"`) {
+		t.Fatalf("state estimator result = %s", estimator)
+	}
+
+	observer := harness.Run(
+		"--server", harness.URL(), "controller", "state", "observer", "--flow", secondString(flowID),
+		"--method", "lqg", "--q", "1", "--r", "1", "--qn", "1", "--rn", "1", "--json",
+	)
+	if observer.code != 0 || observer.stderr != "" || !strings.Contains(observer.stdout, `"kind":"state-space"`) {
+		t.Fatalf("state observer result = %s", observer)
+	}
+}
+
 func TestCLIHarnessRunsParameterSweepCommands(t *testing.T) {
 	harness := newCLIHarness(t)
 	defer harness.Close()

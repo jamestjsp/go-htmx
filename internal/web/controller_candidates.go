@@ -43,6 +43,7 @@ type pendingControllerCandidate struct {
 	PID      *studio.PIDDesignCandidate
 	State    *studio.StateDesignCandidate
 	Robust   *studio.RobustSynthesisCandidate
+	Tuning   *studio.ControllerTuningCandidate
 	Undo     *studio.ControllerUndoCandidate
 	Applied  bool
 	applying bool

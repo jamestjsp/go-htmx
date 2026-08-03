@@ -122,6 +122,49 @@ func (s *Studio) ReviewStateDesignCandidate(
 	)
 }
 
+func (s *Studio) ReviewEstimatorCandidate(
+	ctx context.Context,
+	candidate StateDesignCandidate,
+) (ControllerCandidateReview, error) {
+	if candidate.FlowID <= 0 || candidate.SourceModelRevision.IsZero() ||
+		!candidate.SourceControlRoles.valid() || candidate.Estimator == nil {
+		return ControllerCandidateReview{}, invalid(
+			"estimator candidate is incomplete; refresh the design",
+		)
+	}
+	snapshot, err := s.snapshot(ctx, candidate.FlowID)
+	if err != nil {
+		return ControllerCandidateReview{}, err
+	}
+	if !snapshot.Flow.ModelUpdatedAt.Equal(candidate.SourceModelRevision) {
+		return ControllerCandidateReview{}, invalid(
+			"estimator candidate is stale; refresh the design from the current model",
+		)
+	}
+	currentRoles, err := loadControlRoleSpec(ctx, s.db, candidate.FlowID)
+	if err != nil {
+		return ControllerCandidateReview{}, err
+	}
+	if newControlRoleSnapshot(currentRoles).Fingerprint !=
+		candidate.SourceControlRoles.Fingerprint {
+		return ControllerCandidateReview{}, invalid(
+			"control roles changed; refresh the design from the current roles",
+		)
+	}
+	return ControllerCandidateReview{
+		FlowID:              candidate.FlowID,
+		SourceModelRevision: candidate.SourceModelRevision,
+		SourceControlRoles:  candidate.SourceControlRoles,
+		Kind:                "state-estimator",
+		Algorithm:           candidate.Method,
+		Goals:               append([]ControllerDesignGoal(nil), candidate.Goals...),
+		Warnings:            append([]string(nil), candidate.Warnings...),
+		ApplyAvailable:      false,
+		UndoAvailable:       false,
+		UndoPolicy:          "Estimator candidates are diagnostic-only and cannot replace the authored controller.",
+	}, nil
+}
+
 type controllerReviewRequest struct {
 	flowID             int64
 	modelRevision      time.Time
