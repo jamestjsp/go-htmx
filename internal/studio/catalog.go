@@ -62,7 +62,12 @@ type ParameterSchema struct {
 	Placeholder string                  `json:"placeholder"`
 	Help        string                  `json:"help"`
 	Optional    bool                    `json:"optional"`
-	ActiveWhen  []string                `json:"activeWhen,omitempty"`
+	ActiveWhen  []ParameterActivation   `json:"activeWhen,omitempty"`
+}
+
+type ParameterActivation struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 
 type ParameterSchemaOption struct {
@@ -114,7 +119,7 @@ type parameterDefinition struct {
 	Help        string
 	Options     []parameterOption
 	active      func(Parameters) bool
-	activeWhen  []string
+	activation  []ParameterActivation
 	shape       func(Parameters) (int, int)
 	optional    bool
 	// set and text are the field's own read/write: the one place that knows
@@ -1497,10 +1502,9 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				"sample_time", "Approximation sample time", "sample time",
 				"0.001", MinSimulationSampleTime, "sec",
 				func(p *Parameters) *float64 { return &p.SampleTime },
-				[]string{"delay_mode", "sample_time_mode"},
-				func(parameters Parameters) bool {
-					return normalizedDelayMode(parameters) == delayModeThiran &&
-						normalizedSampleTimeMode(parameters) == sampleTimeExplicit
+				[]ParameterActivation{
+					parameterActivation("delay_mode", delayModeThiran),
+					parameterActivation("sample_time_mode", string(sampleTimeExplicit)),
 				},
 			),
 		},
@@ -2117,15 +2121,63 @@ func conditionalNumberField(
 	minimum float64,
 	unit string,
 	field func(*Parameters) *float64,
-	activeWhen []string,
-	active func(Parameters) bool,
+	activation []ParameterActivation,
 ) parameterDefinition {
 	definition := minimumNumberField(
 		name, label, boundsLabel, step, minimum, unit, field,
 	)
-	definition.activeWhen = append([]string(nil), activeWhen...)
-	definition.active = active
+	definition.activation = cloneParameterActivations(activation)
+	if len(definition.activation) > 0 {
+		definition.active = func(parameters Parameters) bool {
+			return parameterActivationsMatch(parameters, definition.activation)
+		}
+	}
 	return definition
+}
+
+func parameterActivation(name string, values ...string) ParameterActivation {
+	return ParameterActivation{Name: name, Values: append([]string(nil), values...)}
+}
+
+func cloneParameterActivations(activation []ParameterActivation) []ParameterActivation {
+	clone := make([]ParameterActivation, len(activation))
+	for index, condition := range activation {
+		clone[index] = ParameterActivation{
+			Name:   condition.Name,
+			Values: append([]string(nil), condition.Values...),
+		}
+	}
+	return clone
+}
+
+func parameterActivationsMatch(parameters Parameters, activation []ParameterActivation) bool {
+	for _, condition := range activation {
+		value := parameterActivationValue(parameters, condition.Name)
+		matched := false
+		for _, activatingValue := range condition.Values {
+			if value == activatingValue {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func parameterActivationValue(parameters Parameters, name string) string {
+	switch name {
+	case "delay_mode":
+		return normalizedDelayMode(parameters)
+	case "sample_time_mode":
+		return string(normalizedSampleTimeMode(parameters))
+	case "time_domain":
+		return normalizedModelDomain(parameters)
+	default:
+		return ""
+	}
 }
 
 func sampleTimeFields() []parameterDefinition {
@@ -2148,9 +2200,8 @@ func sampleTimeFields() []parameterDefinition {
 			"sample_time", "Sample time", "sample time",
 			"0.001", MinSimulationSampleTime, "sec",
 			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
-			[]string{"sample_time_mode"},
-			func(parameters Parameters) bool {
-				return normalizedSampleTimeMode(parameters) == sampleTimeExplicit
+			[]ParameterActivation{
+				parameterActivation("sample_time_mode", string(sampleTimeExplicit)),
 			},
 		),
 	}
@@ -2443,7 +2494,7 @@ func (k BlockKind) Schema() (BlockSchema, bool) {
 			Placeholder: field.Placeholder,
 			Help:        field.Help,
 			Optional:    field.optional,
-			ActiveWhen:  field.activeWhen,
+			ActiveWhen:  cloneParameterActivations(field.activation),
 			Options:     make([]ParameterSchemaOption, 0, len(field.Options)),
 		}
 		if field.text != nil {

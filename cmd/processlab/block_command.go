@@ -28,20 +28,25 @@ type blockParameterOptionClient struct {
 	Label string `json:"label"`
 }
 
+type blockParameterActivationClient struct {
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
+}
+
 type blockParameterSchemaClient struct {
-	Name        string                       `json:"name"`
-	Label       string                       `json:"label"`
-	Type        string                       `json:"type"`
-	Default     string                       `json:"default"`
-	Options     []blockParameterOptionClient `json:"options"`
-	Step        string                       `json:"step"`
-	Minimum     *float64                     `json:"minimum"`
-	Maximum     *float64                     `json:"maximum"`
-	Unit        string                       `json:"unit"`
-	Placeholder string                       `json:"placeholder"`
-	Help        string                       `json:"help"`
-	Optional    bool                         `json:"optional"`
-	ActiveWhen  []string                     `json:"activeWhen"`
+	Name        string                           `json:"name"`
+	Label       string                           `json:"label"`
+	Type        string                           `json:"type"`
+	Default     string                           `json:"default"`
+	Options     []blockParameterOptionClient     `json:"options"`
+	Step        string                           `json:"step"`
+	Minimum     *float64                         `json:"minimum"`
+	Maximum     *float64                         `json:"maximum"`
+	Unit        string                           `json:"unit"`
+	Placeholder string                           `json:"placeholder"`
+	Help        string                           `json:"help"`
+	Optional    bool                             `json:"optional"`
+	ActiveWhen  []blockParameterActivationClient `json:"activeWhen"`
 }
 
 type blockPortSchemaClient struct {
@@ -380,9 +385,9 @@ func printBlockSchemaHelp(w io.Writer, schema blockSchemaClient) {
 			} else {
 				fmt.Fprint(w, "+∞")
 			}
-			if field.Unit != "" {
-				fmt.Fprintf(w, " %s", field.Unit)
-			}
+		}
+		if field.Unit != "" {
+			fmt.Fprintf(w, " %s", field.Unit)
 		}
 		fmt.Fprintln(w)
 		if len(field.Options) > 0 {
@@ -397,15 +402,23 @@ func printBlockSchemaHelp(w io.Writer, schema blockSchemaClient) {
 		}
 		if len(field.ActiveWhen) > 0 {
 			conditions := make([]string, len(field.ActiveWhen))
-			for index, dependency := range field.ActiveWhen {
-				conditions[index] = "--" + parameterFlagName(dependency)
+			for index, activation := range field.ActiveWhen {
+				conditions[index] = formatBlockParameterActivation(activation)
 			}
-			fmt.Fprintf(w, "    applies when %s is active\n", strings.Join(conditions, " and "))
+			fmt.Fprintf(w, "    applies when %s\n", strings.Join(conditions, " and "))
 		}
 		if field.Help != "" {
 			fmt.Fprintf(w, "    %s\n", field.Help)
 		}
 	}
+}
+
+func formatBlockParameterActivation(activation blockParameterActivationClient) string {
+	name := "--" + parameterFlagName(activation.Name)
+	if len(activation.Values) == 1 {
+		return fmt.Sprintf("%s is %s", name, activation.Values[0])
+	}
+	return fmt.Sprintf("%s is one of %s", name, strings.Join(activation.Values, ", "))
 }
 
 func writeRawJSON(w io.Writer, raw json.RawMessage) error {
