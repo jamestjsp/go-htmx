@@ -89,8 +89,8 @@ func TestRunJSONHelpIncludesEveryCommand(t *testing.T) {
 			t.Errorf("JSON help cannot reach command %q", command)
 		}
 	}
-	if len(help.Commands) != 2 {
-		t.Fatalf("root commands = %d, want 2: %#v", len(help.Commands), help.Commands)
+	if len(help.Commands) != 3 {
+		t.Fatalf("root commands = %d, want 3: %#v", len(help.Commands), help.Commands)
 	}
 }
 
