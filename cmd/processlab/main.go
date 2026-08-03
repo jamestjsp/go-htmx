@@ -193,6 +193,7 @@ func commandTree() *command {
 		newControllerCommand(),
 		newIdentCommand(),
 		newStudyCommand(),
+		newNonlinearCommand(),
 		newExportCommand(),
 		newLogCommand(),
 	}
