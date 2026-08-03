@@ -6,11 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/token"
 	"math"
-	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jamestjsp/controlsys"
@@ -18,7 +17,7 @@ import (
 )
 
 const (
-	nonlinearDefinitionSchemaVersion = 1
+	nonlinearDefinitionSchemaVersion = 2
 	defaultEquilibriumTolerance      = 1e-8
 	maxNonlinearValidityDirections   = 32
 	maxEKFBatchSteps                 = 10000
@@ -32,33 +31,15 @@ type NonlinearDefinitionRef struct {
 }
 
 type NonlinearDefinition struct {
-	Ref         NonlinearDefinitionRef `json:"ref"`
-	Name        string                 `json:"name"`
-	StateNames  []string               `json:"stateNames"`
-	InputNames  []string               `json:"inputNames"`
-	OutputNames []string               `json:"outputNames"`
-}
-
-type NonlinearRuntimeCallbacks struct {
-	Dynamics            func(x, u *mat.VecDense) *mat.VecDense
-	Output              func(x, u *mat.VecDense) *mat.VecDense
-	Transition          func(x, u *mat.VecDense) *mat.VecDense
-	Measurement         func(x *mat.VecDense) *mat.VecDense
-	TransitionJacobian  func(x, u *mat.VecDense) *mat.Dense
-	MeasurementJacobian func(x *mat.VecDense) *mat.Dense
-}
-
-type nonlinearRuntimeEntry struct {
-	definition   NonlinearDefinition
-	callbacks    NonlinearRuntimeCallbacks
-	registeredAt time.Time
-}
-
-var nonlinearRuntimeDefinitions = struct {
-	sync.RWMutex
-	entries map[NonlinearDefinitionRef]nonlinearRuntimeEntry
-}{
-	entries: make(map[NonlinearDefinitionRef]nonlinearRuntimeEntry),
+	Ref              NonlinearDefinitionRef `json:"ref"`
+	Name             string                 `json:"name"`
+	StateNames       []string               `json:"stateNames"`
+	InputNames       []string               `json:"inputNames"`
+	OutputNames      []string               `json:"outputNames"`
+	Dynamics         []string               `json:"dynamics"`
+	Outputs          []string               `json:"outputs"`
+	SampleTime       float64                `json:"sampleTime,omitempty"`
+	IntegrationSteps int                    `json:"integrationSteps,omitempty"`
 }
 
 type NamedOperatingPoint struct {
@@ -157,32 +138,17 @@ type NonlinearEKFRun struct {
 func (s *Studio) RegisterNonlinearDefinition(
 	ctx context.Context,
 	definition NonlinearDefinition,
-	callbacks NonlinearRuntimeCallbacks,
 ) (NonlinearDefinition, error) {
 	definition, err := normalizeNonlinearDefinition(definition)
 	if err != nil {
 		return NonlinearDefinition{}, err
 	}
-	if err := validateNonlinearCallbacks(callbacks); err != nil {
+	if _, err := compileNonlinearDefinition(definition); err != nil {
 		return NonlinearDefinition{}, err
-	}
-	nonlinearRuntimeDefinitions.Lock()
-	defer nonlinearRuntimeDefinitions.Unlock()
-	if existing, ok := nonlinearRuntimeDefinitions.entries[definition.Ref]; ok &&
-		!reflect.DeepEqual(existing.definition, definition) {
-		return NonlinearDefinition{}, invalid(
-			"nonlinear definition %s@%d is already registered with different metadata; increment its version",
-			definition.Ref.Key, definition.Ref.Version,
-		)
 	}
 	if err := s.persistNonlinearDefinition(ctx, definition); err != nil {
 		return NonlinearDefinition{}, err
 	}
-	entry := nonlinearRuntimeEntry{
-		definition: cloneNonlinearDefinition(definition),
-		callbacks:  callbacks, registeredAt: s.now().UTC(),
-	}
-	nonlinearRuntimeDefinitions.entries[definition.Ref] = entry
 	return cloneNonlinearDefinition(definition), nil
 }
 
@@ -190,38 +156,55 @@ func (s *Studio) NonlinearDefinition(
 	ctx context.Context,
 	ref NonlinearDefinitionRef,
 ) (NonlinearDefinition, error) {
+	definition, _, err := s.loadNonlinearDefinition(ctx, ref)
+	return definition, err
+}
+
+func (s *Studio) loadNonlinearDefinition(
+	ctx context.Context,
+	ref NonlinearDefinitionRef,
+) (NonlinearDefinition, time.Time, error) {
 	if err := ensureNonlinearDefinitionSchema(ctx, s.db); err != nil {
-		return NonlinearDefinition{}, err
+		return NonlinearDefinition{}, time.Time{}, err
 	}
 	var schemaVersion int
 	var encoded string
+	var createdAtText string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT schema_version, definition_json
+		SELECT schema_version, definition_json, created_at
 		FROM nonlinear_definitions
 		WHERE definition_key = ? AND definition_version = ?`,
 		ref.Key, ref.Version,
-	).Scan(&schemaVersion, &encoded)
+	).Scan(&schemaVersion, &encoded, &createdAtText)
 	if errors.Is(err, sql.ErrNoRows) {
-		return NonlinearDefinition{}, ErrNotFound
+		return NonlinearDefinition{}, time.Time{}, ErrNotFound
 	}
 	if err != nil {
-		return NonlinearDefinition{}, fmt.Errorf("load nonlinear definition: %w", err)
+		return NonlinearDefinition{}, time.Time{}, fmt.Errorf("load nonlinear definition: %w", err)
 	}
 	if schemaVersion != nonlinearDefinitionSchemaVersion {
-		return NonlinearDefinition{}, invalid(
+		return NonlinearDefinition{}, time.Time{}, invalid(
 			"nonlinear definition storage version %d is unsupported", schemaVersion,
 		)
 	}
 	var definition NonlinearDefinition
 	if err := json.Unmarshal([]byte(encoded), &definition); err != nil {
-		return NonlinearDefinition{}, fmt.Errorf("decode nonlinear definition: %w", err)
+		return NonlinearDefinition{}, time.Time{}, fmt.Errorf("decode nonlinear definition: %w", err)
 	}
 	if definition.Ref != ref {
-		return NonlinearDefinition{}, invalid(
+		return NonlinearDefinition{}, time.Time{}, invalid(
 			"nonlinear definition storage key/version does not match its payload",
 		)
 	}
-	return cloneNonlinearDefinition(definition), nil
+	definition, err = normalizeNonlinearDefinition(definition)
+	if err != nil {
+		return NonlinearDefinition{}, time.Time{}, err
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, createdAtText)
+	if err != nil {
+		return NonlinearDefinition{}, time.Time{}, fmt.Errorf("parse nonlinear definition creation time: %w", err)
+	}
+	return cloneNonlinearDefinition(definition), createdAt, nil
 }
 
 func (s *Studio) LinearizeNonlinear(
@@ -233,7 +216,7 @@ func (s *Studio) LinearizeNonlinear(
 	if point.Name == "" {
 		return NonlinearLinearizationCandidate{}, invalid("operating point must have a name")
 	}
-	definition, entry, err := s.nonlinearRuntimeDefinition(ctx, point.Definition)
+	definition, runtime, createdAt, err := s.nonlinearRuntimeDefinition(ctx, point.Definition)
 	if err != nil {
 		return NonlinearLinearizationCandidate{}, err
 	}
@@ -249,7 +232,7 @@ func (s *Studio) LinearizeNonlinear(
 	u0 := mat.NewVecDense(len(point.Input), append([]float64(nil), point.Input...))
 	residual, err := checkedVector(
 		"dynamics at operating point",
-		entry.callbacks.Dynamics(x0, u0),
+		runtime.dynamics(x0, u0),
 		len(definition.StateNames),
 	)
 	if err != nil {
@@ -264,7 +247,7 @@ func (s *Studio) LinearizeNonlinear(
 	}
 	output, err := checkedVector(
 		"output at operating point",
-		entry.callbacks.Output(x0, u0),
+		runtime.output(x0, u0),
 		len(definition.OutputNames),
 	)
 	if err != nil {
@@ -272,8 +255,8 @@ func (s *Studio) LinearizeNonlinear(
 	}
 	system, err := controlsys.Linearize(
 		&controlsys.NonlinearModel{
-			F: entry.callbacks.Dynamics,
-			H: entry.callbacks.Output,
+			F: runtime.dynamics,
+			H: runtime.output,
 			N: len(definition.StateNames),
 			M: len(definition.InputNames),
 			P: len(definition.OutputNames),
@@ -297,7 +280,7 @@ func (s *Studio) LinearizeNonlinear(
 		return NonlinearLinearizationCandidate{}, err
 	}
 	validity, err := nonlinearDirectionalValidity(
-		entry.callbacks, system, definition, point, request.Directions,
+		runtime, system, definition, point, request.Directions,
 	)
 	if err != nil {
 		return NonlinearLinearizationCandidate{}, err
@@ -312,7 +295,7 @@ func (s *Studio) LinearizeNonlinear(
 		Provenance: NonlinearModelProvenance{
 			Definition: definition.Ref, DefinitionName: definition.Name,
 			OperatingPointName:  point.Name,
-			RuntimeRegisteredAt: entry.registeredAt,
+			RuntimeRegisteredAt: createdAt,
 			CreatedAt:           s.now().UTC(),
 			Method:              "controlsys.Linearize central finite-difference local model",
 		},
@@ -330,9 +313,20 @@ func (s *Studio) RunNonlinearEKF(
 	if estimator.Name == "" {
 		return NonlinearEKFRun{}, invalid("EKF definition must have a name")
 	}
-	definition, entry, err := s.nonlinearRuntimeDefinition(ctx, estimator.Model)
+	definition, runtime, createdAt, err := s.nonlinearRuntimeDefinition(ctx, estimator.Model)
 	if err != nil {
 		return NonlinearEKFRun{}, err
+	}
+	if definition.SampleTime <= 0 {
+		return NonlinearEKFRun{}, invalid("nonlinear definition sampleTime is required for EKF")
+	}
+	for _, outputName := range definition.OutputNames {
+		if inputs := runtime.measurementInputReferences[outputName]; len(inputs) > 0 {
+			return NonlinearEKFRun{}, invalid(
+				"nonlinear output %q references input %q and cannot be an EKF measurement",
+				outputName, inputs[0],
+			)
+		}
 	}
 	n := len(definition.StateNames)
 	m := len(definition.InputNames)
@@ -380,10 +374,10 @@ func (s *Studio) RunNonlinearEKF(
 	}
 	filter, err := controlsys.NewEKF(
 		&controlsys.EKFModel{
-			F:    entry.callbacks.Transition,
-			H:    entry.callbacks.Measurement,
-			FJac: entry.callbacks.TransitionJacobian,
-			HJac: entry.callbacks.MeasurementJacobian,
+			F:    runtime.transition,
+			H:    runtime.measurement,
+			FJac: runtime.transitionJacobian,
+			HJac: runtime.measurementJacobian,
 			Q:    q,
 			R:    r,
 		},
@@ -401,7 +395,7 @@ func (s *Studio) RunNonlinearEKF(
 		MeasurementNames: append([]string(nil), definition.OutputNames...),
 		Provenance: NonlinearModelProvenance{
 			Definition: definition.Ref, DefinitionName: definition.Name,
-			RuntimeRegisteredAt: entry.registeredAt,
+			RuntimeRegisteredAt: createdAt,
 			CreatedAt:           s.now().UTC(),
 			Method:              "controlsys.EKF full-batch predict/update",
 		},
@@ -478,6 +472,8 @@ func normalizeNonlinearDefinition(
 	if err != nil {
 		return NonlinearDefinition{}, err
 	}
+	definition.Dynamics = trimNonlinearExpressions(definition.Dynamics)
+	definition.Outputs = trimNonlinearExpressions(definition.Outputs)
 	return definition, nil
 }
 
@@ -496,6 +492,12 @@ func normalizedSignalNames(
 		if name == "" {
 			return nil, invalid("%s name %d is empty", role, i+1)
 		}
+		if !token.IsIdentifier(name) {
+			return nil, invalid("%s name %q must be a valid Go identifier", role, name)
+		}
+		if name == "pi" || name == "e" {
+			return nil, invalid("%s name %q is reserved by nonlinear expressions", role, name)
+		}
 		if _, duplicate := seen[name]; duplicate {
 			return nil, invalid("%s name %q is duplicated", role, name)
 		}
@@ -505,16 +507,12 @@ func normalizedSignalNames(
 	return result, nil
 }
 
-func validateNonlinearCallbacks(callbacks NonlinearRuntimeCallbacks) error {
-	if callbacks.Dynamics == nil || callbacks.Output == nil ||
-		callbacks.Transition == nil || callbacks.Measurement == nil ||
-		callbacks.TransitionJacobian == nil ||
-		callbacks.MeasurementJacobian == nil {
-		return invalid(
-			"nonlinear runtime requires dynamics, output, transition, measurement, and both EKF Jacobian callbacks",
-		)
+func trimNonlinearExpressions(expressions []string) []string {
+	result := make([]string, len(expressions))
+	for index, expression := range expressions {
+		result[index] = strings.TrimSpace(expression)
 	}
-	return nil
+	return result
 }
 
 func (s *Studio) persistNonlinearDefinition(
@@ -530,12 +528,13 @@ func (s *Studio) persistNonlinearDefinition(
 			return err
 		}
 		var existing string
+		var existingSchemaVersion int
 		err := tx.QueryRowContext(ctx, `
-			SELECT definition_json
+			SELECT schema_version, definition_json
 			FROM nonlinear_definitions
 			WHERE definition_key = ? AND definition_version = ?`,
 			definition.Ref.Key, definition.Ref.Version,
-		).Scan(&existing)
+		).Scan(&existingSchemaVersion, &existing)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			_, err = tx.ExecContext(ctx, `
@@ -553,6 +552,11 @@ func (s *Studio) persistNonlinearDefinition(
 			return nil
 		case err != nil:
 			return fmt.Errorf("load nonlinear definition version: %w", err)
+		case existingSchemaVersion != nonlinearDefinitionSchemaVersion:
+			return invalid(
+				"nonlinear definition storage version %d is unsupported",
+				existingSchemaVersion,
+			)
 		case existing != string(encoded):
 			return invalid(
 				"nonlinear definition %s@%d is already persisted with different metadata; increment its version",
@@ -590,27 +594,16 @@ func ensureNonlinearDefinitionSchema(
 func (s *Studio) nonlinearRuntimeDefinition(
 	ctx context.Context,
 	ref NonlinearDefinitionRef,
-) (NonlinearDefinition, nonlinearRuntimeEntry, error) {
-	definition, err := s.NonlinearDefinition(ctx, ref)
+) (NonlinearDefinition, nonlinearRuntime, time.Time, error) {
+	definition, createdAt, err := s.loadNonlinearDefinition(ctx, ref)
 	if err != nil {
-		return NonlinearDefinition{}, nonlinearRuntimeEntry{}, err
+		return NonlinearDefinition{}, nonlinearRuntime{}, time.Time{}, err
 	}
-	nonlinearRuntimeDefinitions.RLock()
-	entry, ok := nonlinearRuntimeDefinitions.entries[ref]
-	nonlinearRuntimeDefinitions.RUnlock()
-	if !ok {
-		return NonlinearDefinition{}, nonlinearRuntimeEntry{}, invalid(
-			"nonlinear definition %s@%d is persisted but its runtime callbacks are not registered",
-			ref.Key, ref.Version,
-		)
+	program, err := compileNonlinearDefinition(definition)
+	if err != nil {
+		return NonlinearDefinition{}, nonlinearRuntime{}, time.Time{}, err
 	}
-	if !reflect.DeepEqual(entry.definition, definition) {
-		return NonlinearDefinition{}, nonlinearRuntimeEntry{}, invalid(
-			"nonlinear definition %s@%d metadata does not match its runtime registration",
-			ref.Key, ref.Version,
-		)
-	}
-	return definition, entry, nil
+	return definition, program.runtime(definition), createdAt, nil
 }
 
 func validateNamedOperatingPoint(
@@ -638,7 +631,7 @@ func validateNamedOperatingPoint(
 }
 
 func nonlinearDirectionalValidity(
-	callbacks NonlinearRuntimeCallbacks,
+	runtime nonlinearRuntime,
 	system *controlsys.System,
 	definition NonlinearDefinition,
 	point NamedOperatingPoint,
@@ -657,7 +650,7 @@ func nonlinearDirectionalValidity(
 	u0 := mat.NewVecDense(len(point.Input), point.Input)
 	f0, err := checkedVector(
 		"dynamics at operating point",
-		callbacks.Dynamics(x0, u0),
+		runtime.dynamics(x0, u0),
 		len(definition.StateNames),
 	)
 	if err != nil {
@@ -665,7 +658,7 @@ func nonlinearDirectionalValidity(
 	}
 	h0, err := checkedVector(
 		"output at operating point",
-		callbacks.Output(x0, u0),
+		runtime.output(x0, u0),
 		len(definition.OutputNames),
 	)
 	if err != nil {
@@ -699,14 +692,14 @@ func nonlinearDirectionalValidity(
 			return nil, invalid("direction %q cannot be all zero", direction.Name)
 		}
 		stateError, outputError, err := directionalApproximationErrors(
-			callbacks, system, x0, u0, f0, h0,
+			runtime, system, x0, u0, f0, h0,
 			direction.StateDelta, direction.InputDelta, direction.Radius,
 		)
 		if err != nil {
 			return nil, err
 		}
 		halfStateError, halfOutputError, err := directionalApproximationErrors(
-			callbacks, system, x0, u0, f0, h0,
+			runtime, system, x0, u0, f0, h0,
 			direction.StateDelta, direction.InputDelta, direction.Radius/2,
 		)
 		if err != nil {
@@ -732,7 +725,7 @@ func nonlinearDirectionalValidity(
 }
 
 func directionalApproximationErrors(
-	callbacks NonlinearRuntimeCallbacks,
+	runtime nonlinearRuntime,
 	system *controlsys.System,
 	x0, u0, f0, h0 *mat.VecDense,
 	stateDirection, inputDirection []float64,
@@ -745,13 +738,13 @@ func directionalApproximationErrors(
 	u := mat.VecDenseCopyOf(u0)
 	u.AddVec(u, du)
 	actualState, err := checkedVector(
-		"directional dynamics", callbacks.Dynamics(x, u), x0.Len(),
+		"directional dynamics", runtime.dynamics(x, u), x0.Len(),
 	)
 	if err != nil {
 		return 0, 0, err
 	}
 	actualOutput, err := checkedVector(
-		"directional output", callbacks.Output(x, u), h0.Len(),
+		"directional output", runtime.output(x, u), h0.Len(),
 	)
 	if err != nil {
 		return 0, 0, err
@@ -903,6 +896,8 @@ func cloneNonlinearDefinition(definition NonlinearDefinition) NonlinearDefinitio
 	definition.StateNames = append([]string(nil), definition.StateNames...)
 	definition.InputNames = append([]string(nil), definition.InputNames...)
 	definition.OutputNames = append([]string(nil), definition.OutputNames...)
+	definition.Dynamics = append([]string(nil), definition.Dynamics...)
+	definition.Outputs = append([]string(nil), definition.Outputs...)
 	return definition
 }
 
