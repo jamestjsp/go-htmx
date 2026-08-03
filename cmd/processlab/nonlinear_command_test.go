@@ -75,14 +75,105 @@ func TestCLIHarnessRunsNonlinearWorkflowsAcrossRestart(t *testing.T) {
 		"time\tu\ty\n0\t1\t0.1\n0.1\t0\t0\n",
 		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
 	)
-	if estimate.code != 0 || estimate.stderr != "" || !strings.Contains(estimate.stdout, "time\tx\n") {
+	if estimate.code != 0 ||
+		estimate.stderr != "Using identity Q, R, and P0 covariances with a zero initial state; pass --estimator to configure the EKF.\n" ||
+		!strings.Contains(estimate.stdout, "time\tx\n") {
 		t.Fatalf("nonlinear EKF = %s", estimate)
 	}
 
-	mismatched := harness.RunInput(
-		"time\tu\ty\n0\t1\n", "--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
+	reordered := harness.RunInput(
+		"time\ty\tu\n0\t0.1\t1\n0.1\t0\t0\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
 	)
-	if mismatched.code != 1 || !strings.Contains(mismatched.stderr, "EKF measurement 1 has length 0; want 1") {
+	if reordered.code != 0 || reordered.stderr != estimate.stderr || reordered.stdout != estimate.stdout {
+		t.Fatalf("reordered nonlinear EKF = %s; want output %s", reordered, estimate.stdout)
+	}
+
+	extra := harness.RunInput(
+		"time\textra\tu\ty\n0\t99\t1\t0.1\n0.1\t99\t0\t0\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
+	)
+	if extra.code != 0 || extra.stderr != estimate.stderr || extra.stdout != estimate.stdout {
+		t.Fatalf("extra-column nonlinear EKF = %s; want output %s", extra, estimate.stdout)
+	}
+
+	missing := harness.RunInput(
+		"time\tu\n0\t1\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
+	)
+	if missing.code != 1 || !strings.Contains(missing.stderr, `missing signal "y"`) ||
+		!strings.Contains(missing.stderr, "columns: time, u") {
+		t.Fatalf("missing-column nonlinear EKF = %s", missing)
+	}
+
+	badRow := harness.RunInput(
+		"time\tu\ty\n0\t1\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
+	)
+	if badRow.code != 2 || !strings.Contains(badRow.stderr, "TSV row 1 has 2 columns; want 3") {
+		t.Fatalf("short-row nonlinear EKF = %s", badRow)
+	}
+
+	estimatorPath := filepath.Join(t.TempDir(), "estimator.json")
+	estimator := map[string]any{
+		"name":              "configured CLI estimator",
+		"initialState":      []float64{0.5},
+		"processNoise":      map[string]any{"rows": 1, "columns": 1, "values": []float64{0.01}},
+		"measurementNoise":  map[string]any{"rows": 1, "columns": 1, "values": []float64{0.1}},
+		"initialCovariance": map[string]any{"rows": 1, "columns": 1, "values": []float64{0.2}},
+	}
+	estimatorJSON, err := json.Marshal(estimator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(estimatorPath, estimatorJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configured := harness.RunInput(
+		"time\tu\ty\n0\t1\t0.1\n0.1\t0\t0\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1", "--estimator", estimatorPath, "--json",
+	)
+	if configured.code != 0 || configured.stderr != "" || !strings.Contains(configured.stdout, `"estimatorName":"configured CLI estimator"`) {
+		t.Fatalf("configured nonlinear EKF = %s", configured)
+	}
+
+	estimator["name"] = "high process noise estimator"
+	estimator["processNoise"] = map[string]any{"rows": 1, "columns": 1, "values": []float64{1}}
+	highNoiseJSON, err := json.Marshal(estimator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(estimatorPath, highNoiseJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	highNoise := harness.RunInput(
+		"time\tu\ty\n0\t1\t0.1\n0.1\t0\t0\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1", "--estimator", estimatorPath, "--json",
+	)
+	if highNoise.code != 0 || highNoise.stderr != "" || highNoise.stdout == configured.stdout {
+		t.Fatalf("high-noise nonlinear EKF = %s; want different estimate from %s", highNoise, configured.stdout)
+	}
+
+	estimator["processNoise"] = map[string]any{"rows": 1, "columns": 1, "values": []float64{-1}}
+	invalidNoiseJSON, err := json.Marshal(estimator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(estimatorPath, invalidNoiseJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalidNoise := harness.RunInput(
+		"time\tu\ty\n0\t1\t0.1\n",
+		"--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1", "--estimator", estimatorPath,
+	)
+	if invalidNoise.code != 1 || !strings.Contains(invalidNoise.stderr, "EKF process noise Q must be positive semidefinite") {
+		t.Fatalf("invalid-noise nonlinear EKF = %s", invalidNoise)
+	}
+
+	mismatched := harness.RunInput(
+		"time\tu\ty\n0\t1\t0\n", "--server", harness.URL(), "nonlinear", "ekf", "--definition", "cli/decay@1",
+	)
+	if mismatched.code != 0 || !strings.Contains(mismatched.stdout, "time\tx\n") {
 		t.Fatalf("mismatched nonlinear EKF = %s", mismatched)
 	}
 

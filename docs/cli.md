@@ -78,7 +78,7 @@ time-plus-series TSV shape emitted by `sim run`:
 ```bash
 processlab nonlinear register < definition.json
 processlab nonlinear linearize --definition models/decay@1 --operating-point origin.json
-processlab nonlinear ekf --definition models/decay@1 < samples.tsv
+processlab nonlinear ekf --definition models/decay@1 --estimator estimator.json < samples.tsv
 ```
 
 See [`nonlinear-workflows.md`](nonlinear-workflows.md) for expression,

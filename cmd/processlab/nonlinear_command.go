@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -20,8 +21,21 @@ import (
 const maxNonlinearCLIInputBytes = 1 << 20
 
 type nonlinearTSV struct {
-	times []float64
-	rows  [][]float64
+	times        []float64
+	inputs       [][]float64
+	measurements [][]float64
+}
+
+type nonlinearTSVSchemaError struct {
+	message string
+}
+
+func (e nonlinearTSVSchemaError) Error() string {
+	return e.message
+}
+
+func (e nonlinearTSVSchemaError) ExitCode() int {
+	return 1
 }
 
 func newNonlinearCommand() *command {
@@ -33,8 +47,8 @@ func newNonlinearCommand() *command {
 			newCommand("linearize", "Linearize a nonlinear definition", []commandFlag{documentedStringFlag("definition", "key@version", "", "definition reference (key@version)"), documentedStringFlag("operating-point", "path", "", "JSON linearization request file"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
 				return runNonlinearLinearize(ctx, options, args, stdout)
 			}),
-			newCommand("ekf", "Estimate a nonlinear model with an EKF", []commandFlag{documentedStringFlag("definition", "key@version", "", "definition reference (key@version)"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
-				return runNonlinearEKF(ctx, options, args, stdout)
+			newCommand("ekf", "Estimate a nonlinear model with an EKF", []commandFlag{documentedStringFlag("definition", "key@version", "", "definition reference (key@version)"), documentedStringFlag("estimator", "path", "", "JSON EKF estimator; omitted uses identity Q, R, P0, and zero initial state"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				return runNonlinearEKF(ctx, options, args, stdout, stderr)
 			}),
 		},
 	}
@@ -106,17 +120,14 @@ func runNonlinearLinearize(ctx context.Context, options globalOptions, args []st
 	return nil
 }
 
-func runNonlinearEKF(ctx context.Context, options globalOptions, args []string, stdout io.Writer) error {
+func runNonlinearEKF(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
 	jsonOutput := options.json || options.commandBool("json")
 	definitionText := options.commandString("definition")
+	estimatorPath := options.commandString("estimator")
 	if len(args) != 0 {
 		return usagef("processlab nonlinear ekf: unexpected argument %q", args[0])
 	}
 	definitionRef, err := parseNonlinearDefinitionRef(definitionText)
-	if err != nil {
-		return usagef("processlab nonlinear ekf: %v", err)
-	}
-	tsv, err := readNonlinearTSV(os.Stdin)
 	if err != nil {
 		return usagef("processlab nonlinear ekf: %v", err)
 	}
@@ -131,9 +142,28 @@ func runNonlinearEKF(ctx context.Context, options globalOptions, args []string, 
 	if err := client.request(ctx, http.MethodGet, path, nil, &definition); err != nil {
 		return err
 	}
-	request, err := nonlinearEKFRequest(definition, definitionRef, tsv)
+	tsv, err := readNonlinearTSV(os.Stdin, definition.InputNames, definition.OutputNames)
+	if err != nil {
+		var schemaError nonlinearTSVSchemaError
+		if errors.As(err, &schemaError) {
+			return fmt.Errorf("processlab nonlinear ekf: %w", err)
+		}
+		return usagef("processlab nonlinear ekf: %v", err)
+	}
+	var estimator *studio.NonlinearEKFDefinition
+	if estimatorPath != "" {
+		configured := studio.NonlinearEKFDefinition{}
+		if err := readNonlinearEstimatorFile(estimatorPath, &configured); err != nil {
+			return usagef("processlab nonlinear ekf: %v", err)
+		}
+		estimator = &configured
+	}
+	request, err := nonlinearEKFRequest(definition, definitionRef, tsv, estimator)
 	if err != nil {
 		return err
+	}
+	if estimator == nil {
+		fmt.Fprintln(stderr, "Using identity Q, R, and P0 covariances with a zero initial state; pass --estimator to configure the EKF.")
 	}
 	var raw json.RawMessage
 	if err := client.request(ctx, http.MethodPost, "/nonlinear/ekf", request, &raw); err != nil {
@@ -199,7 +229,23 @@ func readJSONFile(path string, destination any) error {
 	return nil
 }
 
-func readNonlinearTSV(reader io.Reader) (nonlinearTSV, error) {
+func readNonlinearEstimatorFile(path string, destination *studio.NonlinearEKFDefinition) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("read estimator %q: %w", path, err)
+	}
+	defer file.Close()
+	document, err := readJSONDocument(file, "estimator")
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(document, destination); err != nil {
+		return fmt.Errorf("estimator must match the EKF definition: %w", err)
+	}
+	return nil
+}
+
+func readNonlinearTSV(reader io.Reader, inputNames, outputNames []string) (nonlinearTSV, error) {
 	body, err := io.ReadAll(io.LimitReader(reader, maxNonlinearCLIInputBytes+1))
 	if err != nil {
 		return nonlinearTSV{}, fmt.Errorf("read TSV input: %w", err)
@@ -221,6 +267,7 @@ func readNonlinearTSV(reader io.Reader) (nonlinearTSV, error) {
 	if len(header) < 2 || strings.TrimSpace(header[0]) != "time" {
 		return nonlinearTSV{}, fmt.Errorf("TSV header must start with time and contain signal columns")
 	}
+	headerNames := make([]string, len(header))
 	seen := make(map[string]struct{}, len(header))
 	for index, name := range header {
 		name = strings.TrimSpace(name)
@@ -231,6 +278,19 @@ func readNonlinearTSV(reader io.Reader) (nonlinearTSV, error) {
 			return nonlinearTSV{}, fmt.Errorf("TSV header repeats column %q", name)
 		}
 		seen[name] = struct{}{}
+		headerNames[index] = name
+	}
+	columns := make(map[string]int, len(headerNames))
+	for index, name := range headerNames {
+		columns[name] = index
+	}
+	inputColumns, err := nonlinearTSVColumns(columns, inputNames, headerNames)
+	if err != nil {
+		return nonlinearTSV{}, err
+	}
+	measurementColumns, err := nonlinearTSVColumns(columns, outputNames, headerNames)
+	if err != nil {
+		return nonlinearTSV{}, err
 	}
 	result := nonlinearTSV{}
 	for rowIndex := 1; ; rowIndex++ {
@@ -244,6 +304,9 @@ func readNonlinearTSV(reader io.Reader) (nonlinearTSV, error) {
 		if len(row) == 0 {
 			continue
 		}
+		if len(row) != len(header) {
+			return nonlinearTSV{}, fmt.Errorf("TSV row %d has %d columns; want %d", rowIndex, len(row), len(header))
+		}
 		values := make([]float64, len(row))
 		for column, text := range row {
 			value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
@@ -253,10 +316,33 @@ func readNonlinearTSV(reader io.Reader) (nonlinearTSV, error) {
 			values[column] = value
 		}
 		result.times = append(result.times, values[0])
-		result.rows = append(result.rows, values)
+		input := make([]float64, len(inputColumns))
+		for index, column := range inputColumns {
+			input[index] = values[column]
+		}
+		measurement := make([]float64, len(measurementColumns))
+		for index, column := range measurementColumns {
+			measurement[index] = values[column]
+		}
+		result.inputs = append(result.inputs, input)
+		result.measurements = append(result.measurements, measurement)
 	}
-	if len(result.rows) == 0 {
+	if len(result.inputs) == 0 {
 		return nonlinearTSV{}, fmt.Errorf("TSV input requires at least one data row")
+	}
+	return result, nil
+}
+
+func nonlinearTSVColumns(columns map[string]int, names, header []string) ([]int, error) {
+	result := make([]int, len(names))
+	for index, name := range names {
+		column, ok := columns[name]
+		if !ok {
+			return nil, nonlinearTSVSchemaError{message: fmt.Sprintf(
+				"TSV header is missing signal %q; columns: %s", name, strings.Join(header, ", "),
+			)}
+		}
+		result[index] = column
 	}
 	return result, nil
 }
@@ -265,35 +351,34 @@ func nonlinearEKFRequest(
 	definition studio.NonlinearDefinition,
 	ref studio.NonlinearDefinitionRef,
 	tsv nonlinearTSV,
+	configured *studio.NonlinearEKFDefinition,
 ) (studio.NonlinearEKFRunRequest, error) {
-	n, m, p := len(definition.StateNames), len(definition.InputNames), len(definition.OutputNames)
-	q, err := nonlinearIdentityMatrix(n)
-	if err != nil {
-		return studio.NonlinearEKFRunRequest{}, err
+	var estimator studio.NonlinearEKFDefinition
+	if configured != nil {
+		estimator = *configured
+	} else {
+		n, p := len(definition.StateNames), len(definition.OutputNames)
+		q, err := nonlinearIdentityMatrix(n)
+		if err != nil {
+			return studio.NonlinearEKFRunRequest{}, err
+		}
+		r, err := nonlinearIdentityMatrix(p)
+		if err != nil {
+			return studio.NonlinearEKFRunRequest{}, err
+		}
+		p0, err := nonlinearIdentityMatrix(n)
+		if err != nil {
+			return studio.NonlinearEKFRunRequest{}, err
+		}
+		estimator = studio.NonlinearEKFDefinition{
+			Name: "processlab nonlinear EKF", InitialState: make([]float64, n),
+			ProcessNoise: q, MeasurementNoise: r, InitialCovariance: p0,
+		}
 	}
-	r, err := nonlinearIdentityMatrix(p)
-	if err != nil {
-		return studio.NonlinearEKFRunRequest{}, err
-	}
-	p0, err := nonlinearIdentityMatrix(n)
-	if err != nil {
-		return studio.NonlinearEKFRunRequest{}, err
-	}
-	inputs := make([][]float64, len(tsv.rows))
-	measurements := make([][]float64, len(tsv.rows))
-	for index, row := range tsv.rows {
-		values := row[1:]
-		inputLength := min(len(values), m)
-		inputs[index] = append([]float64(nil), values[:inputLength]...)
-		measurements[index] = append([]float64(nil), values[inputLength:]...)
-	}
+	estimator.Model = ref
 	return studio.NonlinearEKFRunRequest{
-		Estimator: studio.NonlinearEKFDefinition{
-			Name: "processlab nonlinear EKF", Model: ref,
-			InitialState: make([]float64, n), ProcessNoise: q,
-			MeasurementNoise: r, InitialCovariance: p0,
-		},
-		Inputs: inputs, Measurements: measurements,
+		Estimator: estimator,
+		Inputs:    tsv.inputs, Measurements: tsv.measurements,
 	}, nil
 }
 

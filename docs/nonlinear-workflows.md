@@ -70,13 +70,38 @@ conversion into a flowsheet block.
 ## Extended Kalman filtering
 
 `Studio.RunNonlinearEKF` owns a complete batch predict/update run. Its estimator
-definition includes the initial named state and the `Q`, `R`, and `P0`
-covariances. Studio validates dimensions, finite values, symmetry, and positive
-semidefiniteness before constructing `controlsys.EKF`.
+definition includes a name, the initial named state, and the `Q`, `R`, and `P0`
+covariances. The CLI accepts that JSON document with `--estimator`; the
+definition reference from `--definition` supplies its model. For example:
 
-Every batch row contains one input and one measurement. The result records the
-predicted and updated state and covariance for every row, plus final state,
-names, and definition provenance. Batches are limited to 10,000 rows.
+```json
+{
+  "name": "pendulum EKF",
+  "initialState": [0, 0],
+  "processNoise": {"rows": 2, "columns": 2, "values": [0.001, 0, 0, 0.001]},
+  "measurementNoise": {"rows": 1, "columns": 1, "values": [0.01]},
+  "initialCovariance": {"rows": 2, "columns": 2, "values": [1, 0, 0, 1]}
+}
+```
+
+Pass it beside the sample stream:
+
+```bash
+processlab nonlinear ekf --definition models/pendulum@1 --estimator estimator.json < samples.tsv
+```
+
+If `--estimator` is omitted, the CLI uses identity `Q`, `R`, and `P0` with a
+zero initial state and reports that default on stderr. Studio validates
+dimensions, finite values, symmetry, and positive semidefiniteness before
+constructing `controlsys.EKF`.
+
+Every batch row contains one input and one measurement for each declared signal.
+The CLI binds TSV columns by their `time`, input, and output header names, so
+column order may differ from the definition. Extra columns are ignored, which
+allows direct piping from `sim run`; missing declared signals are refused. The
+result records the predicted and updated state and covariance for every row,
+plus final state, names, and definition provenance. Batches are limited to
+10,000 rows.
 
 This workflow estimates state from supplied samples. It does not generate a
 nonlinear trajectory or claim that the flowsheet can simulate nonlinear
