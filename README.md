@@ -20,7 +20,7 @@ Requirements:
 - Go 1.26.3 or newer
 
 ```bash
-go run ./cmd/processlab
+go run ./cmd/processlab serve
 ```
 
 Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `processlab.db` and seeds the reactor example. The address serves the drawing register; open the seeded project from there.
@@ -28,7 +28,7 @@ Open [http://127.0.0.1:8080](http://127.0.0.1:8080). The first run creates `proc
 To use another address or database:
 
 ```bash
-go run ./cmd/processlab -addr 127.0.0.1:9090 -db ./plant.db
+go run ./cmd/processlab serve --addr 127.0.0.1:9090 --db ./plant.db
 ```
 
 All CSS, application JavaScript, HTMX 2.0.10, and HTML templates are embedded
@@ -123,7 +123,7 @@ save command. Stop the server with `Ctrl+C`, then run it again with the same
 database path to reopen the workspace:
 
 ```bash
-go run ./cmd/processlab -db ./plant.db
+go run ./cmd/processlab serve --db ./plant.db
 ```
 
 Each sheet has a canonical URL that stays valid across restarts, for example

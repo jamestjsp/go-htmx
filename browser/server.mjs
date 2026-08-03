@@ -32,7 +32,7 @@ export async function startServer() {
   const url = `http://127.0.0.1:${port}`;
   const child = spawn(
     executable,
-    ["-addr", `127.0.0.1:${port}`, "-db", path.join(workDirectory, "processlab.db")],
+    ["serve", "--addr", `127.0.0.1:${port}`, "--db", path.join(workDirectory, "processlab.db")],
     {cwd: root, stdio: ["ignore", "pipe", "pipe"]},
   );
   let output = "";

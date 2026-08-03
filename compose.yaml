@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     image: processlab:local
     init: true
+    command: ["serve", "--addr", "0.0.0.0:8080", "--db", "/data/processlab.db"]
     ports:
       - "${PROCESSLAB_PORT:-8080}:8080"
     volumes:
