@@ -73,6 +73,38 @@ func (s *Studio) Run(ctx context.Context, flowID int64, request SimulationReques
 	return s.snapshot(ctx, flowID)
 }
 
+// LatestSimulation returns the most recently stored result even when the
+// flowsheet has changed since it ran. Snapshot.LastRun deliberately omits
+// stale results for the workbench's current-run view; terminal callers need
+// the older data as well so they can inspect it with an explicit warning.
+func (s *Studio) LatestSimulation(ctx context.Context, flowID int64) (Simulation, error) {
+	var run Simulation
+	var created, resultJSON string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, created_at, duration, sample_time, result_json
+		FROM simulation_runs
+		WHERE flow_id = ?
+		ORDER BY id DESC LIMIT 1`, flowID,
+	).Scan(&run.ID, &created, &run.Duration, &run.SampleTime, &resultJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Simulation{}, ErrNotFound
+	}
+	if err != nil {
+		return Simulation{}, fmt.Errorf("load latest simulation: %w", err)
+	}
+	runID := run.ID
+	duration := run.Duration
+	sampleTime := run.SampleTime
+	if err := json.Unmarshal([]byte(resultJSON), &run); err != nil {
+		return Simulation{}, fmt.Errorf("decode latest simulation: %w", err)
+	}
+	run.ID = runID
+	run.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	run.Duration = duration
+	run.SampleTime = sampleTime
+	return run, nil
+}
+
 func validateSimulationRequest(request SimulationRequest) error {
 	if math.IsNaN(request.Duration) || math.IsInf(request.Duration, 0) ||
 		request.Duration < MinSimulationDuration {

@@ -186,6 +186,7 @@ func commandTree() *command {
 		newFlowCommand(),
 		newBlockCommand(),
 		newWireCommand(),
+		newSimulationCommand(),
 	}
 	return root
 }

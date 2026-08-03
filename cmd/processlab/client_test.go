@@ -479,6 +479,49 @@ func TestCLIHarnessRunsFlowDumpAndApply(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsSimulationCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	run := harness.Run("--server", harness.URL(), "sim", "run", "--flow", "1", "--duration", "1", "--sample-time", "0.1")
+	if run.code != 0 || run.stderr != "" {
+		t.Fatalf("simulation run result = %s", run)
+	}
+	lines := strings.Split(strings.TrimSpace(run.stdout), "\n")
+	if len(lines) != 12 || !strings.HasPrefix(lines[0], "time\t") {
+		t.Fatalf("simulation series has %d lines: %s", len(lines), run.stdout)
+	}
+
+	jsonRun := harness.Run("--server", harness.URL(), "sim", "run", "--flow", "1", "--duration", "1", "--sample-time", "0.1", "--json")
+	if jsonRun.code != 0 || jsonRun.stderr != "" {
+		t.Fatalf("JSON simulation run result = %s", jsonRun)
+	}
+	var simulation map[string]any
+	if err := json.Unmarshal([]byte(jsonRun.stdout), &simulation); err != nil || len(simulation["times"].([]any)) != 11 {
+		t.Fatalf("JSON simulation = %v: %s", err, jsonRun.stdout)
+	}
+
+	bad := harness.Run("--server", harness.URL(), "sim", "run", "--flow", "1", "--duration", "not-a-number")
+	if bad.code != 2 || bad.stdout != "" || !strings.Contains(bad.stderr, "invalid value") {
+		t.Fatalf("invalid simulation request = %s", bad)
+	}
+
+	if result := harness.Run("--server", harness.URL(), "block", "add", "constant", "--flow", "1"); result.code != 0 {
+		t.Fatalf("model edit after simulation = %s", result)
+	}
+	show := harness.Run("--server", harness.URL(), "sim", "show", "--flow", "1")
+	if show.code != 0 || !strings.Contains(show.stdout, "time\t") || !strings.Contains(show.stderr, "is stale") {
+		t.Fatalf("stale simulation show = %s", show)
+	}
+
+	projectID := requireCLIID(t, harness.Run("--server", harness.URL(), "project", "create", "No runs"))
+	flowID := requireCLIID(t, harness.Run("--server", harness.URL(), "flow", "create", "--project", secondString(projectID), "Empty"))
+	missing := harness.Run("--server", harness.URL(), "sim", "show", "--flow", secondString(flowID))
+	if missing.code != 1 || !strings.Contains(missing.stderr, "run one first") {
+		t.Fatalf("missing simulation show = %s", missing)
+	}
+}
+
 func containsClientBlock(blocks []blockRecordClient, id int64) bool {
 	for _, block := range blocks {
 		if block.ID == id {
