@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,12 +54,19 @@ type commandFlag struct {
 	register     func(*flag.FlagSet)
 }
 
+type commandArgument struct {
+	name        string
+	description string
+	required    bool
+}
+
 type command struct {
-	name     string
-	summary  string
-	flags    []commandFlag
-	children []*command
-	run      func(context.Context, globalOptions, io.Writer, io.Writer) error
+	name      string
+	summary   string
+	flags     []commandFlag
+	arguments []commandArgument
+	children  []*command
+	run       func(context.Context, globalOptions, []string, io.Writer, io.Writer) error
 }
 
 func (c *command) child(name string) *command {
@@ -82,21 +90,30 @@ func (c *command) execute(
 	for _, specification := range c.flags {
 		specification.register(set)
 	}
-	if err := set.Parse(args); err != nil {
+	parseArgs := args
+	if c.name == "help" {
+		parseArgs = moveHelpFlagsBeforeArguments(args)
+	}
+	if err := set.Parse(parseArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printCommandHelp(stdout, c)
 			return nil
 		}
 		return usagef("processlab %s: %v", c.name, err)
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab %s: unexpected argument %q", c.name, set.Arg(0))
+	if set.NArg() > len(c.arguments) {
+		return usagef("processlab %s: unexpected argument %q", c.name, set.Arg(len(c.arguments)))
 	}
-	return c.run(ctx, options, stdout, stderr)
+	for index, argument := range c.arguments[:set.NArg()] {
+		if argument.required && set.Arg(index) == "" {
+			return usagef("processlab %s: argument %q is required", c.name, argument.name)
+		}
+	}
+	return c.run(ctx, options, set.Args(), stdout, stderr)
 }
 
 func commandTree() *command {
-	return &command{
+	root := &command{
 		name:    "processlab",
 		summary: "Process Lab command-line interface",
 		flags: []commandFlag{
@@ -104,8 +121,59 @@ func commandTree() *command {
 			{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output"},
 			{name: "help", typeName: "bool", defaultValue: "false", usage: "show help"},
 		},
-		children: []*command{newServeCommand()},
 	}
+	helpOptions := struct{ json bool }{}
+	root.children = []*command{
+		{
+			name:    "help",
+			summary: "Show command help",
+			flags: []commandFlag{
+				{
+					name:         "json",
+					typeName:     "bool",
+					defaultValue: "false",
+					usage:        "write machine-readable help",
+					register: func(set *flag.FlagSet) {
+						set.BoolVar(&helpOptions.json, "json", false, "write machine-readable help")
+					},
+				},
+			},
+			arguments: []commandArgument{{name: "command", description: "command to describe"}},
+			run: func(_ context.Context, options globalOptions, args []string, stdout io.Writer, _ io.Writer) error {
+				target := root
+				if len(args) == 1 {
+					target = root.child(args[0])
+					if target == nil {
+						return usagef("processlab help: unknown command %q", args[0])
+					}
+				}
+				if helpOptions.json || options.json {
+					return writeJSONHelp(stdout, target)
+				}
+				if target == root {
+					printRootHelp(stdout, root)
+				} else {
+					printCommandHelp(stdout, target)
+				}
+				return nil
+			},
+		},
+		newServeCommand(),
+	}
+	return root
+}
+
+func moveHelpFlagsBeforeArguments(args []string) []string {
+	flags := make([]string, 0, len(args))
+	arguments := make([]string, 0, len(args))
+	for _, argument := range args {
+		if argument == "--json" || argument == "-json" || argument == "--help" || argument == "-help" || argument == "-h" {
+			flags = append(flags, argument)
+			continue
+		}
+		arguments = append(arguments, argument)
+	}
+	return append(flags, arguments...)
 }
 
 func parseGlobalOptions(args []string) (globalOptions, []string, bool, error) {
@@ -221,6 +289,63 @@ func printCommandHelp(w io.Writer, c *command) {
 	}
 }
 
+type commandHelpJSON struct {
+	Name      string             `json:"name"`
+	Summary   string             `json:"summary"`
+	Flags     []flagHelpJSON     `json:"flags"`
+	Arguments []argumentHelpJSON `json:"arguments"`
+	Commands  []commandHelpJSON  `json:"commands"`
+}
+
+type flagHelpJSON struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Default     string `json:"default"`
+	Description string `json:"description"`
+}
+
+type argumentHelpJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+func writeJSONHelp(w io.Writer, c *command) error {
+	if err := json.NewEncoder(w).Encode(commandHelp(c)); err != nil {
+		return fmt.Errorf("write help: %w", err)
+	}
+	return nil
+}
+
+func commandHelp(c *command) commandHelpJSON {
+	result := commandHelpJSON{
+		Name:      c.name,
+		Summary:   c.summary,
+		Flags:     make([]flagHelpJSON, 0, len(c.flags)),
+		Arguments: make([]argumentHelpJSON, 0, len(c.arguments)),
+		Commands:  make([]commandHelpJSON, 0, len(c.children)),
+	}
+	for _, specification := range c.flags {
+		result.Flags = append(result.Flags, flagHelpJSON{
+			Name:        specification.name,
+			Type:        specification.typeName,
+			Default:     specification.defaultValue,
+			Description: specification.usage,
+		})
+	}
+	for _, argument := range c.arguments {
+		result.Arguments = append(result.Arguments, argumentHelpJSON{
+			Name:        argument.name,
+			Description: argument.description,
+			Required:    argument.required,
+		})
+	}
+	for _, child := range c.children {
+		result.Commands = append(result.Commands, commandHelp(child))
+	}
+	return result
+}
+
 type serveOptions struct {
 	address string
 	dbPath  string
@@ -251,7 +376,7 @@ func newServeCommand() *command {
 				},
 			},
 		},
-		run: func(ctx context.Context, _ globalOptions, stdout io.Writer, stderr io.Writer) error {
+		run: func(ctx context.Context, _ globalOptions, _ []string, stdout io.Writer, stderr io.Writer) error {
 			return serve(ctx, options, stdout, stderr)
 		},
 	}
