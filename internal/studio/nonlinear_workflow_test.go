@@ -2,6 +2,7 @@ package studio
 
 import (
 	"context"
+	"errors"
 	"math"
 	"path/filepath"
 	"strings"
@@ -10,79 +11,21 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
-func TestNonlinearLinearizationMatchesAnalyticJacobianAndQuadraticLocalError(t *testing.T) {
+func TestNonlinearDefinitionPersistsAcrossRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nonlinear.db")
-	service := openTestStudio(t, path)
 	ctx := context.Background()
-	definition := NonlinearDefinition{
-		Ref:         NonlinearDefinitionRef{Key: "tests/quadratic", Version: 1},
-		Name:        "Quadratic local model",
-		StateNames:  []string{"state"},
-		InputNames:  []string{"actuation"},
-		OutputNames: []string{"measurement"},
-	}
-	callbacks := scalarQuadraticCallbacks()
-	if _, err := service.RegisterNonlinearDefinition(ctx, definition, callbacks); err != nil {
-		t.Fatal(err)
-	}
-
-	candidate, err := service.LinearizeNonlinear(
-		ctx,
-		NonlinearLinearizationRequest{
-			OperatingPoint: NamedOperatingPoint{
-				Name: "origin", Definition: definition.Ref,
-				State: []float64{0}, Input: []float64{0},
-			},
-			Directions: []NonlinearValidityDirection{{
-				Name: "positive state", StateDelta: []float64{1},
-				InputDelta: []float64{0}, Radius: 0.1,
-			}},
-		},
+	definition := nonlinearTestDefinition(
+		"tests/restart", []string{"-0.1*x + u"}, []string{"x"},
 	)
-	if err != nil {
+	definition.SampleTime = 0.1
+	service := openTestStudio(t, path)
+	if _, err := service.RegisterNonlinearDefinition(ctx, definition); err != nil {
 		t.Fatal(err)
-	}
-	if !candidate.CandidateOnly || candidate.System == nil {
-		t.Fatalf("linearization candidate = %#v", candidate)
-	}
-	if math.Abs(candidate.System.A.At(0, 0)+2) > 1e-7 ||
-		math.Abs(candidate.System.B.At(0, 0)-1) > 1e-7 ||
-		math.Abs(candidate.System.C.At(0, 0)-1) > 1e-7 ||
-		math.Abs(candidate.System.D.At(0, 0)-2) > 1e-7 {
-		t.Fatalf(
-			"linearization A=%g B=%g C=%g D=%g",
-			candidate.System.A.At(0, 0), candidate.System.B.At(0, 0),
-			candidate.System.C.At(0, 0), candidate.System.D.At(0, 0),
-		)
-	}
-	if got := candidate.System.StateName; len(got) != 1 || got[0] != "state" {
-		t.Fatalf("state names = %v", got)
-	}
-	if candidate.EquilibriumNorm != 0 ||
-		len(candidate.EquilibriumResidual) != 1 ||
-		candidate.Provenance.Definition != definition.Ref ||
-		candidate.Provenance.OperatingPointName != "origin" {
-		t.Fatalf("operating-point provenance = %#v", candidate)
-	}
-	validity := candidate.Validity[0]
-	if math.Abs(validity.StateErrorNorm-0.01) > 1e-9 ||
-		math.Abs(validity.OutputErrorNorm-0.005) > 1e-9 ||
-		validity.StateQuadraticRatio == nil ||
-		math.Abs(*validity.StateQuadraticRatio-4) > 1e-7 ||
-		validity.OutputQuadraticRatio == nil ||
-		math.Abs(*validity.OutputQuadraticRatio-4) > 1e-7 {
-		t.Fatalf("directional validity = %#v", validity)
-	}
-
-	changed := definition
-	changed.Name = "Changed without a version"
-	if _, err := service.RegisterNonlinearDefinition(ctx, changed, callbacks); err == nil ||
-		!strings.Contains(err.Error(), "increment its version") {
-		t.Fatalf("stable definition overwrite error = %v", err)
 	}
 	if err := service.db.Close(); err != nil {
 		t.Fatal(err)
 	}
+
 	reopened, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
@@ -93,70 +36,167 @@ func TestNonlinearLinearizationMatchesAnalyticJacobianAndQuadraticLocalError(t *
 		t.Fatal(err)
 	}
 	if persisted.Name != definition.Name ||
-		persisted.StateNames[0] != definition.StateNames[0] {
+		persisted.Dynamics[0] != definition.Dynamics[0] ||
+		persisted.Outputs[0] != definition.Outputs[0] ||
+		persisted.SampleTime != definition.SampleTime {
 		t.Fatalf("persisted definition = %#v", persisted)
+	}
+
+	request := NonlinearLinearizationRequest{
+		OperatingPoint: NamedOperatingPoint{
+			Name: "origin", Definition: definition.Ref,
+			State: []float64{0}, Input: []float64{0},
+		},
+		Directions: []NonlinearValidityDirection{{
+			Name: "state", StateDelta: []float64{1},
+			InputDelta: []float64{0}, Radius: 0.1,
+		}},
+	}
+	candidate, err := reopened.LinearizeNonlinear(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(candidate.System.A.At(0, 0)+0.1) > 1e-7 ||
+		math.Abs(candidate.System.B.At(0, 0)-1) > 1e-7 ||
+		math.Abs(candidate.System.C.At(0, 0)-1) > 1e-7 ||
+		math.Abs(candidate.System.D.At(0, 0)) > 1e-7 {
+		t.Fatalf("linearization A=%g B=%g C=%g D=%g",
+			candidate.System.A.At(0, 0), candidate.System.B.At(0, 0),
+			candidate.System.C.At(0, 0), candidate.System.D.At(0, 0))
+	}
+	if candidate.Provenance.RuntimeRegisteredAt.IsZero() {
+		t.Fatal("definition provenance has no stored creation time")
+	}
+
+	run, err := reopened.RunNonlinearEKF(ctx, NonlinearEKFRunRequest{
+		Estimator: NonlinearEKFDefinition{
+			Name: "restart estimator", Model: definition.Ref,
+			InitialState:      []float64{0},
+			ProcessNoise:      scalarMatrix(t, 0.01),
+			MeasurementNoise:  scalarMatrix(t, 0.04),
+			InitialCovariance: scalarMatrix(t, 0.5),
+		},
+		Inputs:       [][]float64{{1}},
+		Measurements: [][]float64{{0.1}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(run.Steps) != 1 || len(run.FinalState) != 1 || run.MeasurementNames[0] != "y" {
+		t.Fatalf("restart EKF result = %#v", run)
+	}
+
+	changed := definition
+	changed.Name = "Changed without a version"
+	if _, err := reopened.RegisterNonlinearDefinition(ctx, changed); err == nil ||
+		!strings.Contains(err.Error(), "increment its version") {
+		t.Fatalf("stable definition overwrite error = %v", err)
 	}
 }
 
-func TestNonlinearLinearizationRefusesNonEquilibriumAndBadDimensions(t *testing.T) {
-	service := openTestStudio(t, filepath.Join(t.TempDir(), "nonlinear-errors.db"))
+func TestNonlinearExpressionsProduceAnalyticJacobians(t *testing.T) {
+	service := openTestStudio(t, filepath.Join(t.TempDir(), "nonlinear-jacobians.db"))
 	ctx := context.Background()
-	definition := NonlinearDefinition{
-		Ref:         NonlinearDefinitionRef{Key: "tests/refusal", Version: 1},
-		Name:        "Refusal fixture",
-		StateNames:  []string{"state"},
-		InputNames:  []string{"input"},
-		OutputNames: []string{"output"},
-	}
-	if _, err := service.RegisterNonlinearDefinition(
-		ctx, definition, scalarQuadraticCallbacks(),
-	); err != nil {
+	definition := nonlinearTestDefinition(
+		"tests/jacobians", []string{"0.5*x + u"}, []string{"2*x + sin(x)"},
+	)
+	definition.SampleTime = 0.2
+	definition.IntegrationSteps = 4
+	if _, err := service.RegisterNonlinearDefinition(ctx, definition); err != nil {
 		t.Fatal(err)
 	}
-	_, err := service.LinearizeNonlinear(ctx, NonlinearLinearizationRequest{
+
+	_, runtime, _, err := service.nonlinearRuntimeDefinition(ctx, definition.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateJacobian := runtime.transitionJacobian(
+		vector([]float64{0}), vector([]float64{0}),
+	)
+	measurementJacobian := runtime.measurementJacobian(vector([]float64{0}))
+	if stateJacobian == nil || measurementJacobian == nil {
+		t.Fatal("derived Jacobian was nil")
+	}
+	if math.Abs(stateJacobian.At(0, 0)-math.Exp(0.1)) > 1e-8 {
+		t.Fatalf("transition Jacobian = %g, want %g", stateJacobian.At(0, 0), math.Exp(0.1))
+	}
+	if math.Abs(measurementJacobian.At(0, 0)-3) > 1e-8 {
+		t.Fatalf("measurement Jacobian = %g, want 3", measurementJacobian.At(0, 0))
+	}
+
+	candidate, err := service.LinearizeNonlinear(ctx, NonlinearLinearizationRequest{
 		OperatingPoint: NamedOperatingPoint{
-			Name: "not equilibrium", Definition: definition.Ref,
-			State: []float64{0.2}, Input: []float64{0},
-			EquilibriumTolerance: 1e-9,
+			Name: "origin", Definition: definition.Ref,
+			State: []float64{0}, Input: []float64{0},
 		},
 		Directions: []NonlinearValidityDirection{{
-			Name: "state", StateDelta: []float64{1},
+			Name: "positive", StateDelta: []float64{1},
 			InputDelta: []float64{0}, Radius: 0.1,
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "not an equilibrium") ||
-		!strings.Contains(err.Error(), "residual norm") {
-		t.Fatalf("non-equilibrium error = %v", err)
-	}
-
-	_, err = service.LinearizeNonlinear(ctx, NonlinearLinearizationRequest{
-		OperatingPoint: NamedOperatingPoint{
-			Name: "wrong state", Definition: definition.Ref,
-			State: []float64{0, 1}, Input: []float64{0},
-		},
-		Directions: []NonlinearValidityDirection{{
-			Name: "state", StateDelta: []float64{1},
-			InputDelta: []float64{0}, Radius: 0.1,
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "operating state has length 2; want 1") {
-		t.Fatalf("operating dimension error = %v", err)
-	}
-
-	badCallbacks := scalarQuadraticCallbacks()
-	badCallbacks.Dynamics = func(x, u *mat.VecDense) *mat.VecDense {
-		return mat.NewVecDense(2, nil)
-	}
-	badDefinition := definition
-	badDefinition.Ref.Version = 2
-	if _, err := service.RegisterNonlinearDefinition(
-		ctx, badDefinition, badCallbacks,
-	); err != nil {
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.LinearizeNonlinear(ctx, NonlinearLinearizationRequest{
+	if math.Abs(candidate.System.A.At(0, 0)-0.5) > 1e-7 ||
+		math.Abs(candidate.System.B.At(0, 0)-1) > 1e-7 ||
+		math.Abs(candidate.System.C.At(0, 0)-3) > 1e-7 {
+		t.Fatalf("continuous Jacobians = A=%g B=%g C=%g",
+			candidate.System.A.At(0, 0), candidate.System.B.At(0, 0), candidate.System.C.At(0, 0))
+	}
+}
+
+func TestNonlinearExpressionValidationAndEKFBoundaries(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		edit func(*NonlinearDefinition)
+		want string
+	}{
+		{name: "power operator", edit: func(definition *NonlinearDefinition) {
+			definition.Dynamics[0] = "x^2"
+		}, want: "pow"},
+		{name: "unknown signal", edit: func(definition *NonlinearDefinition) {
+			definition.Dynamics[0] = "missing + x"
+		}, want: "missing"},
+		{name: "invalid signal name", edit: func(definition *NonlinearDefinition) {
+			definition.StateNames[0] = "not valid"
+		}, want: "not valid"},
+		{name: "unknown function", edit: func(definition *NonlinearDefinition) {
+			definition.Dynamics[0] = "floor(x)"
+		}, want: "floor"},
+		{name: "reserved constant", edit: func(definition *NonlinearDefinition) {
+			definition.StateNames[0] = "e"
+		}, want: "e"},
+		{name: "unsupported syntax", edit: func(definition *NonlinearDefinition) {
+			definition.Dynamics[0] = "x[0]"
+		}, want: "x[0]"},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := openTestStudio(t, filepath.Join(t.TempDir(), "validation.db"))
+			definition := nonlinearTestDefinition(
+				"tests/validation", []string{"-x"}, []string{"x"},
+			)
+			definition.Ref.Version = index + 1
+			test.edit(&definition)
+			if _, err := service.RegisterNonlinearDefinition(ctx, definition); err == nil ||
+				!strings.Contains(err.Error(), test.want) {
+				t.Fatalf("registration error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	service := openTestStudio(t, filepath.Join(t.TempDir(), "boundaries.db"))
+	direct := nonlinearTestDefinition(
+		"tests/direct-feedthrough", []string{"-x + u"}, []string{"x + u"},
+	)
+	direct.SampleTime = 0.1
+	if _, err := service.RegisterNonlinearDefinition(ctx, direct); err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := service.LinearizeNonlinear(ctx, NonlinearLinearizationRequest{
 		OperatingPoint: NamedOperatingPoint{
-			Name: "bad callback", Definition: badDefinition.Ref,
+			Name: "origin", Definition: direct.Ref,
 			State: []float64{0}, Input: []float64{0},
 		},
 		Directions: []NonlinearValidityDirection{{
@@ -164,207 +204,89 @@ func TestNonlinearLinearizationRefusesNonEquilibriumAndBadDimensions(t *testing.
 			InputDelta: []float64{0}, Radius: 0.1,
 		}},
 	})
-	if err == nil || !strings.Contains(err.Error(), "returned length 2; want 1") {
-		t.Fatalf("callback dimension error = %v", err)
+	if err != nil || math.Abs(candidate.System.D.At(0, 0)-1) > 1e-7 {
+		t.Fatalf("direct-feedthrough linearization = %#v, err=%v", candidate, err)
+	}
+	_, err = service.RunNonlinearEKF(ctx, baseNonlinearEKFRequest(direct))
+	if err == nil || !strings.Contains(err.Error(), "output") || !strings.Contains(err.Error(), "u") {
+		t.Fatalf("direct-feedthrough EKF error = %v", err)
+	}
+
+	noSampleTime := nonlinearTestDefinition(
+		"tests/no-sample-time", []string{"-x"}, []string{"x"},
+	)
+	if _, err := service.RegisterNonlinearDefinition(ctx, noSampleTime); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.RunNonlinearEKF(ctx, baseNonlinearEKFRequest(noSampleTime))
+	if err == nil || !strings.Contains(err.Error(), "sampleTime") {
+		t.Fatalf("missing sample time error = %v", err)
 	}
 }
 
-func TestNonlinearEKFBatchMatchesLinearKalmanFixture(t *testing.T) {
-	service := openTestStudio(t, filepath.Join(t.TempDir(), "ekf.db"))
+func TestNonlinearDefinitionsAreIsolatedAcrossStudios(t *testing.T) {
 	ctx := context.Background()
-	const a, b, c = 0.9, 0.2, 1.0
-	definition := NonlinearDefinition{
-		Ref:         NonlinearDefinitionRef{Key: "tests/linear-ekf", Version: 1},
-		Name:        "Linear EKF oracle",
-		StateNames:  []string{"state"},
-		InputNames:  []string{"control"},
-		OutputNames: []string{"sensor"},
-	}
-	callbacks := NonlinearRuntimeCallbacks{
-		Dynamics: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{-0.1*x.AtVec(0) + b*u.AtVec(0)})
-		},
-		Output: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{c * x.AtVec(0)})
-		},
-		Transition: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{a*x.AtVec(0) + b*u.AtVec(0)})
-		},
-		Measurement: func(x *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{c * x.AtVec(0)})
-		},
-		TransitionJacobian: func(x, u *mat.VecDense) *mat.Dense {
-			return mat.NewDense(1, 1, []float64{a})
-		},
-		MeasurementJacobian: func(x *mat.VecDense) *mat.Dense {
-			return mat.NewDense(1, 1, []float64{c})
-		},
-	}
-	if _, err := service.RegisterNonlinearDefinition(ctx, definition, callbacks); err != nil {
+	first := openTestStudio(t, filepath.Join(t.TempDir(), "first.db"))
+	second := openTestStudio(t, filepath.Join(t.TempDir(), "second.db"))
+	firstDefinition := nonlinearTestDefinition(
+		"tests/first", []string{"-x"}, []string{"x"},
+	)
+	secondDefinition := nonlinearTestDefinition(
+		"tests/second", []string{"-x"}, []string{"x"},
+	)
+	if _, err := first.RegisterNonlinearDefinition(ctx, firstDefinition); err != nil {
 		t.Fatal(err)
 	}
-	q, r, p0 := 0.01, 0.04, 0.5
-	inputs := [][]float64{{1}, {0}, {-0.5}, {0.25}}
-	measurements := [][]float64{{0.15}, {0.3}, {0.1}, {0.05}}
-	run, err := service.RunNonlinearEKF(ctx, NonlinearEKFRunRequest{
-		Estimator: NonlinearEKFDefinition{
-			Name: "linear comparison", Model: definition.Ref,
-			InitialState:      []float64{0},
-			ProcessNoise:      scalarMatrix(t, q),
-			MeasurementNoise:  scalarMatrix(t, r),
-			InitialCovariance: scalarMatrix(t, p0),
-		},
-		Inputs: inputs, Measurements: measurements,
-	})
-	if err != nil {
+	if _, err := second.RegisterNonlinearDefinition(ctx, secondDefinition); err != nil {
 		t.Fatal(err)
 	}
-	if len(run.Steps) != len(inputs) ||
-		run.StateNames[0] != "state" ||
-		run.MeasurementNames[0] != "sensor" {
-		t.Fatalf("EKF run metadata = %#v", run)
+	if _, err := first.NonlinearDefinition(ctx, secondDefinition.Ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("first studio saw second definition: %v", err)
 	}
-	x, covariance := 0.0, p0
-	for i := range inputs {
-		predictedX := a*x + b*inputs[i][0]
-		predictedP := a*a*covariance + q
-		gain := predictedP * c / (c*c*predictedP + r)
-		x = predictedX + gain*(measurements[i][0]-c*predictedX)
-		covariance = (1-gain*c)*(1-gain*c)*predictedP + gain*gain*r
-		step := run.Steps[i]
-		if math.Abs(step.PredictedState[0]-predictedX) > 1e-12 ||
-			math.Abs(step.PredictedCovariance.At(0, 0)-predictedP) > 1e-12 ||
-			math.Abs(step.UpdatedState[0]-x) > 1e-12 ||
-			math.Abs(step.UpdatedCovariance.At(0, 0)-covariance) > 1e-12 {
-			t.Fatalf(
-				"EKF step %d = %#v, oracle x=%g P=%g",
-				i, step, x, covariance,
-			)
-		}
-	}
-	if math.Abs(run.FinalState[0]-x) > 1e-12 ||
-		math.Abs(run.FinalCovariance.At(0, 0)-covariance) > 1e-12 {
-		t.Fatalf("EKF final state/covariance = %v %#v", run.FinalState, run.FinalCovariance)
+	if _, err := second.NonlinearDefinition(ctx, firstDefinition.Ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second studio saw first definition: %v", err)
 	}
 }
 
-func TestNonlinearEKFValidatesBatchDimensionsAndCovariances(t *testing.T) {
-	service := openTestStudio(t, filepath.Join(t.TempDir(), "ekf-errors.db"))
-	ctx := context.Background()
-	definition := NonlinearDefinition{
-		Ref:         NonlinearDefinitionRef{Key: "tests/ekf-errors", Version: 1},
-		Name:        "EKF validation",
-		StateNames:  []string{"x1", "x2"},
+func nonlinearTestDefinition(key string, dynamics, outputs []string) NonlinearDefinition {
+	return NonlinearDefinition{
+		Ref:         NonlinearDefinitionRef{Key: key, Version: 1},
+		Name:        "Expression test definition",
+		StateNames:  []string{"x"},
 		InputNames:  []string{"u"},
 		OutputNames: []string{"y"},
+		Dynamics:    dynamics,
+		Outputs:     outputs,
 	}
-	callbacks := twoStateIdentityCallbacks()
-	if _, err := service.RegisterNonlinearDefinition(ctx, definition, callbacks); err != nil {
-		t.Fatal(err)
-	}
-	base := NonlinearEKFRunRequest{
+}
+
+func baseNonlinearEKFRequest(definition NonlinearDefinition) NonlinearEKFRunRequest {
+	return NonlinearEKFRunRequest{
 		Estimator: NonlinearEKFDefinition{
-			Name: "validation", Model: definition.Ref,
-			InitialState:      []float64{0, 0},
-			ProcessNoise:      denseMatrixValue(t, 2, []float64{1, 0, 0, 1}),
-			MeasurementNoise:  scalarMatrix(t, 1),
-			InitialCovariance: denseMatrixValue(t, 2, []float64{1, 0, 0, 1}),
+			Name: "test estimator", Model: definition.Ref,
+			InitialState:      []float64{0},
+			ProcessNoise:      mustMatrixValue(1, []float64{0.01}),
+			MeasurementNoise:  mustMatrixValue(1, []float64{0.04}),
+			InitialCovariance: mustMatrixValue(1, []float64{0.5}),
 		},
 		Inputs:       [][]float64{{0}},
 		Measurements: [][]float64{{0}},
 	}
-	badSymmetry := base
-	badSymmetry.Estimator.ProcessNoise = denseMatrixValue(
-		t, 2, []float64{1, 0.2, 0, 1},
-	)
-	if _, err := service.RunNonlinearEKF(ctx, badSymmetry); err == nil ||
-		!strings.Contains(err.Error(), "must be symmetric") {
-		t.Fatalf("asymmetric covariance error = %v", err)
-	}
-	badPSD := base
-	badPSD.Estimator.InitialCovariance = denseMatrixValue(
-		t, 2, []float64{1, 0, 0, -0.1},
-	)
-	if _, err := service.RunNonlinearEKF(ctx, badPSD); err == nil ||
-		!strings.Contains(err.Error(), "positive semidefinite") {
-		t.Fatalf("indefinite covariance error = %v", err)
-	}
-	badInput := base
-	badInput.Inputs = [][]float64{{0, 1}}
-	if _, err := service.RunNonlinearEKF(ctx, badInput); err == nil ||
-		!strings.Contains(err.Error(), "input 1 has length 2; want 1") {
-		t.Fatalf("input dimension error = %v", err)
-	}
-	badMeasurement := base
-	badMeasurement.Measurements = [][]float64{{0, 1}}
-	if _, err := service.RunNonlinearEKF(ctx, badMeasurement); err == nil ||
-		!strings.Contains(err.Error(), "measurement 1 has length 2; want 1") {
-		t.Fatalf("measurement dimension error = %v", err)
-	}
 }
 
-func scalarQuadraticCallbacks() NonlinearRuntimeCallbacks {
-	return NonlinearRuntimeCallbacks{
-		Dynamics: func(x, u *mat.VecDense) *mat.VecDense {
-			value := x.AtVec(0)
-			return mat.NewVecDense(1, []float64{
-				-2*value + u.AtVec(0) + value*value,
-			})
-		},
-		Output: func(x, u *mat.VecDense) *mat.VecDense {
-			value := x.AtVec(0)
-			return mat.NewVecDense(1, []float64{
-				value + 0.5*value*value + 2*u.AtVec(0),
-			})
-		},
-		Transition: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{x.AtVec(0) + u.AtVec(0)})
-		},
-		Measurement: func(x *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{x.AtVec(0)})
-		},
-		TransitionJacobian: func(x, u *mat.VecDense) *mat.Dense {
-			return mat.NewDense(1, 1, []float64{1})
-		},
-		MeasurementJacobian: func(x *mat.VecDense) *mat.Dense {
-			return mat.NewDense(1, 1, []float64{1})
-		},
-	}
+func vector(values []float64) *mat.VecDense {
+	return mat.NewVecDense(len(values), values)
 }
 
-func twoStateIdentityCallbacks() NonlinearRuntimeCallbacks {
-	return NonlinearRuntimeCallbacks{
-		Dynamics: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.VecDenseCopyOf(x)
-		},
-		Output: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{x.AtVec(0)})
-		},
-		Transition: func(x, u *mat.VecDense) *mat.VecDense {
-			return mat.VecDenseCopyOf(x)
-		},
-		Measurement: func(x *mat.VecDense) *mat.VecDense {
-			return mat.NewVecDense(1, []float64{x.AtVec(0)})
-		},
-		TransitionJacobian: func(x, u *mat.VecDense) *mat.Dense {
-			return mat.NewDense(2, 2, []float64{1, 0, 0, 1})
-		},
-		MeasurementJacobian: func(x *mat.VecDense) *mat.Dense {
-			return mat.NewDense(1, 2, []float64{1, 0})
-		},
+func mustMatrixValue(size int, values []float64) MatrixValue {
+	value, err := NewMatrixValue(size, size, values)
+	if err != nil {
+		panic(err)
 	}
+	return value
 }
 
 func scalarMatrix(t *testing.T, value float64) MatrixValue {
 	t.Helper()
-	return denseMatrixValue(t, 1, []float64{value})
-}
-
-func denseMatrixValue(t *testing.T, size int, values []float64) MatrixValue {
-	t.Helper()
-	matrix, err := NewMatrixValue(size, size, values)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return matrix
+	return mustMatrixValue(1, []float64{value})
 }
