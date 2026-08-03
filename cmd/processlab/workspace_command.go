@@ -148,7 +148,7 @@ func newFlowCommand() *command {
 					return runFlowDump(ctx, client, options, projectID, jsonOutput || options.json, stdout)
 				})
 			}},
-			{name: "apply", summary: "Apply a declarative flowsheet document", flags: []commandFlag{commandInt64Flag("flow", "id", 0, "flowsheet id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput), commandBoolFlag("dry-run", "show reconciliation without changing the flowsheet", &dryRun)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+			{name: "apply", summary: "Apply a declarative flowsheet document", details: "Block ids are ignored; blocks match by name. Renaming a block in the document is an add and a remove, so use flow rename or block set instead.", flags: []commandFlag{commandInt64Flag("flow", "id", 0, "flowsheet id", &projectID), commandBoolFlag("json", "write machine-readable output", &jsonOutput), commandBoolFlag("dry-run", "show reconciliation without changing the flowsheet", &dryRun)}, run: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
 				return clientRun(ctx, options, func(client *apiClient) error {
 					return runFlowApply(ctx, client, options, projectID, jsonOutput || options.json, dryRun, stdout)
 				})
