@@ -233,7 +233,7 @@ func inferControlRoleSpec(plantIDs, controllerIDs []int64, blocks []roleBlockCli
 		controllerSet[id] = struct{}{}
 	}
 
-	var actuator, sensor *roleConnectionClient
+	var actuator, sensor, reference *roleConnectionClient
 	for index := range connections {
 		connection := &connections[index]
 		_, sourcePlant := plantSet[connection.SourceID]
@@ -246,6 +246,9 @@ func inferControlRoleSpec(plantIDs, controllerIDs []int64, blocks []roleBlockCli
 		if sourcePlant && targetController && sensor == nil {
 			sensor = connection
 		}
+		if targetController && !sourcePlant && !sourceController && reference == nil {
+			reference = connection
+		}
 	}
 	if actuator == nil || sensor == nil {
 		return studio.ControlRoleSpec{}, fmt.Errorf("could not infer control roles; connect controller output to plant input and plant output to controller input first")
@@ -254,6 +257,12 @@ func inferControlRoleSpec(plantIDs, controllerIDs []int64, blocks []roleBlockCli
 	controllerOutput := namedRoleRefs(actuator.SourceID, studio.ChannelOutput, actuator.SourcePort, actuator.SourceChannels)
 	plantOutput := namedRoleRefs(sensor.SourceID, studio.ChannelOutput, sensor.SourcePort, sensor.SourceChannels)
 	controllerInput := namedRoleRefs(sensor.TargetID, studio.ChannelInput, sensor.TargetPort, sensor.TargetChannels)
+	var controllerReference []studio.NamedChannelRef
+	if reference != nil {
+		controllerReference = namedRoleRefs(
+			reference.TargetID, studio.ChannelInput, reference.TargetPort, reference.TargetChannels,
+		)
+	}
 	if len(plantInput) == 0 || len(controllerOutput) == 0 || len(plantOutput) == 0 || len(controllerInput) == 0 {
 		return studio.ControlRoleSpec{}, fmt.Errorf("could not infer named control channels from the selected connections")
 	}
@@ -267,6 +276,7 @@ func inferControlRoleSpec(plantIDs, controllerIDs []int64, blocks []roleBlockCli
 		},
 		Controller: studio.ControllerRole{
 			Blocks: controllerIDs, FeedbackConvention: studio.FeedbackExternalNegative,
+			ReferenceInputs:   controllerReference,
 			MeasurementInputs: controllerInput, ControlOutputs: controllerOutput,
 		},
 		AnalysisPoints: []studio.AnalysisPointRole{
