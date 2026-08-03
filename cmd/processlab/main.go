@@ -20,14 +20,16 @@ import (
 )
 
 const (
-	defaultServer = "http://127.0.0.1:8080"
-	defaultAddr   = "127.0.0.1:8080"
-	defaultDB     = "processlab.db"
+	defaultServer  = "http://127.0.0.1:8080"
+	defaultAddr    = "127.0.0.1:8080"
+	defaultDB      = "processlab.db"
+	defaultTimeout = 5 * time.Minute
 )
 
 type globalOptions struct {
-	server string
-	json   bool
+	server  string
+	json    bool
+	timeout time.Duration
 }
 
 type usageError struct {
@@ -44,6 +46,23 @@ func (e usageError) Unwrap() error {
 
 func usagef(format string, args ...any) error {
 	return usageError{err: fmt.Errorf(format, args...)}
+}
+
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string {
+	return e.err.Error()
+}
+
+func (e *exitError) Unwrap() error {
+	return e.err
+}
+
+func (e *exitError) ExitCode() int {
+	return e.code
 }
 
 type commandFlag struct {
@@ -119,6 +138,7 @@ func commandTree() *command {
 		flags: []commandFlag{
 			{name: "server", typeName: "url", defaultValue: defaultServer, usage: "Process Lab server URL (env: PROCESSLAB_ADDR)"},
 			{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output"},
+			{name: "timeout", typeName: "duration", defaultValue: defaultTimeout.String(), usage: "maximum time for one server request"},
 			{name: "help", typeName: "bool", defaultValue: "false", usage: "show help"},
 		},
 	}
@@ -177,7 +197,7 @@ func moveHelpFlagsBeforeArguments(args []string) []string {
 }
 
 func parseGlobalOptions(args []string) (globalOptions, []string, bool, error) {
-	options := globalOptions{server: os.Getenv("PROCESSLAB_ADDR")}
+	options := globalOptions{server: os.Getenv("PROCESSLAB_ADDR"), timeout: defaultTimeout}
 	if options.server == "" {
 		options.server = defaultServer
 	}
@@ -193,6 +213,16 @@ func parseGlobalOptions(args []string) (globalOptions, []string, bool, error) {
 			help = true
 		case argument == "--json" || argument == "-json":
 			options.json = true
+		case argument == "--timeout" || argument == "-timeout":
+			if index+1 >= len(args) || strings.HasPrefix(args[index+1], "-") {
+				return options, nil, false, usagef("processlab: flag %s needs an argument", argument)
+			}
+			index++
+			parsed, err := time.ParseDuration(args[index])
+			if err != nil || parsed <= 0 {
+				return options, nil, false, usagef("processlab: invalid timeout %q", args[index])
+			}
+			options.timeout = parsed
 		case argument == "--server" || argument == "-server":
 			if index+1 >= len(args) || strings.HasPrefix(args[index+1], "-") {
 				return options, nil, false, usagef("processlab: flag %s needs an argument", argument)
@@ -209,6 +239,13 @@ func parseGlobalOptions(args []string) (globalOptions, []string, bool, error) {
 			if options.server == "" {
 				return options, nil, false, usagef("processlab: flag -server needs an argument")
 			}
+		case strings.HasPrefix(argument, "--timeout=") || strings.HasPrefix(argument, "-timeout="):
+			value := argument[strings.IndexByte(argument, '=')+1:]
+			parsed, err := time.ParseDuration(value)
+			if err != nil || parsed <= 0 {
+				return options, nil, false, usagef("processlab: invalid timeout %q", value)
+			}
+			options.timeout = parsed
 		default:
 			return options, nil, false, usagef("processlab: unknown global flag %q", argument)
 		}
@@ -250,6 +287,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if errors.As(err, &usage) {
 		fmt.Fprintln(stderr, err)
 		return 2
+	}
+	var exit *exitError
+	if errors.As(err, &exit) {
+		fmt.Fprintln(stderr, err)
+		return exit.ExitCode()
 	}
 	fmt.Fprintln(stderr, err)
 	return 1
