@@ -191,6 +191,7 @@ func commandTree() *command {
 		newRolesCommand(),
 		newSweepCommand(),
 		newControllerCommand(),
+		newIdentCommand(),
 	}
 	return root
 }

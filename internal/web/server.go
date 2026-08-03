@@ -65,6 +65,8 @@ func New(studioService *studio.Studio) (*Server, error) {
 	server.apiMux.Handle("POST /flows/{flowID}/simulations", server.api(server.simulationRunAPI))
 	server.apiMux.Handle("GET /flows/{flowID}/simulations/latest", server.api(server.simulationShowAPI))
 	server.apiMux.Handle("POST /flows/{flowID}/parameter-sweeps", server.api(server.parameterSweepRunAPI))
+	server.apiMux.Handle("POST /identifications/estimate", server.api(server.identificationEstimateAPI))
+	server.apiMux.Handle("POST /identifications/era", server.api(server.identificationERAAPI))
 	server.apiMux.Handle("POST /flows/{flowID}/controller-candidates/pid", server.api(server.controllerCandidatePIDAPI))
 	server.apiMux.Handle("POST /flows/{flowID}/controller-candidates/state-space", server.api(server.controllerCandidateStateAPI))
 	server.apiMux.Handle("POST /flows/{flowID}/controller-candidates/state/feedback", server.api(server.controllerCandidateStateFeedbackAPI))
