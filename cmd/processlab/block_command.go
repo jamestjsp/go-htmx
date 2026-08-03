@@ -63,7 +63,14 @@ type blockSchemaClient struct {
 }
 
 type blockRecordClient struct {
-	ID int64 `json:"id"`
+	ID              int64              `json:"id"`
+	FlowID          int64              `json:"flowId"`
+	Kind            string             `json:"kind"`
+	Name            string             `json:"name"`
+	Position        struct{ X, Y int } `json:"position"`
+	Parameters      map[string]any     `json:"parameters"`
+	ParameterValues map[string]string  `json:"parameterValues"`
+	Summary         string             `json:"summary"`
 }
 
 func newBlockCommand() *command {
@@ -89,12 +96,22 @@ func runBlock(ctx context.Context, options globalOptions, args []string, stdout 
 	switch args[0] {
 	case "list":
 		return runBlockList(ctx, client, args[1:], options, stdout)
+	case "show":
+		return runBlockShow(ctx, client, args[1:], options, stdout)
+	case "set":
+		return runBlockSet(ctx, client, args[1:], options, stdout)
+	case "mv":
+		return runBlockMove(ctx, client, args[1:], options, stdout)
+	case "rm":
+		return runBlockDelete(ctx, client, args[1:], options, stdout)
+	case "cp":
+		return runBlockDuplicate(ctx, client, args[1:], options, stdout)
 	case "help":
 		return runBlockHelp(ctx, client, args[1:], stdout)
 	case "add":
 		return runBlockAdd(ctx, client, args[1:], options, stdout)
 	default:
-		return usagef("processlab block: unknown operation %q; choose list, add, or help", args[0])
+		return usagef("processlab block: unknown operation %q; choose list, show, add, set, mv, rm, or cp", args[0])
 	}
 }
 
@@ -120,13 +137,16 @@ func requestBlockSchema(ctx context.Context, client *apiClient, kind string) (bl
 }
 
 func runBlockList(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
+	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
 	set := flag.NewFlagSet("block list", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	jsonOutput := options.json
+	var flowID int64
 	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
+	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
 	if err := set.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab block list [--json]")
+			fmt.Fprintln(stdout, "Usage: processlab block list [--flow <id>] [--json]")
 			return nil
 		}
 		return usagef("processlab block list: %v", err)
@@ -134,12 +154,34 @@ func runBlockList(ctx context.Context, client *apiClient, args []string, options
 	if set.NArg() != 0 {
 		return usagef("processlab block list: unexpected argument %q", set.Arg(0))
 	}
-	entries, raw, err := requestBlockLibrary(ctx, client)
-	if err != nil {
-		return err
+	var raw json.RawMessage
+	var entries []blockLibraryEntryClient
+	if flowID != 0 {
+		if flowID < 0 {
+			return usagef("flow id must be positive")
+		}
+		if err := client.request(ctx, http.MethodGet, "/flows/"+strconv.FormatInt(flowID, 10)+"/blocks", nil, &raw); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		entries, raw, err = requestBlockLibrary(ctx, client)
+		if err != nil {
+			return err
+		}
 	}
 	if jsonOutput {
 		return writeRawJSON(stdout, raw)
+	}
+	if flowID != 0 {
+		var blocks []blockRecordClient
+		if err := json.Unmarshal(raw, &blocks); err != nil {
+			return fmt.Errorf("decode blocks: %w", err)
+		}
+		for _, block := range blocks {
+			fmt.Fprintf(stdout, "%d\t%s\t%s\n", block.ID, block.Name, block.Summary)
+		}
+		return nil
 	}
 	printBlockLibrary(stdout, entries)
 	return nil
@@ -196,7 +238,7 @@ func runBlockAdd(ctx context.Context, client *apiClient, args []string, options 
 	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
 	set.IntVar(&x, "x", 90, "horizontal position")
 	set.IntVar(&y, "y", 120, "vertical position")
-	set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
+	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
 	values := make(map[string]*string, len(schema.Parameters))
 	for _, field := range schema.Parameters {
 		value := field.Default

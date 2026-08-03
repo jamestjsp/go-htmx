@@ -273,6 +273,104 @@ func TestCLIHarnessRunsWorkspaceCommands(t *testing.T) {
 	}
 }
 
+func TestCLIHarnessRunsBlockAuthoringCommands(t *testing.T) {
+	harness := newCLIHarness(t)
+	defer harness.Close()
+
+	listed := harness.Run("--server", harness.URL(), "block", "list", "--flow", "1", "--json")
+	if listed.code != 0 || listed.stderr != "" {
+		t.Fatalf("block list result = %s", listed)
+	}
+	var blocks []blockRecordClient
+	if err := json.Unmarshal([]byte(listed.stdout), &blocks); err != nil {
+		t.Fatalf("decode block list: %v\n%s", err, listed.stdout)
+	}
+	var gain, sum blockRecordClient
+	for _, block := range blocks {
+		switch block.Kind {
+		case "gain":
+			gain = block
+		case "sum":
+			sum = block
+		}
+	}
+	if gain.ID == 0 || sum.ID == 0 {
+		t.Fatalf("seeded gain/sum not found: gain=%#v sum=%#v", gain, sum)
+	}
+
+	shown := harness.Run("--server", harness.URL(), "block", "show", secondString(gain.ID), "--json")
+	if shown.code != 0 || shown.stderr != "" {
+		t.Fatalf("block show result = %s", shown)
+	}
+	var shownBlock blockRecordClient
+	if err := json.Unmarshal([]byte(shown.stdout), &shownBlock); err != nil || shownBlock.ID != gain.ID {
+		t.Fatalf("block show = %s", shown)
+	}
+
+	updated := harness.Run("--server", harness.URL(), "block", "set", secondString(gain.ID), "--gain", "3", "--name", "Updated valve", "--json")
+	if updated.code != 0 || updated.stderr != "" {
+		t.Fatalf("block set result = %s", updated)
+	}
+	var updatedBlock blockRecordClient
+	if err := json.Unmarshal([]byte(updated.stdout), &updatedBlock); err != nil {
+		t.Fatalf("decode block set: %v", err)
+	}
+	if updatedBlock.Name != "Updated valve" || updatedBlock.Parameters["gain"] != float64(3) {
+		t.Fatalf("updated block = %#v", updatedBlock)
+	}
+
+	sumUpdate := harness.Run("--server", harness.URL(), "block", "set", secondString(sum.ID), "--signs", "+")
+	if sumUpdate.code != 1 || !strings.Contains(sumUpdate.stderr, "wire on input port 1") {
+		t.Fatalf("wired sum edit result = %s", sumUpdate)
+	}
+
+	moved := harness.Run("--server", harness.URL(), "block", "mv", "--flow", "1", secondString(gain.ID)+":1400,1000", secondString(sum.ID)+":1600,1000", "--json")
+	if moved.code != 0 || moved.stderr != "" {
+		t.Fatalf("block mv result = %s", moved)
+	}
+	var movedBatch blockBatchClient
+	if err := json.Unmarshal([]byte(moved.stdout), &movedBatch); err != nil || len(movedBatch.Blocks) == 0 {
+		t.Fatalf("decode block mv: %v\n%s", err, moved.stdout)
+	}
+
+	invalidDelete := harness.Run("--server", harness.URL(), "block", "rm", "--flow", "1", secondString(gain.ID), secondString(sum.ID), "999999")
+	if invalidDelete.code != 1 || !strings.Contains(invalidDelete.stderr, "requested item") {
+		t.Fatalf("atomic block rm result = %s", invalidDelete)
+	}
+	afterInvalid := harness.Run("--server", harness.URL(), "block", "list", "--flow", "1", "--json")
+	if afterInvalid.code != 0 {
+		t.Fatalf("block list after invalid rm = %s", afterInvalid)
+	}
+	var remaining []blockRecordClient
+	if err := json.Unmarshal([]byte(afterInvalid.stdout), &remaining); err != nil {
+		t.Fatalf("decode block list after invalid rm: %v", err)
+	}
+	if !containsClientBlock(remaining, gain.ID) || !containsClientBlock(remaining, sum.ID) {
+		t.Fatal("invalid block rm removed a block before rejecting the batch")
+	}
+
+	duplicated := harness.Run("--server", harness.URL(), "block", "cp", "--flow", "1", secondString(gain.ID), "--json")
+	if duplicated.code != 0 || duplicated.stderr != "" {
+		t.Fatalf("block cp result = %s", duplicated)
+	}
+	var copies blockBatchClient
+	if err := json.Unmarshal([]byte(duplicated.stdout), &copies); err != nil || len(copies.Blocks) != 1 {
+		t.Fatalf("decode block cp: %v\n%s", err, duplicated.stdout)
+	}
+	if copies.Blocks[0].Name == "" || !strings.Contains(copies.Blocks[0].Name, "copy") {
+		t.Fatalf("copy record = %#v", copies.Blocks[0])
+	}
+}
+
+func containsClientBlock(blocks []blockRecordClient, id int64) bool {
+	for _, block := range blocks {
+		if block.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func requireCLIID(t *testing.T, result cliResult) int64 {
 	t.Helper()
 	if result.code != 0 || result.stderr != "" {
