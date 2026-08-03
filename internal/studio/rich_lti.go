@@ -58,6 +58,7 @@ func representationTimeFields() []parameterDefinition {
 			"sample_time", "Discrete sample time", "sample time",
 			"0.001", MinSimulationSampleTime, "sec",
 			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
+			[]string{"time_domain"},
 			func(parameters Parameters) bool {
 				return normalizedModelDomain(parameters) == modelDomainDiscrete
 			},
