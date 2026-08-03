@@ -121,6 +121,19 @@ func (registry *controllerCandidateRegistry) forFlow(
 	)
 }
 
+func (registry *controllerCandidateRegistry) get(
+	id string,
+	flowID int64,
+) *pendingControllerCandidate {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	candidate := registry.byID[id]
+	if candidate == nil || candidate.FlowID != flowID {
+		return nil
+	}
+	return clonePendingControllerCandidate(candidate)
+}
+
 func (registry *controllerCandidateRegistry) beginApply(
 	id string,
 	flowID int64,
