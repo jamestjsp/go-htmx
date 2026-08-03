@@ -935,6 +935,8 @@ func decodeParameters(kind BlockKind, encoded string) (Parameters, error) {
 	base := Parameters{}
 	if legacy {
 		switch kind {
+		case BlockPID, BlockPID2:
+			base = Parameters{}
 		case BlockStateSpace:
 			base = legacyStateSpaceParameters()
 		case BlockDiscreteStateSpace:

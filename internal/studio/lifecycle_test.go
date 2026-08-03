@@ -451,10 +451,9 @@ func TestDuplicateFlowCopiesBlocksAndRewiresConnections(t *testing.T) {
 
 // copyBlocks carries parameters_json verbatim, the one column a block's
 // parameters live in now that the legacy scalar columns are retired. This
-// still has to prove two distinct ways a copy could lose data: a JSON blob
-// written before the catalog gained fields it now has, where decodeParameters
-// fills the rest from today's defaults, and a polynomial array, which a
-// column-for-column string copy cannot silently truncate the way a
+// still has to prove two distinct ways a copy could lose data: an unversioned
+// JSON blob whose omitted fields are authored zeros, and a polynomial array,
+// which a column-for-column string copy cannot silently truncate the way a
 // per-field copy could.
 func TestDuplicateFlowPreservesBlockParameters(t *testing.T) {
 	ctx := context.Background()
@@ -485,8 +484,7 @@ func TestDuplicateFlowPreservesBlockParameters(t *testing.T) {
 		return id
 	}
 	sourceID := insertBlock(BlockSource, "Feed", `{"amplitude":1.75}`)
-	// A block written before the catalog gained the fields it now has: the JSON
-	// holds one field and decoding fills the rest from today's defaults.
+	// An unversioned block whose omitted PID gains are authored zeros.
 	partialID := insertBlock(BlockPID, "Controller", `{"derivative":0.25}`)
 	insertBlock(BlockTransfer, "Valve", `{"numerator":[2,1],"denominator":[1,3,1]}`)
 	if _, err := service.Connect(ctx, flowID, Wire{SourceID: sourceID, TargetID: partialID}); err != nil {
@@ -516,8 +514,8 @@ func TestDuplicateFlowPreservesBlockParameters(t *testing.T) {
 	if controller.Derivative != 0.25 {
 		t.Fatalf("stored JSON parameter = %v, want 0.25", controller.Derivative)
 	}
-	if controller.Integral != defaultParameters(BlockPID).Integral {
-		t.Fatalf("catalog default = %v, want %v", controller.Integral, defaultParameters(BlockPID).Integral)
+	if controller.Proportional != 0 || controller.Integral != 0 {
+		t.Fatalf("omitted authored-zero gains = P %v, I %v", controller.Proportional, controller.Integral)
 	}
 	valve := blockNamed(t, duplicated.Snapshot.Blocks, "Valve").Parameters
 	if !slices.Equal(valve.Numerator, []float64{2, 1}) ||

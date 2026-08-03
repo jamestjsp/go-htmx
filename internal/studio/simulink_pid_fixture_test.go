@@ -162,6 +162,66 @@ func TestLegacyPIDFilterTimeMigratesToCoefficient(t *testing.T) {
 	}
 }
 
+func TestUnversionedPIDDecodingUsesOnlyStoredGainsAndWeights(t *testing.T) {
+	tests := []struct {
+		name    string
+		kind    BlockKind
+		encoded string
+		wantP   float64
+		wantI   float64
+		wantD   float64
+		wantB   float64
+		wantC   float64
+	}{
+		{
+			name:    "PID omitted authored zeros",
+			kind:    BlockPID,
+			encoded: `{"filterTime":0.1}`,
+		},
+		{
+			name:    "PID stored nonzero gains",
+			kind:    BlockPID,
+			encoded: `{"proportional":2,"integral":0.5,"derivative":0.25,"filterTime":0.1}`,
+			wantP:   2,
+			wantI:   0.5,
+			wantD:   0.25,
+		},
+		{
+			name:    "PID2 omitted authored zeros",
+			kind:    BlockPID2,
+			encoded: `{"filterTime":0.1}`,
+		},
+		{
+			name:    "PID2 stored nonzero gains and weights",
+			kind:    BlockPID2,
+			encoded: `{"proportional":2,"integral":0.5,"derivative":0.25,"setpointWeight":0.75,"derivativeWeight":0.25,"filterTime":0.1}`,
+			wantP:   2,
+			wantI:   0.5,
+			wantD:   0.25,
+			wantB:   0.75,
+			wantC:   0.25,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parameters, err := decodeParameters(test.kind, test.encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parameters.Proportional != test.wantP ||
+				parameters.Integral != test.wantI ||
+				parameters.Derivative != test.wantD ||
+				parameters.SetpointWeight != test.wantB ||
+				parameters.DerivativeWeight != test.wantC {
+				t.Fatalf("%s decoded gains and weights = %#v", test.kind, parameters)
+			}
+			if parameters.FilterCoefficient != 10 || parameters.FilterTime != 0 {
+				t.Fatalf("%s migrated filter = %#v", test.kind, parameters)
+			}
+		})
+	}
+}
+
 func TestR2026aParallelPIDFrequencyThroughPublicStudio(t *testing.T) {
 	fixture := loadR2026aPIDFixture(t)
 	flow := newPIDCompatibilityFlow(t, BlockPID, modelDomainContinuous, fixture)
