@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,6 +22,8 @@ type Server struct {
 	studio               *studio.Studio
 	templates            *template.Template
 	handler              http.Handler
+	apiMux               *http.ServeMux
+	logger               *log.Logger
 	controllerCandidates *controllerCandidateRegistry
 }
 
@@ -36,9 +39,17 @@ func New(studioService *studio.Studio) (*Server, error) {
 
 	server := &Server{
 		studio: studioService, templates: templates,
+		apiMux: http.NewServeMux(), logger: log.Default(),
 		controllerCandidates: newControllerCandidateRegistry(),
 	}
 	mux := http.NewServeMux()
+	server.apiMux.Handle("/", server.api(func(*http.Request) (apiResponse, error) {
+		return apiResponse{}, studio.ErrNotFound
+	}))
+	apiHandler := http.StripPrefix("/api/v1", server.apiMux)
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"} {
+		mux.Handle(method+" /api/v1/", apiHandler)
+	}
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /", server.page)
 	mux.HandleFunc("GET /projects/{projectID}", server.projectPage)
