@@ -26,7 +26,6 @@ type eventClient struct {
 func newExportCommand() *command {
 	var flowID int64
 	var jsonOutput bool
-	var help bool
 	return &command{
 		name:    "export",
 		summary: "Export complete flowsheet results",
@@ -37,15 +36,8 @@ func newExportCommand() *command {
 			{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
 				set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
 			}},
-			{name: "help", typeName: "bool", defaultValue: "false", usage: "show command help", register: func(set *flag.FlagSet) {
-				set.BoolVar(&help, "help", false, "show command help")
-			}},
 		},
 		run: func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-			if help {
-				fmt.Fprintln(stdout, "Usage: processlab export --flow <id> [--json]")
-				return nil
-			}
 			if len(args) != 0 {
 				return usagef("processlab export: unexpected argument %q", args[0])
 			}
@@ -80,7 +72,6 @@ func newLogCommand() *command {
 	var flowID int64
 	var limit int
 	var jsonOutput bool
-	var help bool
 	return &command{
 		name:    "log",
 		summary: "Show recent flowsheet activity",
@@ -94,15 +85,8 @@ func newLogCommand() *command {
 			{name: "json", typeName: "bool", defaultValue: "false", usage: "write machine-readable output", register: func(set *flag.FlagSet) {
 				set.BoolVar(&jsonOutput, "json", false, "write machine-readable output")
 			}},
-			{name: "help", typeName: "bool", defaultValue: "false", usage: "show command help", register: func(set *flag.FlagSet) {
-				set.BoolVar(&help, "help", false, "show command help")
-			}},
 		},
 		run: func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-			if help {
-				fmt.Fprintln(stdout, "Usage: processlab log --flow <id> [--limit <count>] [--json]")
-				return nil
-			}
 			if len(args) != 0 {
 				return usagef("processlab log: unexpected argument %q", args[0])
 			}

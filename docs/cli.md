@@ -113,9 +113,12 @@ The sections below are generated from `processlab help --json`, each command's h
 #### `processlab help --help`
 
 ```text
-Usage: processlab help [flags]
+Usage: processlab help [flags] [<command>]
 
 Show command help
+
+Arguments:
+  command      command to describe (optional)
 
 Flags:
   --json       <bool> write machine-readable help (default false)
@@ -136,109 +139,194 @@ Flags:
 #### `processlab project --help`
 
 ```text
-Usage: processlab project
+Usage: processlab project <command>
 
 List and manage Process Lab projects
+
+Commands:
+  list         List projects
+  show         Show a project
+  create       Create a project
+  rename       Rename a project
+  delete       Delete a project
 ```
 
 #### `processlab flow --help`
 
 ```text
-Usage: processlab flow
+Usage: processlab flow <command>
 
 List and manage flowsheets
+
+Commands:
+  list         List flowsheets
+  dump         Dump a declarative flowsheet document
+  apply        Apply a declarative flowsheet document
+  show         Show a flowsheet
+  create       Create a flowsheet
+  rename       Rename a flowsheet
+  duplicate    Duplicate a flowsheet
+  delete       Delete a flowsheet
+  reorder      Reorder a project's flowsheets
 ```
 
 #### `processlab block --help`
 
 ```text
-Usage: processlab block
+Usage: processlab block <command>
 
 Discover, add, and configure library blocks
+
+Commands:
+  list         List library or flowsheet blocks
+  show         Show a block
+  add          Add a catalog block
+  set          Update a block
+  mv           Move blocks
+  rm           Delete blocks
+  cp           Duplicate blocks
+  help         Show catalog block help
 ```
 
 #### `processlab wire --help`
 
 ```text
-Usage: processlab wire
+Usage: processlab wire <command>
 
 Connect and disconnect flowsheet signals
+
+Commands:
+  list         List signal connections
+  connect      Connect two signal endpoints
+  rm           Remove signal connections
 ```
 
 #### `processlab sim --help`
 
 ```text
-Usage: processlab sim
+Usage: processlab sim <command>
 
 Run and inspect flowsheet simulations
+
+Commands:
+  run          Run a flowsheet simulation
+  show         Show the latest simulation
 ```
 
 #### `processlab analyze --help`
 
 ```text
-Usage: processlab analyze
+Usage: processlab analyze <command>
 
 Discover channels and run control analyses
+
+Commands:
+  channels     List selectable analysis channels
+  dynamics     Run a dynamics analysis
+  frequency    Run a frequency analysis
+  loop         Run a loop analysis
+  show         Show cached analyses
 ```
 
 #### `processlab roles --help`
 
 ```text
-Usage: processlab roles
+Usage: processlab roles <command>
 
 Assign and inspect control model roles
+
+Commands:
+  show         Show assigned control roles
+  set          Assign control model roles
 ```
 
 #### `processlab sweep --help`
 
 ```text
-Usage: processlab sweep
+Usage: processlab sweep <command>
 
 Run catalog-backed parameter sweeps
+
+Commands:
+  run          Run catalog-backed parameter sweeps
 ```
 
 #### `processlab controller --help`
 
 ```text
-Usage: processlab controller
+Usage: processlab controller <command>
 
 Design, tune, and review controller candidates
+
+Commands:
+  pid          Design a PID controller
+  state        Design state-space controllers
+  robust       Design a robust controller
+  tune         Tune a controller
+  review       Review a controller candidate
+  apply        Apply a controller candidate
+  undo         Undo a controller candidate
 ```
 
 #### `processlab ident --help`
 
 ```text
-Usage: processlab ident
+Usage: processlab ident <command>
 
 Estimate models from measured data
+
+Commands:
+  estimate     Estimate a frequency-response model
+  era          Estimate a state-space model with ERA
 ```
 
 #### `processlab study --help`
 
 ```text
-Usage: processlab study
+Usage: processlab study <command>
 
 Inspect compiled model provenance
+
+Commands:
+  show         Show compiled model provenance
 ```
 
 #### `processlab nonlinear --help`
 
 ```text
-Usage: processlab nonlinear
+Usage: processlab nonlinear <command>
 
 Register, linearize, and estimate nonlinear models
+
+Commands:
+  register     Register a persisted nonlinear definition
+  linearize    Linearize a nonlinear definition
+  ekf          Estimate a nonlinear model with an EKF
 ```
 
 #### `processlab export --help`
 
 ```text
-Usage: processlab export --flow <id> [--json]
+Usage: processlab export [flags]
+
+Export complete flowsheet results
+
+Flags:
+  --flow       <id> flowsheet id (default 0)
+  --json       <bool> write machine-readable output (default false)
 ```
 
 #### `processlab log --help`
 
 ```text
-Usage: processlab log --flow <id> [--limit <count>] [--json]
+Usage: processlab log [flags]
+
+Show recent flowsheet activity
+
+Flags:
+  --flow       <id> flowsheet id (default 0)
+  --limit      <count> maximum number of events (default 8)
+  --json       <bool> write machine-readable output (default false)
 ```
 
 ### Block catalog

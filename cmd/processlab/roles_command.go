@@ -5,8 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,54 +55,33 @@ type roleBlockSummary struct {
 
 func newRolesCommand() *command {
 	return &command{
-		name:      "roles",
-		summary:   "Assign and inspect control model roles",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "role operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runRoles(ctx, options, args, stdout, stderr)
+		name: "roles", summary: "Assign and inspect control model roles", children: []*command{
+			newCommand("show", "Show assigned control roles", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runRolesShow(ctx, client, args, options, stdout)
+			}),
+			newCommand("set", "Assign control model roles", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("plant", "ids", "", "plant block id or comma-separated block ids"), documentedStringFlag("controller", "ids", "", "controller block id or comma-separated block ids"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runRolesSet(ctx, client, args, options, stdout)
+			}),
 		},
 	}
 }
 
-func runRoles(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab roles: choose show or set")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "show":
-		return runRolesShow(ctx, client, args[1:], options, stdout)
-	case "set":
-		return runRolesSet(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab roles: unknown operation %q; choose show or set", args[0])
-	}
-}
-
 func runRolesShow(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("roles show", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab roles show --flow <id> [--json]")
-			return nil
-		}
-		return usagef("processlab roles show: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab roles show: --flow is required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab roles show: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab roles show: unexpected argument %q", args[0])
 	}
 	spec, err := getControlRoles(ctx, client, flowID)
 	if err != nil {
@@ -121,28 +98,15 @@ func runRolesShow(ctx context.Context, client *apiClient, args []string, options
 }
 
 func runRolesSet(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow", "--plant", "-plant", "--controller", "-controller"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("roles set", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var plantText, controllerText string
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&plantText, "plant", "", "plant block id or comma-separated block ids")
-	set.StringVar(&controllerText, "controller", "", "controller block id or comma-separated block ids")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab roles set --flow <id> --plant <blockID[,blockID...]> --controller <blockID[,blockID...]> [--json]")
-			return nil
-		}
-		return usagef("processlab roles set: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	plantText := options.commandString("plant")
+	controllerText := options.commandString("controller")
 	if flowID <= 0 || plantText == "" || controllerText == "" {
 		return usagef("processlab roles set: --flow, --plant, and --controller are required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab roles set: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab roles set: unexpected argument %q", args[0])
 	}
 	plantIDs, err := parseRoleIDs(plantText)
 	if err != nil {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -38,18 +37,11 @@ func requestBlock(ctx context.Context, client *apiClient, blockID int64) (blockR
 }
 
 func runBlockShow(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, nil, []string{"--json", "-json"})
-	set := flag.NewFlagSet("block show", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab block show: %v", err)
-	}
-	if set.NArg() != 1 {
+	jsonOutput := options.json || options.commandBool("json")
+	if len(args) != 1 {
 		return usagef("processlab block show: expected a block id")
 	}
-	blockID, err := commandID(set.Arg(0), "block id")
+	blockID, err := commandID(args[0], "block id")
 	if err != nil {
 		return err
 	}
@@ -90,10 +82,11 @@ func runBlockSet(ctx context.Context, client *apiClient, args []string, options 
 	}
 	set := flag.NewFlagSet("block set", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
-	jsonOutput := options.json
+	jsonOutput := options.json || options.commandBool("json")
 	name := block.Name
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.StringVar(&name, "name", name, "block name")
+	if requestedName := options.commandString("name"); requestedName != "" {
+		name = requestedName
+	}
 	values := make(map[string]*string, len(schema.Parameters))
 	for _, field := range schema.Parameters {
 		value, ok := block.ParameterValues[field.Name]
@@ -103,11 +96,11 @@ func runBlockSet(ctx context.Context, client *apiClient, args []string, options 
 		values[field.Name] = &value
 		set.StringVar(&value, parameterFlagName(field.Name), value, field.Label)
 	}
+	if hasHelpFlag(args[1:]) {
+		printBlockSchemaHelp(stdout, schema)
+		return nil
+	}
 	if err := set.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printBlockSchemaHelp(stdout, schema)
-			return nil
-		}
 		return usagef("processlab block set: %v", err)
 	}
 	if set.NArg() != 0 {
@@ -137,24 +130,16 @@ func runBlockSet(ctx context.Context, client *apiClient, args []string, options 
 }
 
 func runBlockMove(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("block mv", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab block mv: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab block mv: --flow is required")
 	}
-	if set.NArg() == 0 {
+	if len(args) == 0 {
 		return usagef("processlab block mv: expected blockID:x,y values")
 	}
-	moves := make([]blockMoveRequestClient, 0, set.NArg())
-	for _, argument := range set.Args() {
+	moves := make([]blockMoveRequestClient, 0, len(args))
+	for _, argument := range args {
 		move, err := parseBlockMove(argument)
 		if err != nil {
 			return err
@@ -175,24 +160,16 @@ func runBlockDuplicate(ctx context.Context, client *apiClient, args []string, op
 }
 
 func runBlockIDsAction(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer, commandName, method, verb string) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("block "+commandName, flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		return usagef("processlab block %s: %v", commandName, err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab block %s: --flow is required", commandName)
 	}
-	if set.NArg() == 0 {
+	if len(args) == 0 {
 		return usagef("processlab block %s: expected at least one block id", commandName)
 	}
-	ids := make([]int64, set.NArg())
-	for index, argument := range set.Args() {
+	ids := make([]int64, len(args))
+	for index, argument := range args {
 		id, err := commandID(argument, "block id")
 		if err != nil {
 			return err

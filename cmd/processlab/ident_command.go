@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,83 +29,67 @@ type identificationERARequestClient struct {
 
 func newIdentCommand() *command {
 	return &command{
-		name:      "ident",
-		summary:   "Estimate models from measured data",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "identification operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runIdent(ctx, options, args, stdout, stderr)
+		name: "ident", summary: "Estimate models from measured data", children: []*command{
+			newCommand("estimate", "Estimate a frequency-response model", identificationEstimateFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runIdentEstimate(ctx, client, args, options, stdout)
+			}),
+			newCommand("era", "Estimate a state-space model with ERA", []commandFlag{documentedStringFlag("name", "string", "era-identification", "candidate name"), documentedIntFlag("order", "count", 1, "identified state-space order"), documentedBoolFlag("json", "write machine-readable output")}, []commandArgument{{name: "file", description: "optional Markov data JSON file"}}, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runIdentERA(ctx, client, args, options, stdout)
+			}),
 		},
 	}
 }
 
-func runIdent(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab ident: choose estimate or era")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "estimate":
-		return runIdentEstimate(ctx, client, args[1:], options, stdout)
-	case "era":
-		return runIdentERA(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab ident: unknown operation %q; choose estimate or era", args[0])
+func identificationEstimateFlags() []commandFlag {
+	return []commandFlag{
+		documentedStringFlag("name", "string", "identification", "candidate name"), documentedStringFlag("format", "string", "auto", "input format: auto, json, or csv"), documentedFloat64Flag("sample-time", "seconds", 0, "sample time in seconds; overrides the input document"), documentedStringFlag("time-unit", "string", "", "time unit; overrides the input document"), documentedStringFlag("input-columns", "list", "", "CSV input column names, comma-separated"), documentedStringFlag("output-columns", "list", "", "CSV output column names, comma-separated"), documentedStringFlag("input-names", "list", "", "input channel names, comma-separated"), documentedStringFlag("output-names", "list", "", "output channel names, comma-separated"), documentedStringFlag("input-units", "list", "", "input channel units, comma-separated"), documentedStringFlag("output-units", "list", "", "output channel units, comma-separated"), documentedStringFlag("preprocessing", "string", "", "none, remove_mean, or linear_detrend"), documentedIntFlag("training-start", "index", -1, "training range start, inclusive"), documentedIntFlag("training-end", "index", -1, "training range end, exclusive"), documentedIntFlag("validation-start", "index", -1, "validation range start, inclusive"), documentedIntFlag("validation-end", "index", -1, "validation range end, exclusive"), documentedStringFlag("method", "string", string(studio.FrequencyEstimationH1), "frequency estimator: h1 or h2"), documentedStringFlag("window", "string", string(studio.IdentificationWindowHann), "window: rectangular, hann, hamming, or blackman"), documentedIntFlag("nfft", "count", 64, "FFT length"), documentedIntFlag("overlap", "count", 32, "FFT overlap"), documentedFloat64Flag("min-coherence", "ratio", 0, "minimum coherence for validation comparisons"), documentedBoolFlag("json", "write machine-readable output"),
 	}
 }
 
 func runIdentEstimate(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args,
-		[]string{
-			"--name", "-name", "--format", "-format", "--sample-time", "-sample-time", "--time-unit", "-time-unit",
-			"--input-columns", "-input-columns", "--output-columns", "-output-columns", "--input-names", "-input-names", "--output-names", "-output-names",
-			"--input-units", "-input-units", "--output-units", "-output-units", "--preprocessing", "-preprocessing",
-			"--training-start", "-training-start", "--training-end", "-training-end", "--validation-start", "-validation-start", "--validation-end", "-validation-end",
-			"--method", "-method", "--window", "-window", "--nfft", "-nfft", "--overlap", "-overlap", "--min-coherence", "-min-coherence",
-		},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("ident estimate", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var name, format, timeUnit, inputColumns, outputColumns, inputNames, outputNames, inputUnits, outputUnits, preprocessing string
-	var sampleTime, minCoherence float64
-	var trainingStart, trainingEnd, validationStart, validationEnd int
-	var method, window string
-	var nfft, overlap int
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.StringVar(&name, "name", "identification", "candidate name")
-	set.StringVar(&format, "format", "auto", "input format: auto, json, or csv")
-	set.Float64Var(&sampleTime, "sample-time", 0, "sample time in seconds; overrides the input document")
-	set.StringVar(&timeUnit, "time-unit", "", "time unit; overrides the input document")
-	set.StringVar(&inputColumns, "input-columns", "", "CSV input column names, comma-separated")
-	set.StringVar(&outputColumns, "output-columns", "", "CSV output column names, comma-separated")
-	set.StringVar(&inputNames, "input-names", "", "input channel names, comma-separated")
-	set.StringVar(&outputNames, "output-names", "", "output channel names, comma-separated")
-	set.StringVar(&inputUnits, "input-units", "", "input channel units, comma-separated")
-	set.StringVar(&outputUnits, "output-units", "", "output channel units, comma-separated")
-	set.StringVar(&preprocessing, "preprocessing", "", "none, remove_mean, or linear_detrend")
-	set.IntVar(&trainingStart, "training-start", -1, "training range start, inclusive")
-	set.IntVar(&trainingEnd, "training-end", -1, "training range end, exclusive")
-	set.IntVar(&validationStart, "validation-start", -1, "validation range start, inclusive")
-	set.IntVar(&validationEnd, "validation-end", -1, "validation range end, exclusive")
-	set.StringVar(&method, "method", string(studio.FrequencyEstimationH1), "frequency estimator: h1 or h2")
-	set.StringVar(&window, "window", string(studio.IdentificationWindowHann), "window: rectangular, hann, hamming, or blackman")
-	set.IntVar(&nfft, "nfft", 64, "FFT length")
-	set.IntVar(&overlap, "overlap", 32, "FFT overlap")
-	set.Float64Var(&minCoherence, "min-coherence", 0, "minimum coherence for validation comparisons")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab ident estimate [--sample-time <seconds>] [--format json|csv] < data.json|data.csv")
-			return nil
-		}
-		return usagef("processlab ident estimate: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	name := options.commandString("name")
+	format := options.commandString("format")
+	sampleTime := options.commandFloat64("sample-time")
+	timeUnit := options.commandString("time-unit")
+	inputColumns := options.commandString("input-columns")
+	outputColumns := options.commandString("output-columns")
+	inputNames := options.commandString("input-names")
+	outputNames := options.commandString("output-names")
+	inputUnits := options.commandString("input-units")
+	outputUnits := options.commandString("output-units")
+	preprocessing := options.commandString("preprocessing")
+	trainingStart := options.commandInt("training-start")
+	trainingEnd := options.commandInt("training-end")
+	validationStart := options.commandInt("validation-start")
+	validationEnd := options.commandInt("validation-end")
+	method := options.commandString("method")
+	window := options.commandString("window")
+	nfft := options.commandInt("nfft")
+	overlap := options.commandInt("overlap")
+	minCoherence := options.commandFloat64("min-coherence")
+	if name == "" {
+		name = "identification"
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab ident estimate: unexpected argument %q", set.Arg(0))
+	if format == "" {
+		format = "auto"
+	}
+	if method == "" {
+		method = string(studio.FrequencyEstimationH1)
+	}
+	if window == "" {
+		window = string(studio.IdentificationWindowHann)
+	}
+	if len(args) != 0 {
+		return usagef("processlab ident estimate: unexpected argument %q", args[0])
 	}
 	encoded, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -144,29 +126,19 @@ func runIdentEstimate(ctx context.Context, client *apiClient, args []string, opt
 }
 
 func runIdentERA(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--name", "-name", "--order", "-order"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("ident era", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var name string
-	var order int
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.StringVar(&name, "name", "era-identification", "candidate name")
-	set.IntVar(&order, "order", 1, "identified state-space order")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab ident era --order <n> <markov-data.json>")
-			return nil
-		}
-		return usagef("processlab ident era: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	name := options.commandString("name")
+	order := options.commandInt("order")
+	if name == "" {
+		name = "era-identification"
 	}
-	if set.NArg() > 1 {
+	if len(args) > 1 {
 		return usagef("processlab ident era: expected at most one JSON file")
 	}
 	var encoded []byte
 	var err error
-	if set.NArg() == 1 {
-		encoded, err = os.ReadFile(set.Arg(0))
+	if len(args) == 1 {
+		encoded, err = os.ReadFile(args[0])
 	} else {
 		encoded, err = io.ReadAll(os.Stdin)
 	}

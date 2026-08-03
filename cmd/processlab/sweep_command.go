@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,6 +24,15 @@ func (values *repeatedStringFlag) Set(value string) error {
 	return nil
 }
 
+func documentedStringListFlag(name, typeName, usage string) commandFlag {
+	var value repeatedStringFlag
+	return commandFlag{
+		name: name, typeName: typeName, usage: usage,
+		register: func(set *flag.FlagSet) { set.Var(&value, name, usage) },
+		value:    func() any { return []string(value) },
+	}
+}
+
 type parameterSweepRequestClient struct {
 	BlockID  int64                    `json:"blockId"`
 	Sweep    studio.SweepSpec         `json:"sweep"`
@@ -33,63 +41,35 @@ type parameterSweepRequestClient struct {
 
 func newSweepCommand() *command {
 	return &command{
-		name:      "sweep",
-		summary:   "Run catalog-backed parameter sweeps",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "sweep operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runSweep(ctx, options, args, stdout, stderr)
+		name: "sweep", summary: "Run catalog-backed parameter sweeps", children: []*command{
+			newCommand("run", "Run catalog-backed parameter sweeps", []commandFlag{
+				documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedInt64Flag("block", "id", 0, "block id whose parameter is swept"), documentedStringListFlag("axis", "string", "parameter=start:stop:count or parameter=value,value,...; repeatable"), documentedStringFlag("omega", "list", "0.1,1", "comma-separated positive frequency points"), documentedFloat64Flag("step-final", "seconds", 1, "step response final time in seconds"), documentedBoolFlag("json", "write machine-readable output"),
+			}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runSweepRun(ctx, client, args, options, stdout)
+			}),
 		},
 	}
 }
 
-func runSweep(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab sweep: choose run")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "run":
-		return runSweepRun(ctx, client, args[1:], options, stdout)
-	default:
-		return usagef("processlab sweep: unknown operation %q; choose run", args[0])
-	}
-}
-
 func runSweepRun(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(
-		args,
-		[]string{"--flow", "-flow", "--block", "-block", "--axis", "-axis", "--omega", "-omega", "--step-final", "-step-final"},
-		[]string{"--json", "-json"},
-	)
-	set := flag.NewFlagSet("sweep run", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID, blockID int64
-	var axisValues repeatedStringFlag
-	omegaText := "0.1,1"
-	stepFinal := 1.0
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.Int64Var(&blockID, "block", 0, "block id whose parameter is swept")
-	set.Var(&axisValues, "axis", "parameter=start:stop:count or parameter=value,value,...; repeatable")
-	set.StringVar(&omegaText, "omega", omegaText, "comma-separated positive frequency points")
-	set.Float64Var(&stepFinal, "step-final", stepFinal, "step response final time in seconds")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab sweep run --flow <id> --block <id> --axis <parameter>=<start>:<stop>:<count> [--axis ...] [--omega <w1,w2,...>] [--step-final <seconds>] [--json]")
-			return nil
-		}
-		return usagef("processlab sweep run: %v", err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	blockID := options.commandInt64("block")
+	axisValues := options.commandStrings("axis")
+	omegaText := options.commandString("omega")
+	if omegaText == "" {
+		omegaText = "0.1,1"
 	}
+	stepFinal := options.commandFloat64("step-final")
 	if flowID <= 0 || blockID <= 0 || len(axisValues) == 0 {
 		return usagef("processlab sweep run: --flow, --block, and at least one --axis are required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab sweep run: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab sweep run: unexpected argument %q", args[0])
 	}
 	axes, err := parseSweepAxes(ctx, client, blockID, axisValues)
 	if err != nil {

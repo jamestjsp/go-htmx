@@ -27,9 +27,10 @@ const (
 )
 
 type globalOptions struct {
-	server  string
-	json    bool
-	timeout time.Duration
+	server        string
+	json          bool
+	timeout       time.Duration
+	commandValues map[string]func() any
 }
 
 type usageError struct {
@@ -71,6 +72,7 @@ type commandFlag struct {
 	defaultValue string
 	usage        string
 	register     func(*flag.FlagSet)
+	value        func() any
 }
 
 type commandArgument struct {
@@ -79,13 +81,91 @@ type commandArgument struct {
 	required    bool
 }
 
+func commandBoolFlag(name, usage string, value *bool) commandFlag {
+	return commandFlag{
+		name: name, typeName: "bool", defaultValue: "false", usage: usage,
+		register: func(set *flag.FlagSet) { set.BoolVar(value, name, false, usage) },
+		value:    func() any { return *value },
+	}
+}
+
+func commandInt64Flag(name, typeName string, defaultValue int64, usage string, value *int64) commandFlag {
+	return commandFlag{
+		name: name, typeName: typeName, defaultValue: fmt.Sprint(defaultValue), usage: usage,
+		register: func(set *flag.FlagSet) { set.Int64Var(value, name, defaultValue, usage) },
+		value:    func() any { return *value },
+	}
+}
+
+func commandIntFlag(name, typeName string, defaultValue int, usage string, value *int) commandFlag {
+	return commandFlag{
+		name: name, typeName: typeName, defaultValue: fmt.Sprint(defaultValue), usage: usage,
+		register: func(set *flag.FlagSet) { set.IntVar(value, name, defaultValue, usage) },
+		value:    func() any { return *value },
+	}
+}
+
+func commandFloat64Flag(name, typeName string, defaultValue float64, usage string, value *float64) commandFlag {
+	return commandFlag{
+		name: name, typeName: typeName, defaultValue: fmt.Sprint(defaultValue), usage: usage,
+		register: func(set *flag.FlagSet) { set.Float64Var(value, name, defaultValue, usage) },
+		value:    func() any { return *value },
+	}
+}
+
+func commandStringFlag(name, typeName, defaultValue, usage string, value *string) commandFlag {
+	return commandFlag{
+		name: name, typeName: typeName, defaultValue: defaultValue, usage: usage,
+		register: func(set *flag.FlagSet) { set.StringVar(value, name, defaultValue, usage) },
+		value:    func() any { return *value },
+	}
+}
+
+func documentedBoolFlag(name, usage string) commandFlag {
+	var value bool
+	return commandBoolFlag(name, usage, &value)
+}
+
+func documentedInt64Flag(name, typeName string, defaultValue int64, usage string) commandFlag {
+	var value int64
+	return commandInt64Flag(name, typeName, defaultValue, usage, &value)
+}
+
+func documentedIntFlag(name, typeName string, defaultValue int, usage string) commandFlag {
+	var value int
+	return commandIntFlag(name, typeName, defaultValue, usage, &value)
+}
+
+func documentedFloat64Flag(name, typeName string, defaultValue float64, usage string) commandFlag {
+	var value float64
+	return commandFloat64Flag(name, typeName, defaultValue, usage, &value)
+}
+
+func documentedStringFlag(name, typeName, defaultValue, usage string) commandFlag {
+	var value string
+	return commandStringFlag(name, typeName, defaultValue, usage, &value)
+}
+
+func newCommand(name, summary string, flags []commandFlag, arguments []commandArgument, run func(context.Context, globalOptions, []string, io.Writer, io.Writer) error) *command {
+	return &command{name: name, summary: summary, flags: flags, arguments: arguments, run: run}
+}
+
+func newVariadicCommand(name, summary string, flags []commandFlag, arguments []commandArgument, run func(context.Context, globalOptions, []string, io.Writer, io.Writer) error) *command {
+	command := newCommand(name, summary, flags, arguments, run)
+	command.variadic = true
+	return command
+}
+
 type command struct {
 	name      string
+	path      string
 	summary   string
 	flags     []commandFlag
 	arguments []commandArgument
 	freeform  bool
+	variadic  bool
 	children  []*command
+	help      func(context.Context, globalOptions, []string, io.Writer, io.Writer) error
 	run       func(context.Context, globalOptions, []string, io.Writer, io.Writer) error
 }
 
@@ -105,33 +185,180 @@ func (c *command) execute(
 	stdout io.Writer,
 	stderr io.Writer,
 ) error {
-	set := flag.NewFlagSet(c.name, flag.ContinueOnError)
+	if c.help != nil && hasHelpFlag(args) {
+		return c.help(ctx, options, removeHelpFlags(args), stdout, stderr)
+	}
+	set := flag.NewFlagSet(c.path, flag.ContinueOnError)
 	set.SetOutput(io.Discard)
+	help := false
+	set.BoolVar(&help, "help", false, "show command help")
 	for _, specification := range c.flags {
 		specification.register(set)
 	}
-	parseArgs := args
-	if c.name == "help" {
-		parseArgs = moveHelpFlagsBeforeArguments(args)
-	}
-	if err := set.Parse(parseArgs); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			printCommandHelp(stdout, c)
-			return nil
+	commandValues := make(map[string]func() any, len(c.flags))
+	for _, specification := range c.flags {
+		if specification.value != nil {
+			commandValues[specification.name] = specification.value
 		}
-		return usagef("processlab %s: %v", c.name, err)
+	}
+	parseArgs := moveCommandFlags(args, c.valueFlagNames(), c.boolFlagNames())
+	if err := set.Parse(parseArgs); err != nil {
+		return usagef("%s: %v", c.path, err)
+	}
+	if help {
+		printCommandHelp(stdout, c)
+		return nil
+	}
+	parsedArgs := set.Args()
+	if len(c.children) > 0 && !c.freeform {
+		if len(parsedArgs) == 0 {
+			return usagef("%s: choose %s", c.path, joinCommandNames(c.children))
+		}
+		child := c.child(parsedArgs[0])
+		if child == nil {
+			return usagef("%s: unknown command %q; choose %s", c.path, parsedArgs[0], joinCommandNames(c.children))
+		}
+		return child.execute(ctx, options, parsedArgs[1:], stdout, stderr)
 	}
 	if !c.freeform {
-		if set.NArg() > len(c.arguments) {
-			return usagef("processlab %s: unexpected argument %q", c.name, set.Arg(len(c.arguments)))
+		if !c.variadic && len(parsedArgs) > len(c.arguments) {
+			return usagef("%s: unexpected argument %q", c.path, parsedArgs[len(c.arguments)])
 		}
-		for index, argument := range c.arguments[:set.NArg()] {
-			if argument.required && set.Arg(index) == "" {
-				return usagef("processlab %s: argument %q is required", c.name, argument.name)
+		for index, argument := range c.arguments {
+			if argument.required && (index >= len(parsedArgs) || parsedArgs[index] == "") {
+				return usagef("%s: argument %q is required", c.path, argument.name)
 			}
 		}
 	}
-	return c.run(ctx, options, set.Args(), stdout, stderr)
+	if c.run == nil {
+		return usagef("%s: command has no implementation", c.path)
+	}
+	options.commandValues = commandValues
+	return c.run(ctx, options, parsedArgs, stdout, stderr)
+}
+
+func (options globalOptions) commandValue(name string) (any, bool) {
+	read, ok := options.commandValues[name]
+	if !ok {
+		return nil, false
+	}
+	return read(), true
+}
+
+func (options globalOptions) commandBool(name string) bool {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return false
+	}
+	result, _ := value.(bool)
+	return result
+}
+
+func (options globalOptions) commandString(name string) string {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return ""
+	}
+	result, _ := value.(string)
+	return result
+}
+
+func (options globalOptions) commandInt64(name string) int64 {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return 0
+	}
+	result, _ := value.(int64)
+	return result
+}
+
+func (options globalOptions) commandInt(name string) int {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return 0
+	}
+	result, _ := value.(int)
+	return result
+}
+
+func (options globalOptions) commandFloat64(name string) float64 {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return 0
+	}
+	result, _ := value.(float64)
+	return result
+}
+
+func (options globalOptions) commandStrings(name string) []string {
+	value, ok := options.commandValue(name)
+	if !ok {
+		return nil
+	}
+	result, _ := value.([]string)
+	return result
+}
+
+func (c *command) valueFlagNames() []string {
+	result := make([]string, 0, len(c.flags)*2)
+	for _, specification := range c.flags {
+		if specification.typeName == "bool" {
+			continue
+		}
+		result = append(result, "--"+specification.name, "-"+specification.name)
+	}
+	return result
+}
+
+func (c *command) boolFlagNames() []string {
+	result := make([]string, 0, len(c.flags)*2+3)
+	if len(c.children) == 0 {
+		result = append(result, "--help", "-help", "-h")
+	}
+	for _, specification := range c.flags {
+		if specification.typeName == "bool" {
+			result = append(result, "--"+specification.name, "-"+specification.name)
+		}
+	}
+	return result
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, argument := range args {
+		if argument == "--help" || argument == "-help" || argument == "-h" {
+			return true
+		}
+	}
+	return false
+}
+
+func removeHelpFlags(args []string) []string {
+	result := make([]string, 0, len(args))
+	for _, argument := range args {
+		if argument != "--help" && argument != "-help" && argument != "-h" {
+			result = append(result, argument)
+		}
+	}
+	return result
+}
+
+func joinCommandNames(commands []*command) string {
+	names := make([]string, len(commands))
+	for index, child := range commands {
+		names[index] = child.name
+	}
+	return strings.Join(names, ", ")
+}
+
+func assignCommandPaths(root *command) {
+	var visit func(*command, string)
+	visit = func(current *command, path string) {
+		current.path = path
+		for _, child := range current.children {
+			visit(child, path+" "+child.name)
+		}
+	}
+	visit(root, root.name)
 }
 
 func commandTree() *command {
@@ -197,20 +424,8 @@ func commandTree() *command {
 		newExportCommand(),
 		newLogCommand(),
 	}
+	assignCommandPaths(root)
 	return root
-}
-
-func moveHelpFlagsBeforeArguments(args []string) []string {
-	flags := make([]string, 0, len(args))
-	arguments := make([]string, 0, len(args))
-	for _, argument := range args {
-		if argument == "--json" || argument == "-json" || argument == "--help" || argument == "-help" || argument == "-h" {
-			flags = append(flags, argument)
-			continue
-		}
-		arguments = append(arguments, argument)
-	}
-	return append(flags, arguments...)
 }
 
 func parseGlobalOptions(args []string) (globalOptions, []string, bool, error) {
@@ -331,20 +546,47 @@ func printRootHelp(w io.Writer, root *command) {
 }
 
 func printCommandHelp(w io.Writer, c *command) {
-	fmt.Fprintf(w, "Usage: processlab %s", c.name)
+	fmt.Fprintf(w, "Usage: %s", c.path)
+	if len(c.children) > 0 {
+		fmt.Fprint(w, " <command>")
+	}
 	if len(c.flags) > 0 {
 		fmt.Fprint(w, " [flags]")
+	}
+	for _, argument := range c.arguments {
+		if argument.required {
+			fmt.Fprintf(w, " <%s>", argument.name)
+		} else {
+			fmt.Fprintf(w, " [<%s>]", argument.name)
+		}
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c.summary)
-	if len(c.flags) == 0 {
-		return
+	if len(c.children) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Commands:")
+		for _, child := range c.children {
+			fmt.Fprintf(w, "  %-12s %s\n", child.name, child.summary)
+		}
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Flags:")
-	for _, specification := range c.flags {
-		fmt.Fprintf(w, "  --%-10s <%s> %s (default %s)\n", specification.name, specification.typeName, specification.usage, specification.defaultValue)
+	if len(c.arguments) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Arguments:")
+		for _, argument := range c.arguments {
+			required := "optional"
+			if argument.required {
+				required = "required"
+			}
+			fmt.Fprintf(w, "  %-12s %s (%s)\n", argument.name, argument.description, required)
+		}
+	}
+	if len(c.flags) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Flags:")
+		for _, specification := range c.flags {
+			fmt.Fprintf(w, "  --%-10s <%s> %s (default %s)\n", specification.name, specification.typeName, specification.usage, specification.defaultValue)
+		}
 	}
 }
 

@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,60 +54,60 @@ type analysisChannelRef struct {
 
 func newAnalysisCommand() *command {
 	return &command{
-		name:      "analyze",
-		summary:   "Discover channels and run control analyses",
-		freeform:  true,
-		arguments: []commandArgument{{name: "subcommand", description: "analysis operation"}},
-		run: func(ctx context.Context, options globalOptions, args []string, stdout io.Writer, stderr io.Writer) error {
-			return runAnalyze(ctx, options, args, stdout, stderr)
+		name: "analyze", summary: "Discover channels and run control analyses", children: []*command{
+			newCommand("channels", "List selectable analysis channels", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runAnalyzeChannels(ctx, client, args, options, stdout)
+			}),
+			newCommand("dynamics", "Run a dynamics analysis", analysisCommandFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runAnalyzeRun(ctx, client, args, options, stdout, "dynamics")
+			}),
+			newCommand("frequency", "Run a frequency analysis", analysisCommandFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runAnalyzeRun(ctx, client, args, options, stdout, "frequency")
+			}),
+			newCommand("loop", "Run a loop analysis", analysisCommandFlags(), nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runAnalyzeRun(ctx, client, args, options, stdout, "loop")
+			}),
+			newCommand("show", "Show cached analyses", []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedBoolFlag("json", "write machine-readable output")}, nil, func(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
+				client, err := newAPIClient(options.server, options.timeout)
+				if err != nil {
+					return err
+				}
+				return runAnalyzeShow(ctx, client, args, options, stdout, stderr)
+			}),
 		},
 	}
 }
 
-func runAnalyze(ctx context.Context, options globalOptions, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return usagef("processlab analyze: choose channels, dynamics, frequency, loop, or show")
-	}
-	client, err := newAPIClient(options.server, options.timeout)
-	if err != nil {
-		return err
-	}
-	switch args[0] {
-	case "channels":
-		return runAnalyzeChannels(ctx, client, args[1:], options, stdout)
-	case "dynamics":
-		return runAnalyzeRun(ctx, client, args[1:], options, stdout, "dynamics")
-	case "frequency":
-		return runAnalyzeRun(ctx, client, args[1:], options, stdout, "frequency")
-	case "loop":
-		return runAnalyzeRun(ctx, client, args[1:], options, stdout, "loop")
-	case "show":
-		return runAnalyzeShow(ctx, client, args[1:], options, stdout, stderr)
-	default:
-		return usagef("processlab analyze: unknown operation %q; choose channels, dynamics, frequency, loop, or show", args[0])
+func analysisCommandFlags() []commandFlag {
+	return []commandFlag{
+		documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedStringFlag("input", "ref", "", "input channel (block:port:channel)"), documentedStringFlag("output", "ref", "", "output channel (block:port:channel)"), documentedFloat64Flag("base-step", "seconds", 0, "base simulation step in seconds"), documentedFloat64Flag("step-horizon", "seconds", 0, "step experiment horizon in seconds"), documentedFloat64Flag("horizon", "seconds", 0, "step experiment horizon in seconds"), documentedIntFlag("points", "count", 0, "frequency grid points"), documentedBoolFlag("all-channels", "analyze every selectable input and output"), documentedBoolFlag("json", "write machine-readable output"),
 	}
 }
 
 func runAnalyzeChannels(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("analyze channels", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab analyze channels --flow <id> [--json]")
-			return nil
-		}
-		return usagef("processlab analyze channels: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab analyze channels: --flow is required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab analyze channels: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab analyze channels: unexpected argument %q", args[0])
 	}
 	raw, err := getAnalysisWorkspace(ctx, client, flowID)
 	if err != nil {
@@ -128,42 +126,22 @@ func runAnalyzeChannels(ctx context.Context, client *apiClient, args []string, o
 }
 
 func runAnalyzeRun(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer, intent string) error {
-	valueFlags := []string{"--flow", "-flow", "--input", "-input", "--output", "-output", "--base-step", "-base-step", "--step-horizon", "-step-horizon", "--horizon", "-horizon", "--points", "-points"}
-	boolFlags := []string{"--json", "-json", "--all-channels", "-all-channels"}
-	args = moveCommandFlags(args, valueFlags, boolFlags)
-	set := flag.NewFlagSet("analyze "+intent, flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	var inputText, outputText string
-	var baseStep, stepHorizon float64
-	var points int
-	allChannels := false
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	set.StringVar(&inputText, "input", "", "input channel (block:port:channel)")
-	set.StringVar(&outputText, "output", "", "output channel (block:port:channel)")
-	set.Float64Var(&baseStep, "base-step", 0, "base simulation step in seconds")
-	set.Float64Var(&stepHorizon, "step-horizon", 0, "step experiment horizon in seconds")
-	set.Float64Var(&stepHorizon, "horizon", 0, "step experiment horizon in seconds")
-	set.IntVar(&points, "points", 0, "frequency grid points")
-	set.BoolVar(&allChannels, "all-channels", false, "analyze every selectable input and output")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			if intent == "frequency" {
-				fmt.Fprintln(stdout, "Usage: processlab analyze frequency --flow <id> (--all-channels | --input <ref> --output <ref>) [--points <n>] [--json]")
-			} else {
-				fmt.Fprintf(stdout, "Usage: processlab analyze %s --flow <id> --input <ref> --output <ref> [--base-step <seconds>] [--horizon <seconds>] [--json]\n", intent)
-			}
-			return nil
-		}
-		return usagef("processlab analyze %s: %v", intent, err)
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
+	inputText := options.commandString("input")
+	outputText := options.commandString("output")
+	baseStep := options.commandFloat64("base-step")
+	stepHorizon := options.commandFloat64("step-horizon")
+	if stepHorizon == 0 {
+		stepHorizon = options.commandFloat64("horizon")
 	}
+	points := options.commandInt("points")
+	allChannels := options.commandBool("all-channels")
 	if flowID <= 0 {
 		return usagef("processlab analyze %s: --flow is required", intent)
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab analyze %s: unexpected argument %q", intent, set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab analyze %s: unexpected argument %q", intent, args[0])
 	}
 	if intent == "frequency" && allChannels && (inputText != "" || outputText != "") {
 		return usagef("processlab analyze frequency: --all-channels cannot be combined with --input or --output")
@@ -197,25 +175,13 @@ func runAnalyzeRun(ctx context.Context, client *apiClient, args []string, option
 }
 
 func runAnalyzeShow(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout, stderr io.Writer) error {
-	args = moveCommandFlags(args, []string{"--flow", "-flow"}, []string{"--json", "-json"})
-	set := flag.NewFlagSet("analyze show", flag.ContinueOnError)
-	set.SetOutput(io.Discard)
-	jsonOutput := options.json
-	var flowID int64
-	set.BoolVar(&jsonOutput, "json", jsonOutput, "write machine-readable output")
-	set.Int64Var(&flowID, "flow", 0, "flowsheet id")
-	if err := set.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(stdout, "Usage: processlab analyze show --flow <id> [--json]")
-			return nil
-		}
-		return usagef("processlab analyze show: %v", err)
-	}
+	jsonOutput := options.json || options.commandBool("json")
+	flowID := options.commandInt64("flow")
 	if flowID <= 0 {
 		return usagef("processlab analyze show: --flow is required")
 	}
-	if set.NArg() != 0 {
-		return usagef("processlab analyze show: unexpected argument %q", set.Arg(0))
+	if len(args) != 0 {
+		return usagef("processlab analyze show: unexpected argument %q", args[0])
 	}
 	raw, err := getAnalysisWorkspace(ctx, client, flowID)
 	if err != nil {
