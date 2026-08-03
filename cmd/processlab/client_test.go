@@ -139,7 +139,7 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	integratorHelp := harness.Run("--server", harness.URL(), "block", "add", "integrator", "--help")
 	if integratorHelp.code != 0 ||
 		!strings.Contains(integratorHelp.stdout, "--initial-condition") ||
-		!strings.Contains(integratorHelp.stdout, "default 0 sec") || integratorHelp.stderr != "" {
+		!strings.Contains(integratorHelp.stdout, "default 0 scalar") || integratorHelp.stderr != "" {
 		t.Fatalf("integrator help result = %s", integratorHelp)
 	}
 	if !strings.Contains(delayHelp.stdout, "--initial-output") || !strings.Contains(delayHelp.stdout, "default 0 scalar") {
