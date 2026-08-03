@@ -11,12 +11,12 @@ import (
 )
 
 type BlockDefinition struct {
-	Kind        BlockKind
-	Label       string
-	Category    string
-	Description string
-	Glyph       string
-	Tag         string
+	Kind        BlockKind `json:"kind"`
+	Label       string    `json:"label"`
+	Category    string    `json:"category"`
+	Description string    `json:"description"`
+	Glyph       string    `json:"glyph"`
+	Tag         string    `json:"tag"`
 }
 
 // HasInput and HasOutput are the workbench template's and palette's window
@@ -49,6 +49,41 @@ type ParameterOption struct {
 	Selected bool
 }
 
+type ParameterSchema struct {
+	Name        string                  `json:"name"`
+	Label       string                  `json:"label"`
+	Type        string                  `json:"type"`
+	Default     string                  `json:"default"`
+	Options     []ParameterSchemaOption `json:"options"`
+	Step        string                  `json:"step"`
+	Minimum     *float64                `json:"minimum,omitempty"`
+	Maximum     *float64                `json:"maximum,omitempty"`
+	Unit        string                  `json:"unit"`
+	Placeholder string                  `json:"placeholder"`
+	Help        string                  `json:"help"`
+	Optional    bool                    `json:"optional"`
+	ActiveWhen  []string                `json:"activeWhen,omitempty"`
+}
+
+type ParameterSchemaOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type PortSchema struct {
+	Width    int      `json:"width"`
+	Channels []string `json:"channels"`
+}
+
+type BlockSchema struct {
+	BlockDefinition
+	Parameters []ParameterSchema `json:"parameters"`
+	Inputs     []PortSchema      `json:"inputs"`
+	Outputs    []PortSchema      `json:"outputs"`
+
+	definitions []parameterDefinition
+}
+
 // fieldBound is a numeric parameter's enforced range: the one place that
 // states it. numberField derives the editor's Min/Max strings from it and
 // parameterDefinition.validateBound enforces it from the same two numbers,
@@ -79,6 +114,7 @@ type parameterDefinition struct {
 	Help        string
 	Options     []parameterOption
 	active      func(Parameters) bool
+	activeWhen  []string
 	shape       func(Parameters) (int, int)
 	optional    bool
 	// set and text are the field's own read/write: the one place that knows
@@ -1461,6 +1497,7 @@ var blockDefinitions = map[BlockKind]blockDefinition{
 				"sample_time", "Approximation sample time", "sample time",
 				"0.001", MinSimulationSampleTime, "sec",
 				func(p *Parameters) *float64 { return &p.SampleTime },
+				[]string{"delay_mode", "sample_time_mode"},
 				func(parameters Parameters) bool {
 					return normalizedDelayMode(parameters) == delayModeThiran &&
 						normalizedSampleTimeMode(parameters) == sampleTimeExplicit
@@ -2080,11 +2117,13 @@ func conditionalNumberField(
 	minimum float64,
 	unit string,
 	field func(*Parameters) *float64,
+	activeWhen []string,
 	active func(Parameters) bool,
 ) parameterDefinition {
 	definition := minimumNumberField(
 		name, label, boundsLabel, step, minimum, unit, field,
 	)
+	definition.activeWhen = append([]string(nil), activeWhen...)
 	definition.active = active
 	return definition
 }
@@ -2109,6 +2148,7 @@ func sampleTimeFields() []parameterDefinition {
 			"sample_time", "Sample time", "sample time",
 			"0.001", MinSimulationSampleTime, "sec",
 			func(parameters *Parameters) *float64 { return &parameters.SampleTime },
+			[]string{"sample_time_mode"},
 			func(parameters Parameters) bool {
 				return normalizedSampleTimeMode(parameters) == sampleTimeExplicit
 			},
@@ -2380,6 +2420,109 @@ func BlockLibrary() []BlockDefinition {
 	return library
 }
 
+func (k BlockKind) Schema() (BlockSchema, bool) {
+	definition, ok := blockDefinitions[k]
+	if !ok {
+		return BlockSchema{}, false
+	}
+	defaults := cloneParameters(definition.Defaults)
+	schema := BlockSchema{
+		BlockDefinition: definition.BlockDefinition,
+		Parameters:      make([]ParameterSchema, 0, len(definition.Parameters)),
+		Inputs:          exportPortSchemas(definition.ports(defaults).inputs),
+		Outputs:         exportPortSchemas(definition.ports(defaults).outputs),
+		definitions:     append([]parameterDefinition(nil), definition.Parameters...),
+	}
+	for _, field := range definition.Parameters {
+		parameter := ParameterSchema{
+			Name:        field.Name,
+			Label:       field.Label,
+			Type:        field.Type,
+			Step:        field.Step,
+			Unit:        field.Unit,
+			Placeholder: field.Placeholder,
+			Help:        field.Help,
+			Optional:    field.optional,
+			ActiveWhen:  field.activeWhen,
+			Options:     make([]ParameterSchemaOption, 0, len(field.Options)),
+		}
+		if field.text != nil {
+			parameter.Default = field.text(defaults)
+		}
+		parameter.Minimum, parameter.Maximum = publishedBounds(field)
+		for _, option := range field.Options {
+			parameter.Options = append(parameter.Options, ParameterSchemaOption{
+				Value: option.Value,
+				Label: option.Label,
+			})
+		}
+		schema.Parameters = append(schema.Parameters, parameter)
+	}
+	return schema, true
+}
+
+func publishedBounds(field parameterDefinition) (*float64, *float64) {
+	if field.bound != nil {
+		return cloneFloat(field.bound.min), cloneFloat(field.bound.max)
+	}
+	return parseOptionalFloat(field.Min), parseOptionalFloat(field.Max)
+}
+
+func cloneFloat(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func parseOptionalFloat(value string) *float64 {
+	if value == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
+}
+
+func exportPortSchemas(ports []SignalPort) []PortSchema {
+	exported := make([]PortSchema, len(ports))
+	for index, port := range ports {
+		exported[index] = PortSchema{
+			Width:    port.Width,
+			Channels: append([]string(nil), port.Channels...),
+		}
+	}
+	return exported
+}
+
+func (schema BlockSchema) editorFields(parameters Parameters) []ParameterField {
+	fields := make([]ParameterField, 0, len(schema.definitions))
+	for _, field := range schema.definitions {
+		options := make([]ParameterOption, len(field.Options))
+		value := field.text(parameters)
+		for index, option := range field.Options {
+			options[index] = ParameterOption{
+				Value: option.Value, Label: option.Label, Selected: option.Value == value,
+			}
+		}
+		rows, columns := 0, 0
+		if field.shape != nil {
+			rows, columns = field.shape(parameters)
+		}
+		fields = append(fields, ParameterField{
+			Name: field.Name, Label: field.Label, Type: field.Type,
+			Value: value, Options: options, Rows: rows, Columns: columns,
+			Multiline: field.Type == "textarea",
+			Step:      field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
+			Placeholder: field.Placeholder, Help: field.Help,
+		})
+	}
+	return fields
+}
+
 func (k BlockKind) Definition() BlockDefinition {
 	if definition, ok := blockDefinitions[k]; ok {
 		return definition.BlockDefinition
@@ -2414,29 +2557,11 @@ func cloneParameters(parameters Parameters) Parameters {
 }
 
 func (b Block) EditorFields() []ParameterField {
-	definition := blockDefinitions[b.Kind]
-	fields := make([]ParameterField, 0, len(definition.Parameters))
-	for _, field := range definition.Parameters {
-		options := make([]ParameterOption, len(field.Options))
-		value := field.text(b.Parameters)
-		for i, option := range field.Options {
-			options[i] = ParameterOption{
-				Value: option.Value, Label: option.Label, Selected: option.Value == value,
-			}
-		}
-		rows, columns := 0, 0
-		if field.shape != nil {
-			rows, columns = field.shape(b.Parameters)
-		}
-		fields = append(fields, ParameterField{
-			Name: field.Name, Label: field.Label, Type: field.Type,
-			Value: value, Options: options, Rows: rows, Columns: columns,
-			Multiline: field.Type == "textarea",
-			Step:      field.Step, Min: field.Min, Max: field.Max, Unit: field.Unit,
-			Placeholder: field.Placeholder, Help: field.Help,
-		})
+	schema, ok := b.Kind.Schema()
+	if !ok {
+		return nil
 	}
-	return fields
+	return schema.editorFields(b.Parameters)
 }
 
 func (b Block) Summary() string {
