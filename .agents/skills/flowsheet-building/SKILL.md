@@ -19,6 +19,41 @@ as shared-workspace operations: inspect first, prefer `flow apply --dry-run`,
 and use `--force` only when the user explicitly intends the destructive
 operation.
 
+## Bootstrap
+
+For a reproducible CLI session, build one client binary and run one isolated
+server database. Keep the server address in `PROCESSLAB_ADDR`; client commands
+must never receive `--db`.
+
+```bash
+work_dir="$(mktemp -d /tmp/processlab-skill.XXXXXX)"
+cli="$work_dir/processlab"
+go build -o "$cli" ./cmd/processlab
+
+server_addr=http://127.0.0.1:18080
+"$cli" serve --addr 127.0.0.1:18080 --db "$work_dir/processlab.db" \
+  >"$work_dir/server.log" 2>&1 &
+server_pid=$!
+export PROCESSLAB_ADDR="$server_addr"
+trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; rm -rf "$work_dir"' EXIT
+
+until curl -fsS "$PROCESSLAB_ADDR/" >/dev/null; do
+  kill -0 "$server_pid" 2>/dev/null || {
+    sed -n '1,120p' "$work_dir/server.log"
+    exit 1
+  }
+  sleep 0.1
+done
+
+"$cli" help --json >/dev/null
+"$cli" block add --help
+"$cli" block set --help
+```
+
+Use a different loopback port when another server owns `18080`. The two
+general block-help commands above are intentionally server-independent; a
+kind-specific help request still needs the running catalog API.
+
 ## Workflow
 
 1. Start with a named project and flowsheet. `project list` and `flow list`
@@ -94,6 +129,46 @@ operation.
    role edit occurred, `controller undo <candidate-id> --flow <flow-id>` is
    the narrow one-use reversal. Do not use an old candidate after a stale
    refusal; regenerate it from the current model.
+
+## Simulink control-system walkthrough
+
+The repository's R2026a compatibility fixtures are the reference for supported
+Simulink semantics and their provenance. Start with
+`internal/studio/testdata/simulink/r2026a/pid_parallel_form.json`: it exercises
+the parallel PID/PID2 subset with `P=2`, `I=0.5`, `D=0.25`, `N=20`, setpoint
+weight `b=0.7`, derivative weight `c=0.3`, and explicit sample time `0.1`.
+Use `block help pid2` for the live field names, then build the named
+`Reference -> Controller -> Plant -> Output` graph with `flow apply`.
+
+The evidence-producing sequence is:
+
+```bash
+"$cli" project create "Simulink PID example" --json
+"$cli" flow list --project <project-id> --json
+"$cli" flow apply --flow <flow-id> --dry-run < pid-loop.json
+"$cli" flow apply --flow <flow-id> < pid-loop.json
+"$cli" sim run --flow <flow-id> --duration 5 --sample-time 0.1 --json > baseline.json
+"$cli" analyze channels --flow <flow-id> --json
+"$cli" analyze loop --flow <flow-id> --input <input:block:channel> \
+  --output <output:block:channel> --points 16 --json
+"$cli" roles set --flow <flow-id> --plant <plant-id> --controller <controller-id> --json
+candidate=$("$cli" controller pid --flow <flow-id> --type PI \
+  --crossover 1 --phase-margin 55 --review-horizon 5 --json | jq -r .id)
+"$cli" controller review --flow <flow-id> "$candidate" --json
+"$cli" controller apply --flow <flow-id> "$candidate" --json
+"$cli" sim run --flow <flow-id> --duration 5 --sample-time 0.1 --json > after.json
+"$cli" analyze loop --flow <flow-id> --input <input:block:channel> \
+  --output <output:block:channel> --points 16 --json
+```
+
+For a model-only check, use `state_space_and_transport_history.json`. A scalar
+State-Space case with `A=-1`, zero input, `C=1`, `D=0`, and initial state `2`
+should end near `2*e^-1` after one second. These are analytic compatibility
+oracles, not MATLAB or Simulink output. Include `sample_time: 0.1` in the
+declarative State-Space payload even when `time_domain` is `continuous`; the
+live validation path expects that field to be explicit. The complete CLI
+acceptance oracle is
+`go test ./cmd/processlab -run '^TestFlowsheetBuildingSkillBuildsAndImprovesClosedLoop$' -count=1`.
 
 ## Failure handling
 

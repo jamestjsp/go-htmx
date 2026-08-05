@@ -98,6 +98,10 @@ func newBlockCommand() *command {
 				name: "add", summary: "Add a catalog block", freeform: true,
 				flags: []commandFlag{documentedInt64Flag("flow", "id", 0, "flowsheet id"), documentedIntFlag("x", "pixels", 90, "horizontal position"), documentedIntFlag("y", "pixels", 120, "vertical position"), documentedBoolFlag("json", "write machine-readable output")},
 				help: func(ctx context.Context, options globalOptions, args []string, stdout, _ io.Writer) error {
+					if len(args) == 0 {
+						printBlockAddHelp(stdout)
+						return nil
+					}
 					client, err := newAPIClient(options.server, options.timeout)
 					if err != nil {
 						return err
@@ -248,12 +252,8 @@ func runBlockHelp(ctx context.Context, client *apiClient, args []string, stdout 
 
 func runBlockAdd(ctx context.Context, client *apiClient, args []string, options globalOptions, stdout io.Writer) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		entries, _, err := requestBlockLibrary(ctx, client)
-		if err != nil {
-			return err
-		}
 		if len(args) == 1 && (args[0] == "--help" || args[0] == "-help" || args[0] == "-h") {
-			printBlockAddHelp(stdout, entries)
+			printBlockAddHelp(stdout)
 			return nil
 		}
 		return usagef("processlab block add: expected a block kind")
@@ -362,13 +362,12 @@ func printBlockLibrary(w io.Writer, entries []blockLibraryEntryClient) {
 	}
 }
 
-func printBlockAddHelp(w io.Writer, entries []blockLibraryEntryClient) {
+func printBlockAddHelp(w io.Writer) {
 	fmt.Fprintln(w, "Usage: processlab block add <kind> [flags]")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Add a block from the running server's catalog.")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Valid kinds:")
-	printBlockLibrary(w, entries)
+	fmt.Fprintln(w, "Use processlab block list to see valid kinds.")
 }
 
 func printBlockSchemaHelp(w io.Writer, usage string, schema blockSchemaClient) {
