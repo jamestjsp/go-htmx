@@ -54,6 +54,89 @@ func TestApplyFlowRejectsDuplicateDocumentNames(t *testing.T) {
 	}
 }
 
+func TestApplyFlowRoundTripsWireNamesWithDelimiters(t *testing.T) {
+	service := openTestStudio(t, ":memory:")
+	ctx := context.Background()
+	current, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := service.CreateFlow(ctx, current.Project.ID, "Delimiter-safe document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := FlowDocument{
+		Version: 1,
+		Blocks: []DocumentBlock{
+			{Name: "a", Kind: BlockConstant, Position: DocumentPosition{X: 100, Y: 100}, Parameters: map[string]string{"value": "1"}},
+			{Name: "b:0>c", Kind: BlockGain, Position: DocumentPosition{X: 400, Y: 100}, Parameters: map[string]string{"gain": "1"}},
+			{Name: "a:0>b", Kind: BlockConstant, Position: DocumentPosition{X: 100, Y: 300}, Parameters: map[string]string{"value": "2"}},
+			{Name: "c", Kind: BlockGain, Position: DocumentPosition{X: 400, Y: 300}, Parameters: map[string]string{"gain": "1"}},
+		},
+		Wires: []DocumentWire{
+			{Source: "a", SourcePort: 0, Target: "b:0>c", TargetPort: 0},
+			{Source: "a:0>b", SourcePort: 0, Target: "c", TargetPort: 0},
+		},
+	}
+	result, applied, err := service.ApplyFlow(ctx, empty.Snapshot.Flow.ID, document, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.WiresAdded != 2 || len(applied.Connections) != 2 {
+		t.Fatalf("delimiter-safe apply result = %#v, connections = %d", result, len(applied.Connections))
+	}
+
+	dumped, err := service.DumpFlow(ctx, empty.Snapshot.Flow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, _, err := service.ApplyFlow(ctx, empty.Snapshot.Flow.ID, dumped, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.Changed || roundTrip.WiresAdded != 0 || roundTrip.WiresRemoved != 0 {
+		t.Fatalf("delimiter-safe round trip result = %#v, want no changes", roundTrip)
+	}
+}
+
+func TestApplyFlowPreservesDocumentWireRefusalVocabulary(t *testing.T) {
+	service := openTestStudio(t, ":memory:")
+	ctx := context.Background()
+	current, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := service.CreateFlow(ctx, current.Project.ID, "Wire validation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := []DocumentBlock{
+		{Name: "Source A", Kind: BlockConstant, Position: DocumentPosition{X: 100, Y: 100}, Parameters: map[string]string{"value": "1"}},
+		{Name: "Source B", Kind: BlockConstant, Position: DocumentPosition{X: 100, Y: 300}, Parameters: map[string]string{"value": "2"}},
+		{Name: "Target", Kind: BlockGain, Position: DocumentPosition{X: 400, Y: 100}, Parameters: map[string]string{"gain": "1"}},
+	}
+
+	duplicate := FlowDocument{
+		Version: 1,
+		Blocks:  blocks,
+		Wires: []DocumentWire{
+			{Source: "Source A", Target: "Target"},
+			{Source: "Source A", Target: "Target"},
+		},
+	}
+	_, _, err = service.ApplyFlow(ctx, empty.Snapshot.Flow.ID, duplicate, false)
+	if err == nil || err.Error() != "those blocks are already connected" {
+		t.Fatalf("duplicate wire error = %v", err)
+	}
+
+	occupied := duplicate
+	occupied.Wires[1] = DocumentWire{Source: "Source B", Target: "Target"}
+	_, _, err = service.ApplyFlow(ctx, empty.Snapshot.Flow.ID, occupied, false)
+	if err == nil || err.Error() != "Target already has an input" {
+		t.Fatalf("occupied input error = %v", err)
+	}
+}
+
 func TestApplyFlowReconcilesGraphDryRunsAndRejectsAtomically(t *testing.T) {
 	service := openTestStudio(t, filepath.Join(t.TempDir(), "document-apply.db"))
 	ctx := context.Background()
