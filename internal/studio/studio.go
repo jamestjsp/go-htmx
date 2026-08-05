@@ -110,13 +110,10 @@ func (s *Studio) addBlock(
 		if err != nil {
 			return fmt.Errorf("read block id: %w", err)
 		}
-		message := fmt.Sprintf("Added %s", name)
-		if parameters != nil {
-			// Configured adds used to leave an Update event newest; keep that
-			// activity vocabulary while committing only one event.
-			message = fmt.Sprintf("Updated %s", name)
-		}
-		return s.touchModel(ctx, tx, flowID, message)
+		// Supplying initial parameter values still creates the block, so the
+		// activity feed records the creation. Reporting an update instead would
+		// lose the only record that the block was ever added.
+		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Added %s", name))
 	})
 	if err != nil {
 		return Snapshot{}, 0, err

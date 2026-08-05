@@ -152,7 +152,7 @@ func TestAddConfiguredBlockCommitsOneValidatedModelEvent(t *testing.T) {
 	if len(after.Events) != len(before.Events)+1 {
 		t.Fatalf("events grew from %d to %d, want one event", len(before.Events), len(after.Events))
 	}
-	if got, want := after.Events[0].Message, "Updated "+block.Name; got != want {
+	if got, want := after.Events[0].Message, "Added "+block.Name; got != want {
 		t.Fatalf("event = %q, want %q", got, want)
 	}
 }
