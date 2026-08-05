@@ -317,7 +317,7 @@ func TestCLIHarnessRunsExportAndActivityCommands(t *testing.T) {
 	if err := json.Unmarshal([]byte(listed.stdout), &events); err != nil {
 		t.Fatalf("decode activity JSON: %v\n%s", err, listed.stdout)
 	}
-	if len(events) != 5 || !strings.Contains(events[0].Message, "Updated Constant") {
+	if len(events) != 5 || !strings.Contains(events[0].Message, "Added Constant") {
 		t.Fatalf("activity events = %#v", events)
 	}
 	for index := 1; index < len(events); index++ {
