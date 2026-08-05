@@ -39,8 +39,9 @@ another loopback port when 18080 is taken.
 1. `project create`, then `flow list --project <id>` — a new project already
    owns one flowsheet.
 2. Build declaratively: `flow dump` → edit the JSON by block name →
-   `flow apply --dry-run` → `flow apply`. Verify with `block list` and
-   `wire list`. Keep sources and sinks in the diagram, out of the roles.
+   `flow apply --dry-run` → `flow apply`. Verify with `block list --flow <id>`
+   and `wire list --flow <id>`. Keep sources and sinks in the diagram, out of
+   the roles.
 3. Baseline with `sim run --duration <s> --sample-time <s>`. Any model edit
    makes a stored run stale; rerun before comparing.
 4. `roles set --plant <ids> --controller <ids>`, then read `roles show --json`
@@ -61,6 +62,32 @@ another loopback port when 18080 is taken.
    for the baseline. `controller undo` reverses once, only if nothing else
    changed.
 
+## Simulink MIMO delay check
+
+Use the repository's R2026a fixture-backed CLI test when changing MIMO transfer
+or transport-delay behavior. The fixture data stays under
+`internal/studio/testdata/simulink/r2026a/`; do not copy its JSON payload into
+this skill.
+
+The workflow the test must exercise through the real CLI is:
+
+```bash
+"$cli" project create "Simulink R2026a MIMO delay" --json
+"$cli" flow list --project <project-id> --json
+"$cli" flow apply --flow <flow-id> --dry-run --json < mimo-delay-flow.json
+"$cli" flow apply --flow <flow-id> --json < mimo-delay-flow.json
+"$cli" block list --flow <flow-id> --json
+"$cli" wire list --flow <flow-id> --json
+"$cli" analyze channels --flow <flow-id> --json
+"$cli" sim run --flow <flow-id> --duration <seconds> \
+  --sample-time <seconds> --json
+```
+
+Model the fixture as a vector source, one `mimo_transfer` block carrying the
+pairwise delay matrix, and a vector scope. Check every named output against
+the analytic delayed first-order response; sample counts alone are not an
+oracle.
+
 ## Traps
 
 | Symptom | Cause and repair |
@@ -80,9 +107,14 @@ repair, read the server log. `2` local usage error — correct the command, do
 not retry it. `3` no server — check `PROCESSLAB_ADDR`; never open the SQLite
 file from a client.
 
-The acceptance oracle is `go test ./cmd/processlab -run
-'^TestFlowsheetBuildingSkillBuildsAndImprovesClosedLoop$' -count=1`. Simulink
-subset semantics and their MathWorks provenance live in
-`internal/studio/testdata/simulink/r2026a/`. This skill does not turn a
-nonlinear definition into a flowsheet block: use the `nonlinear` commands and
-keep those results separate from LTI simulation.
+The acceptance oracles are:
+
+```bash
+go test ./cmd/processlab -run '^TestFlowsheetBuildingSkillBuildsAndImprovesClosedLoop$' -count=1
+go test ./cmd/processlab -run '^TestFlowsheetBuildingSkillRunsSimulinkR2026aMIMODelay$' -count=1
+```
+
+The second test loads the repository's R2026a MIMO transport-delay fixture and
+drives it through the real CLI. This skill does not turn a nonlinear definition
+into a flowsheet block: use the `nonlinear` commands and keep those results
+separate from LTI simulation.
