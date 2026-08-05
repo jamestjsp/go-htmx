@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -99,6 +100,60 @@ func TestUpdateRejectsInvalidParameters(t *testing.T) {
 	var validation *ValidationError
 	if !errors.As(err, &validation) {
 		t.Fatalf("error = %v, want ValidationError", err)
+	}
+}
+
+func TestAddConfiguredBlockRejectsInvalidParametersWithoutMutation(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, ":memory:")
+	before, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = service.AddConfiguredBlock(ctx, before.Flow.ID, BlockLag, Point{X: 1400, Y: 1200}, map[string]string{
+		"time_constant": "0",
+	})
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("error = %v, want ValidationError", err)
+	}
+
+	after, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("invalid configured add changed snapshot:\nbefore=%#v\nafter=%#v", before, after)
+	}
+}
+
+func TestAddConfiguredBlockCommitsOneValidatedModelEvent(t *testing.T) {
+	ctx := context.Background()
+	service := openTestStudio(t, ":memory:")
+	before, err := service.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	after, blockID, err := service.AddConfiguredBlock(ctx, before.Flow.ID, BlockLag, Point{X: 1400, Y: 1200}, map[string]string{
+		"time_constant": "6.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := findBlock(t, after.Blocks, blockID)
+	if block.Parameters.TimeConstant != 6.5 {
+		t.Fatalf("time constant = %g, want 6.5", block.Parameters.TimeConstant)
+	}
+	if after.Flow.ModelUpdatedAt == before.Flow.ModelUpdatedAt {
+		t.Fatal("configured add did not update the model revision")
+	}
+	if len(after.Events) != len(before.Events)+1 {
+		t.Fatalf("events grew from %d to %d, want one event", len(before.Events), len(after.Events))
+	}
+	if got, want := after.Events[0].Message, "Updated "+block.Name; got != want {
+		t.Fatalf("event = %q, want %q", got, want)
 	}
 }
 

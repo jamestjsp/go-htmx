@@ -31,11 +31,34 @@ func (s *Studio) Snapshot(ctx context.Context, flowID int64) (Snapshot, error) {
 }
 
 func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, position Point) (Snapshot, int64, error) {
+	return s.addBlock(ctx, flowID, kind, position, nil)
+}
+
+// AddConfiguredBlock validates the supplied editor values and creates the
+// block in the same transaction as its model revision and event. The caller
+// only states the add intent; generated names, defaults, validation, and
+// persistence remain owned by Studio.
+func (s *Studio) AddConfiguredBlock(
+	ctx context.Context,
+	flowID int64,
+	kind BlockKind,
+	position Point,
+	parameters map[string]string,
+) (Snapshot, int64, error) {
+	return s.addBlock(ctx, flowID, kind, position, parameters)
+}
+
+func (s *Studio) addBlock(
+	ctx context.Context,
+	flowID int64,
+	kind BlockKind,
+	position Point,
+	parameters map[string]string,
+) (Snapshot, int64, error) {
 	if !kind.Valid() {
 		return Snapshot{}, 0, invalid("unknown block type %q", kind)
 	}
 	position = clampPosition(position)
-	parameters := defaultParameters(kind)
 	var blockID int64
 
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -53,12 +76,25 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 		).Scan(&count); err != nil {
 			return err
 		}
+		name := fmt.Sprintf("%s %d", kind.Label(), count+1)
+		block := Block{
+			FlowID: flowID, Kind: kind, Name: name, Position: position,
+			Parameters: defaultParameters(kind),
+		}
+		if parameters != nil {
+			validated, err := validateBlockUpdate(block, BlockUpdate{
+				Name: name, Parameters: parameters,
+			})
+			if err != nil {
+				return err
+			}
+			block = validated
+		}
 		placed, err := openPosition(ctx, tx, flowID, position)
 		if err != nil {
 			return err
 		}
-		name := fmt.Sprintf("%s %d", kind.Label(), count+1)
-		encoded, err := encodeParameters(parameters)
+		encoded, err := encodeParameters(block.Parameters)
 		if err != nil {
 			return err
 		}
@@ -74,7 +110,13 @@ func (s *Studio) AddBlock(ctx context.Context, flowID int64, kind BlockKind, pos
 		if err != nil {
 			return fmt.Errorf("read block id: %w", err)
 		}
-		return s.touchModel(ctx, tx, flowID, fmt.Sprintf("Added %s", name))
+		message := fmt.Sprintf("Added %s", name)
+		if parameters != nil {
+			// Configured adds used to leave an Update event newest; keep that
+			// activity vocabulary while committing only one event.
+			message = fmt.Sprintf("Updated %s", name)
+		}
+		return s.touchModel(ctx, tx, flowID, message)
 	})
 	if err != nil {
 		return Snapshot{}, 0, err
