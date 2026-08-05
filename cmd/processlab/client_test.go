@@ -208,8 +208,8 @@ func TestCLIHarnessRunsRealBinaryAndCleansUp(t *testing.T) {
 	}
 
 	noServer := harness.Run("--server", "http://127.0.0.1:1", "block", "add", "--help")
-	if noServer.code != 3 || noServer.stdout != "" || !strings.Contains(noServer.stderr, "processlab serve") {
-		t.Fatalf("unreachable block command = %s", noServer)
+	if noServer.code != 0 || noServer.stderr != "" || !strings.Contains(noServer.stdout, "Use processlab block list") {
+		t.Fatalf("server-independent block help = %s", noServer)
 	}
 }
 
