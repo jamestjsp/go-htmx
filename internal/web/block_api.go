@@ -81,18 +81,18 @@ func (s *Server) addBlockAPI(r *http.Request) (apiResponse, error) {
 	if err != nil {
 		return apiResponse{}, err
 	}
-	snapshot, blockID, err := s.studio.AddBlock(r.Context(), flowID, kind, studio.Point{X: input.X, Y: input.Y})
+	position := studio.Point{X: input.X, Y: input.Y}
+	var snapshot studio.Snapshot
+	var blockID int64
+	if len(input.Parameters) == 0 {
+		snapshot, blockID, err = s.studio.AddBlock(r.Context(), flowID, kind, position)
+	} else {
+		snapshot, blockID, err = s.studio.AddConfiguredBlock(
+			r.Context(), flowID, kind, position, input.Parameters,
+		)
+	}
 	if err != nil {
 		return apiResponse{}, err
-	}
-	if len(input.Parameters) != 0 {
-		snapshot, err = s.studio.UpdateBlock(r.Context(), blockID, studio.BlockUpdate{
-			Name:       blockName(snapshot, blockID),
-			Parameters: input.Parameters,
-		})
-		if err != nil {
-			return apiResponse{}, err
-		}
 	}
 	for _, block := range snapshot.Blocks {
 		if block.ID == blockID {
@@ -317,15 +317,6 @@ func parseInt64(value string) (int64, error) {
 		}
 	}
 	return result, nil
-}
-
-func blockName(snapshot studio.Snapshot, blockID int64) string {
-	for _, block := range snapshot.Blocks {
-		if block.ID == blockID {
-			return block.Name
-		}
-	}
-	return ""
 }
 
 func newAPIBlockRecord(block studio.Block) apiBlockRecord {

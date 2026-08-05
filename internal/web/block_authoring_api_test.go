@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -121,6 +122,58 @@ func TestBlockAuthoringAPIRoundTripsCatalogValuesAndAtomicBatches(t *testing.T) 
 	copyBlock := duplicateBatch.Blocks[0]
 	if copyBlock.Position.X != beforeCopy.Position.X+studio.GridPitch || copyBlock.Position.Y != beforeCopy.Position.Y+studio.GridPitch || !strings.Contains(copyBlock.Name, "copy") {
 		t.Fatalf("copy = %#v, source = %#v", copyBlock, beforeCopy)
+	}
+}
+
+func TestBlockAuthoringAPICreatesConfiguredBlockAtomically(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	current, err := service.CurrentWorkspace(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowID := current.Snapshot.Flow.ID
+	before, err := service.Snapshot(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	invalid := requestJSONAPI(t, server, http.MethodPost, fmt.Sprintf("/api/v1/flows/%d/blocks", flowID), blockAddAPIRequest{
+		Kind: "lag", X: 1400, Y: 1200,
+		Parameters: map[string]string{"time_constant": "0"},
+	})
+	if invalid.Code != http.StatusBadRequest || !strings.Contains(invalid.Body.String(), "time constant") {
+		t.Fatalf("invalid configured add = %d: %s", invalid.Code, invalid.Body.String())
+	}
+	afterInvalid, err := service.Snapshot(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(afterInvalid, before) {
+		t.Fatalf("invalid configured add changed snapshot:\nbefore=%#v\nafter=%#v", before, afterInvalid)
+	}
+
+	created := requestJSONAPI(t, server, http.MethodPost, fmt.Sprintf("/api/v1/flows/%d/blocks", flowID), blockAddAPIRequest{
+		Kind: "lag", X: 1400, Y: 1200,
+		Parameters: map[string]string{"time_constant": "6.5"},
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("configured add status = %d: %s", created.Code, created.Body.String())
+	}
+	var record apiBlockRecord
+	decodeJSONResponse(t, created, &record)
+	if record.ID == 0 || record.Parameters.TimeConstant != 6.5 {
+		t.Fatalf("configured block = %#v", record)
+	}
+	afterCreate, err := service.Snapshot(ctx, flowID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterCreate.Flow.ModelUpdatedAt == before.Flow.ModelUpdatedAt {
+		t.Fatal("configured API add did not update the model revision")
+	}
+	if len(afterCreate.Events) != len(before.Events)+1 {
+		t.Fatalf("events grew from %d to %d, want one event", len(before.Events), len(afterCreate.Events))
 	}
 }
 
