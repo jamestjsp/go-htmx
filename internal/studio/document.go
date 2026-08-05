@@ -51,6 +51,18 @@ type documentBlockState struct {
 	Block Block
 }
 
+type documentWireIdentity struct {
+	source     string
+	sourcePort int
+	target     string
+	targetPort int
+}
+
+type documentTargetPortIdentity struct {
+	target     string
+	targetPort int
+}
+
 func (s *Studio) DumpFlow(ctx context.Context, flowID int64) (FlowDocument, error) {
 	snapshot, err := s.snapshot(ctx, flowID)
 	if err != nil {
@@ -157,8 +169,8 @@ func prepareDocument(snapshot Snapshot, document FlowDocument) ([]documentBlockS
 }
 
 func validateDocumentWires(wires []DocumentWire, blocks map[string]documentBlockState) error {
-	seen := make(map[string]bool, len(wires))
-	occupied := make(map[string]bool, len(wires))
+	seen := make(map[documentWireIdentity]struct{}, len(wires))
+	occupied := make(map[documentTargetPortIdentity]struct{}, len(wires))
 	for _, wire := range wires {
 		source, sourceOK := blocks[wire.Source]
 		target, targetOK := blocks[wire.Target]
@@ -177,19 +189,22 @@ func validateDocumentWires(wires []DocumentWire, blocks map[string]documentBlock
 		if err := validateConnectionWidth(source.Block, wire.SourcePort, target.Block, wire.TargetPort); err != nil {
 			return err
 		}
-		key := documentWireKey(wire.Source, wire.SourcePort, wire.Target, wire.TargetPort)
-		if seen[key] {
+		wireKey := documentWireIdentity{
+			source: wire.Source, sourcePort: wire.SourcePort,
+			target: wire.Target, targetPort: wire.TargetPort,
+		}
+		if _, exists := seen[wireKey]; exists {
 			return invalid("those blocks are already connected")
 		}
-		seen[key] = true
-		portKey := fmt.Sprintf("%s:%d", wire.Target, wire.TargetPort)
-		if occupied[portKey] {
+		seen[wireKey] = struct{}{}
+		portKey := documentTargetPortIdentity{target: wire.Target, targetPort: wire.TargetPort}
+		if _, exists := occupied[portKey]; exists {
 			if target.Block.InputPortCount() == 1 {
 				return invalid("%s already has an input", target.Block.Name)
 			}
 			return invalid("%s already has an input on port %d", target.Block.Name, wire.TargetPort)
 		}
-		occupied[portKey] = true
+		occupied[portKey] = struct{}{}
 	}
 	return nil
 }
@@ -224,25 +239,31 @@ func planDocument(snapshot Snapshot, states []documentBlockState, byName map[str
 	sort.Strings(result.Added)
 	sort.Strings(result.Updated)
 	sort.Strings(result.Removed)
-	currentWires := make(map[string]bool, len(snapshot.Connections))
+	currentWires := make(map[documentWireIdentity]struct{}, len(snapshot.Connections))
 	names := make(map[int64]string, len(snapshot.Blocks))
 	for _, block := range snapshot.Blocks {
 		names[block.ID] = block.Name
 	}
 	for _, wire := range snapshot.Connections {
-		currentWires[documentWireKey(names[wire.SourceID], wire.SourcePort, names[wire.TargetID], wire.TargetPort)] = true
+		currentWires[documentWireIdentity{
+			source: names[wire.SourceID], sourcePort: wire.SourcePort,
+			target: names[wire.TargetID], targetPort: wire.TargetPort,
+		}] = struct{}{}
 	}
-	desiredWires := make(map[string]bool, len(document.Wires))
+	desiredWires := make(map[documentWireIdentity]struct{}, len(document.Wires))
 	for _, wire := range document.Wires {
-		desiredWires[documentWireKey(wire.Source, wire.SourcePort, wire.Target, wire.TargetPort)] = true
+		desiredWires[documentWireIdentity{
+			source: wire.Source, sourcePort: wire.SourcePort,
+			target: wire.Target, targetPort: wire.TargetPort,
+		}] = struct{}{}
 	}
 	for key := range desiredWires {
-		if !currentWires[key] {
+		if _, exists := currentWires[key]; !exists {
 			result.WiresAdded++
 		}
 	}
 	for key := range currentWires {
-		if !desiredWires[key] {
+		if _, exists := desiredWires[key]; !exists {
 			result.WiresRemoved++
 		}
 	}
@@ -331,10 +352,6 @@ func (s *Studio) applyDocumentTx(ctx context.Context, tx *sql.Tx, flowID int64, 
 		return s.touchLayout(ctx, tx, flowID)
 	}
 	return nil
-}
-
-func documentWireKey(source string, sourcePort int, target string, targetPort int) string {
-	return fmt.Sprintf("%s:%d>%s:%d", source, sourcePort, target, targetPort)
 }
 
 func blockParametersEqual(left, right Block) bool {
