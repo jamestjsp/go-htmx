@@ -292,16 +292,21 @@ func compareControllerTimeResponses(
 		for sample := range times {
 			u.Set(sample, input, 1)
 		}
+		// A simulation refusal here describes the loop the operator built, so
+		// report it as a domain refusal that keeps the reason rather than as an
+		// internal fault the client can only see as a generic failure.
 		currentResponse, err := controlsys.Lsim(current, u, times, nil)
 		if err != nil {
-			return ControllerTimeComparison{}, fmt.Errorf(
-				"current closed-loop input %d: %w", input+1, err,
+			return ControllerTimeComparison{}, invalid(
+				"current closed-loop input %d could not be simulated over the "+
+					"review horizon: %v", input+1, err,
 			)
 		}
 		candidateResponse, err := controlsys.Lsim(candidate, u, times, nil)
 		if err != nil {
-			return ControllerTimeComparison{}, fmt.Errorf(
-				"candidate closed-loop input %d: %w", input+1, err,
+			return ControllerTimeComparison{}, invalid(
+				"candidate closed-loop input %d could not be simulated over the "+
+					"review horizon: %v", input+1, err,
 			)
 		}
 		for output := range currentOutputs {
@@ -340,6 +345,11 @@ func controllerReviewTimeGrid(
 		return nil, invalid(
 			"controller review cannot compare continuous and discrete closed loops",
 		)
+	default:
+		// Lsim discretises a continuous loop onto this grid, so every transport
+		// delay the loop carries has to land on a sample. Coarsen the step to a
+		// divisor of those delays instead of refusing an otherwise valid review.
+		dt = alignStepToDelays(dt, loopDelays(current, candidate))
 	}
 	samples := int(math.Floor(horizon/dt)) + 1
 	if samples > maxControllerReviewSamples {
@@ -353,6 +363,82 @@ func controllerReviewTimeGrid(
 		times[sample] = float64(sample) * dt
 	}
 	return times, nil
+}
+
+// loopDelays reports every positive transport delay carried by the systems,
+// both the internal delays held in the LFT block and the effective
+// input, output, and per-path external delays.
+func loopDelays(systems ...*controlsys.System) []float64 {
+	var delays []float64
+	for _, system := range systems {
+		if system == nil {
+			continue
+		}
+		if system.LFT != nil {
+			for _, tau := range system.LFT.Tau {
+				if tau > 0 && finite(tau) {
+					delays = append(delays, tau)
+				}
+			}
+		}
+		external := system.TotalDelay()
+		if external == nil {
+			continue
+		}
+		rows, columns := external.Dims()
+		for row := range rows {
+			for column := range columns {
+				if value := external.At(row, column); value > 0 && finite(value) {
+					delays = append(delays, value)
+				}
+			}
+		}
+	}
+	return delays
+}
+
+// alignStepToDelays returns the largest step no finer than the delays' common
+// period that still divides every delay, so a delayed loop keeps roughly the
+// requested resolution rather than losing its review evidence.
+func alignStepToDelays(step float64, delays []float64) float64 {
+	period := delayPeriod(delays)
+	if period <= 0 || !finite(period) || step <= 0 {
+		return step
+	}
+	if period <= step {
+		return period
+	}
+	divisions := math.Floor(period / step)
+	if divisions < 1 {
+		return period
+	}
+	return period / divisions
+}
+
+// delayPeriod is the greatest common divisor of the delays, computed with a
+// relative tolerance so that values such as 0.5 and 0.3 resolve to 0.1 rather
+// than to floating-point noise.
+func delayPeriod(delays []float64) float64 {
+	period := 0.0
+	for _, delay := range delays {
+		period = pairwiseDelayGCD(period, delay)
+	}
+	return period
+}
+
+func pairwiseDelayGCD(a, b float64) float64 {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	larger, smaller := math.Max(a, b), math.Min(a, b)
+	tolerance := 1e-9 * larger
+	for smaller > tolerance {
+		larger, smaller = smaller, math.Mod(larger, smaller)
+	}
+	return larger
 }
 
 func inputName(system *controlsys.System, index int) string {

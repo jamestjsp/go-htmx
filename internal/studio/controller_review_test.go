@@ -2,10 +2,13 @@ package studio
 
 import (
 	"context"
+	"errors"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/jamestjsp/controlsys"
+	"gonum.org/v1/gonum/mat"
 )
 
 func TestPIDCandidateReviewComparesCommonGridsWithoutMutation(t *testing.T) {
@@ -201,5 +204,77 @@ func TestControllerCandidateApplyReturnsRevisionCheckedUndo(t *testing.T) {
 	if _, err := service.UndoControllerCandidate(ctx, applied.Undo); err == nil ||
 		!strings.Contains(err.Error(), "stale") {
 		t.Fatalf("second undo error = %v", err)
+	}
+}
+
+func delayedReviewSystem(t *testing.T, tau float64) *controlsys.System {
+	t.Helper()
+	dense := func(values ...float64) *mat.Dense {
+		return mat.NewDense(1, 1, values)
+	}
+	system, err := controlsys.New(dense(-1), dense(1), dense(1), dense(0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.SetInternalDelay(
+		[]float64{tau}, dense(1), dense(1), dense(0), dense(0), dense(0),
+	); err != nil {
+		t.Fatal(err)
+	}
+	return system
+}
+
+func TestControllerReviewTimeGridAlignsWithLoopDelays(t *testing.T) {
+	current := delayedReviewSystem(t, 1)
+	candidate := delayedReviewSystem(t, 1)
+	times, err := controllerReviewTimeGrid(current, candidate, 120)
+	if err != nil {
+		t.Fatalf("review grid for a delayed loop: %v", err)
+	}
+	if len(times) < 2 {
+		t.Fatalf("review grid samples = %d", len(times))
+	}
+	step := times[1] - times[0]
+	samples := 1 / step
+	if math.Abs(samples-math.Round(samples)) > 1e-9 {
+		t.Fatalf("delay 1 is not an integer multiple of review step %.12g", step)
+	}
+	u := mat.NewDense(len(times), 1, nil)
+	for sample := range times {
+		u.Set(sample, 0, 1)
+	}
+	if _, err := controlsys.Lsim(current, u, times, nil); err != nil {
+		t.Fatalf("Lsim on the review grid: %v", err)
+	}
+}
+
+func TestControllerReviewSurfacesTimeComparisonRefusals(t *testing.T) {
+	dense := func(values ...float64) *mat.Dense {
+		return mat.NewDense(1, 1, values)
+	}
+	system, err := controlsys.New(dense(-1), dense(1), dense(1), dense(0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.SetInternalDelay(
+		[]float64{1}, dense(1), dense(1), dense(1), dense(1), dense(1),
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err = compareControllerTimeResponses(system, system, 8)
+	if err == nil {
+		t.Fatal("closed-loop comparison accepted an algebraic loop")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("comparison refusal is not a domain refusal: %v", err)
+	}
+	if !strings.Contains(validation.Message, "algebraic loop") {
+		t.Fatalf("comparison refusal lost its reason: %q", validation.Message)
+	}
+	if got := ValidationMessage(err); strings.Contains(
+		got, "The operation could not be completed",
+	) {
+		t.Fatalf("comparison refusal reaches the client as %q", got)
 	}
 }
