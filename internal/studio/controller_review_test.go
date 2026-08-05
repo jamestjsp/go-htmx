@@ -234,6 +234,9 @@ func TestControllerReviewTimeGridAlignsWithLoopDelays(t *testing.T) {
 	if len(times) < 2 {
 		t.Fatalf("review grid samples = %d", len(times))
 	}
+	if got := times[len(times)-1]; got != 120 {
+		t.Fatalf("review grid ends at %g, want 120", got)
+	}
 	step := times[1] - times[0]
 	samples := 1 / step
 	if math.Abs(samples-math.Round(samples)) > 1e-9 {
@@ -245,6 +248,67 @@ func TestControllerReviewTimeGridAlignsWithLoopDelays(t *testing.T) {
 	}
 	if _, err := controlsys.Lsim(current, u, times, nil); err != nil {
 		t.Fatalf("Lsim on the review grid: %v", err)
+	}
+}
+
+func TestControllerReviewTimeGridAlignsSeparateExternalDelays(t *testing.T) {
+	dense := func(values ...float64) *mat.Dense {
+		return mat.NewDense(1, 1, values)
+	}
+	system, err := controlsys.New(dense(-1), dense(1), dense(1), dense(0), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.SetDelay(dense(0.4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := system.SetInputDelay([]float64{0.2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := system.SetOutputDelay([]float64{0.3}); err != nil {
+		t.Fatal(err)
+	}
+
+	times, err := controllerReviewTimeGrid(system, system, 10)
+	if err != nil {
+		t.Fatalf("review grid for separate external delays: %v", err)
+	}
+	if got := times[len(times)-1]; got != 10 {
+		t.Fatalf("review grid ends at %g, want 10", got)
+	}
+	step := times[1] - times[0]
+	for _, delay := range []float64{0.4, 0.2, 0.3} {
+		quotient := delay / step
+		if math.Abs(quotient-math.Round(quotient)) >= 1e-9 {
+			t.Fatalf("delay %g is not an integer multiple of review step %.12g", delay, step)
+		}
+	}
+	u := mat.NewDense(len(times), 1, nil)
+	for sample := range times {
+		u.Set(sample, 0, 1)
+	}
+	if _, err := controlsys.Lsim(system, u, times, nil); err != nil {
+		t.Fatalf("Lsim on the separate-delay review grid: %v", err)
+	}
+}
+
+func TestControllerReviewTimeGridRefusesUnrepresentableDelayHorizon(t *testing.T) {
+	system := delayedReviewSystem(t, 0.01)
+	times, err := controllerReviewTimeGrid(system, system, 120)
+	if err == nil {
+		t.Fatalf("review grid unexpectedly succeeded with %d samples ending at %g", len(times), times[len(times)-1])
+	}
+	if times != nil {
+		t.Fatalf("review grid returned samples with error: %v", times)
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("unrepresentable review grid error = %T %v, want ValidationError", err, err)
+	}
+	for _, phrase := range []string{"120", "0.01", "1000"} {
+		if !strings.Contains(validation.Message, phrase) {
+			t.Fatalf("unrepresentable review grid error %q does not mention %q", validation.Message, phrase)
+		}
 	}
 }
 

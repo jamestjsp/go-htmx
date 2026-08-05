@@ -330,7 +330,7 @@ func controllerReviewTimeGrid(
 	current, candidate *controlsys.System,
 	horizon float64,
 ) ([]float64, error) {
-	dt := horizon / float64(maxControllerReviewSamples-1)
+	samples := maxControllerReviewSamples
 	switch {
 	case current.IsDiscrete() && candidate.IsDiscrete():
 		if math.Abs(current.Dt-candidate.Dt) >
@@ -340,105 +340,124 @@ func controllerReviewTimeGrid(
 				current.Dt, candidate.Dt,
 			)
 		}
-		dt = current.Dt
+		var err error
+		samples, err = controllerReviewDiscreteSamples(horizon, current.Dt)
+		if err != nil {
+			return nil, err
+		}
 	case current.IsDiscrete() || candidate.IsDiscrete():
 		return nil, invalid(
 			"controller review cannot compare continuous and discrete closed loops",
 		)
 	default:
-		// Lsim discretises a continuous loop onto this grid, so every transport
-		// delay the loop carries has to land on a sample. Coarsen the step to a
-		// divisor of those delays instead of refusing an otherwise valid review.
-		dt = alignStepToDelays(dt, loopDelays(current, candidate))
+		var err error
+		samples, err = controllerReviewContinuousSamples(
+			horizon, loopDelays(current, candidate),
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
-	samples := int(math.Floor(horizon/dt)) + 1
-	if samples > maxControllerReviewSamples {
-		samples = maxControllerReviewSamples
-	}
-	if samples < 2 {
-		samples = 2
-	}
-	times := make([]float64, samples)
-	for sample := range times {
-		times[sample] = float64(sample) * dt
-	}
+	times := uniformControllerReviewTimes(horizon, samples)
 	return times, nil
 }
 
-// loopDelays reports every positive transport delay carried by the systems,
-// both the internal delays held in the LFT block and the effective
-// input, output, and per-path external delays.
+func controllerReviewDiscreteSamples(horizon, dt float64) (int, error) {
+	intervals := horizon / dt
+	rounded := math.Round(intervals)
+	if math.Abs(intervals-rounded) >= 1e-9 {
+		return 0, invalid(
+			"controller review horizon %.6g is not an integer multiple of discrete sample time %.6g",
+			horizon, dt,
+		)
+	}
+	if rounded < 1 {
+		return 0, invalid(
+			"controller review horizon %.6g is shorter than one discrete sample time %.6g",
+			horizon, dt,
+		)
+	}
+	samples := int(rounded) + 1
+	if samples > maxControllerReviewSamples {
+		return 0, invalid(
+			"controller review horizon %.6g requires %d samples at discrete sample time %.6g, exceeding the %d-sample review limit",
+			horizon, samples, dt, maxControllerReviewSamples,
+		)
+	}
+	return samples, nil
+}
+
+func controllerReviewContinuousSamples(horizon float64, delays []float64) (int, error) {
+	for intervals := maxControllerReviewSamples - 1; intervals >= 1; intervals-- {
+		dt := horizon / float64(intervals)
+		if controllerReviewDelaysAlign(delays, dt) {
+			return intervals + 1, nil
+		}
+	}
+	return 0, invalid(
+		"controller review horizon %.6g cannot align transport delays %v to a uniform grid within the %d-sample review limit",
+		horizon, delays, maxControllerReviewSamples,
+	)
+}
+
+func controllerReviewDelaysAlign(delays []float64, dt float64) bool {
+	for _, delay := range delays {
+		samples := delay / dt
+		if math.Abs(samples-math.Round(samples)) >= 1e-9 {
+			return false
+		}
+	}
+	return true
+}
+
+func uniformControllerReviewTimes(horizon float64, samples int) []float64 {
+	times := make([]float64, samples)
+	intervals := float64(samples - 1)
+	for sample := range times {
+		times[sample] = horizon * float64(sample) / intervals
+	}
+	times[len(times)-1] = horizon
+	return times
+}
+
+// loopDelays reports every positive transport delay carried by the systems.
+// Keep the fields separate because controlsys discretizes each one separately;
+// TotalDelay can hide fractional components by adding them together.
 func loopDelays(systems ...*controlsys.System) []float64 {
 	var delays []float64
 	for _, system := range systems {
 		if system == nil {
 			continue
 		}
+		if system.Delay != nil {
+			raw := system.Delay.RawMatrix()
+			for row := range raw.Rows {
+				for column := range raw.Cols {
+					delays = appendReviewDelay(delays, raw.Data[row*raw.Stride+column])
+				}
+			}
+		}
+		delays = appendReviewDelays(delays, system.InputDelay...)
+		delays = appendReviewDelays(delays, system.OutputDelay...)
 		if system.LFT != nil {
-			for _, tau := range system.LFT.Tau {
-				if tau > 0 && finite(tau) {
-					delays = append(delays, tau)
-				}
-			}
-		}
-		external := system.TotalDelay()
-		if external == nil {
-			continue
-		}
-		rows, columns := external.Dims()
-		for row := range rows {
-			for column := range columns {
-				if value := external.At(row, column); value > 0 && finite(value) {
-					delays = append(delays, value)
-				}
-			}
+			delays = appendReviewDelays(delays, system.LFT.Tau...)
 		}
 	}
 	return delays
 }
 
-// alignStepToDelays returns the largest step no finer than the delays' common
-// period that still divides every delay, so a delayed loop keeps roughly the
-// requested resolution rather than losing its review evidence.
-func alignStepToDelays(step float64, delays []float64) float64 {
-	period := delayPeriod(delays)
-	if period <= 0 || !finite(period) || step <= 0 {
-		return step
+func appendReviewDelays(delays []float64, values ...float64) []float64 {
+	for _, value := range values {
+		delays = appendReviewDelay(delays, value)
 	}
-	if period <= step {
-		return period
-	}
-	divisions := math.Floor(period / step)
-	if divisions < 1 {
-		return period
-	}
-	return period / divisions
+	return delays
 }
 
-// delayPeriod is the greatest common divisor of the delays, computed with a
-// relative tolerance so that values such as 0.5 and 0.3 resolve to 0.1 rather
-// than to floating-point noise.
-func delayPeriod(delays []float64) float64 {
-	period := 0.0
-	for _, delay := range delays {
-		period = pairwiseDelayGCD(period, delay)
+func appendReviewDelay(delays []float64, value float64) []float64 {
+	if value > 0 && finite(value) {
+		return append(delays, value)
 	}
-	return period
-}
-
-func pairwiseDelayGCD(a, b float64) float64 {
-	if a <= 0 {
-		return b
-	}
-	if b <= 0 {
-		return a
-	}
-	larger, smaller := math.Max(a, b), math.Min(a, b)
-	tolerance := 1e-9 * larger
-	for smaller > tolerance {
-		larger, smaller = smaller, math.Mod(larger, smaller)
-	}
-	return larger
+	return delays
 }
 
 func inputName(system *controlsys.System, index int) string {
