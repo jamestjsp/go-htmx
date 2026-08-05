@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,40 @@ func TestWorkspaceAPILifecycleAndFlowDeleteForce(t *testing.T) {
 	}
 	if response := requestJSONAPI(t, server, http.MethodDelete, fmt.Sprintf("/api/v1/flows/%d", flowWorkspace.Snapshot.ID), workspaceDeleteAPIRequest{Force: true}); response.Code != http.StatusNotFound {
 		t.Fatalf("deleted flow lookup = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestWorkspaceAPIProjectDeleteRequiresForceWithoutMutation(t *testing.T) {
+	server, service := openTestServer(t)
+	ctx := context.Background()
+	created, err := service.CreateProject(ctx, "Operations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/api/v1/projects/%d", created.Project.ID)
+
+	withoutBody := requestAPI(t, server, http.MethodDelete, path)
+	if withoutBody.Code != http.StatusBadRequest || !strings.Contains(withoutBody.Body.String(), "--force") {
+		t.Fatalf("bodyless delete = %d: %s", withoutBody.Code, withoutBody.Body.String())
+	}
+	if _, err := service.ProjectWorkspace(ctx, created.Project.ID); err != nil {
+		t.Fatalf("bodyless refusal mutated project: %v", err)
+	}
+
+	withoutForce := requestJSONAPI(t, server, http.MethodDelete, path, workspaceDeleteAPIRequest{})
+	if withoutForce.Code != http.StatusBadRequest || !strings.Contains(withoutForce.Body.String(), "--force") {
+		t.Fatalf("false force delete = %d: %s", withoutForce.Code, withoutForce.Body.String())
+	}
+	if _, err := service.ProjectWorkspace(ctx, created.Project.ID); err != nil {
+		t.Fatalf("false force refusal mutated project: %v", err)
+	}
+
+	withForce := requestJSONAPI(t, server, http.MethodDelete, path, workspaceDeleteAPIRequest{Force: true})
+	if withForce.Code != http.StatusOK {
+		t.Fatalf("forced delete = %d: %s", withForce.Code, withForce.Body.String())
+	}
+	if _, err := service.ProjectWorkspace(ctx, created.Project.ID); !errors.Is(err, studio.ErrNotFound) {
+		t.Fatalf("forced delete project lookup = %v, want not found", err)
 	}
 }
 

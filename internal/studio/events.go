@@ -7,10 +7,15 @@ import (
 	"time"
 )
 
+const maxEventLimit = 1000
+
 // RecentEvents returns the model activity feed newest first.
 func (s *Studio) RecentEvents(ctx context.Context, flowID int64, limit int) ([]Event, error) {
 	if limit <= 0 {
 		return nil, invalid("event limit must be positive")
+	}
+	if limit > maxEventLimit {
+		return nil, invalid("event limit must not exceed %d", maxEventLimit)
 	}
 
 	var exists int
