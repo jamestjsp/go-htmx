@@ -113,6 +113,16 @@ func (s *Server) projectDeleteAPI(r *http.Request) (apiResponse, error) {
 	if err != nil {
 		return apiResponse{}, err
 	}
+	if r.ContentLength == 0 {
+		return apiResponse{}, &studio.ValidationError{Message: "project deletion requires --force."}
+	}
+	var input workspaceDeleteAPIRequest
+	if err := decodeAPIJSON(r, &input); err != nil {
+		return apiResponse{}, err
+	}
+	if !input.Force {
+		return apiResponse{}, &studio.ValidationError{Message: "project deletion requires --force."}
+	}
 	workspace, err := s.studio.DeleteProject(r.Context(), projectID)
 	if err != nil {
 		return apiResponse{}, err
